@@ -33,7 +33,7 @@
         <div class="min-h-[350px] h-full pb-20 cursor-text relative" @click="handleEmptyClick">
           
           <!-- 任务行循环渲染 -->
-          <div v-for="(task, index) in tasks" :key="task.id" 
+          <div v-for="task in tasks" :key="task.id" 
                class="task-item-container group relative flex items-start gap-3 p-2 my-1 rounded-sm transition-colors duration-150 hover:bg-nexus-panel/40"
                :class="{ 'opacity-50': task.completed && task.type === 'todo' }">
             

@@ -77,10 +77,10 @@
     </aside>
 
     <!-- 右侧主编辑区 -->
-    <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" v-if="activePage">
+    <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" v-if="activePage" @scroll="hideFormatToolbar">
       <div class="w-full h-1 bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
-      <div class="max-w-4xl w-full mx-auto p-12 flex-1 flex flex-col">
+      <div class="max-w-4xl w-full mx-auto pt-12 pb-0 px-20 flex-1 flex flex-col">
         <!-- 面包屑导航 -->
         <div class="flex items-center gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] mb-8" v-if="activePageBreadcrumbs.length > 0">
            <template v-for="(crumb, idx) in activePageBreadcrumbs" :key="crumb.id">
@@ -89,22 +89,25 @@
            </template>
         </div>
 
-        <input type="text" v-model="activePage.title" 
+        <input ref="titleInputRef" type="text" v-model="activePage.title" 
                placeholder="无标题"
+               @keydown="handleTitleKeyDown"
                class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-5xl font-bold tracking-tight text-[#e5e7eb] placeholder-[#6b7280]/30 mb-10 pb-4 border-b border-[#1e2126]" />
 
         <div class="flex-1 relative pb-32" @click="handleEmptyClick">
           
           <!-- 任务行循环渲染 (含层级缩进与多媒体类型) -->
-          <div v-for="(task, index) in activePage.tasks" :key="task.id" 
-               class="task-item-container group relative flex items-start gap-3 p-2 my-1 rounded-sm transition-all duration-150"
+          <div v-for="(task, index) in visibleTasks" :key="task.id" 
+               class="task-item-container group relative flex items-start py-2 pr-2 my-1 rounded-sm transition-all duration-150"
                :style="{ marginLeft: `${(task.indentLevel || 0) * 1.5}rem` }"
                :class="{ 
                  'opacity-50': task.completed && task.type === 'todo',
                  'hover:bg-[#1e2126]/40': draggedTaskId !== task.id,
                  'opacity-30 scale-[0.98] border border-dashed border-[#6b7280]/50': draggedTaskId === task.id,
                  'shadow-[inset_0_2px_0_0_#00f0ff] bg-[#1e2126]/30': dragOverTaskId === task.id && dropPosition === 'top',
-                 'shadow-[inset_0_-2px_0_0_#00f0ff] bg-[#1e2126]/30': dragOverTaskId === task.id && dropPosition === 'bottom'
+                 'shadow-[inset_0_-2px_0_0_#00f0ff] bg-[#1e2126]/30': dragOverTaskId === task.id && dropPosition === 'bottom',
+                 'ring-1 ring-[#00f0ff]/70 bg-[#00f0ff]/5': selectedTaskIds.has(task.id),
+                 'bg-[#14161a]/70 rounded-md': task.type === 'callout'
                }"
                :draggable="draggableTaskId === task.id"
                @dragstart="handleDragStart($event, task)"
@@ -114,38 +117,40 @@
                @dragend="handleDragEnd">
             
             <!-- 缩进引导线 (Guide Line) -->
-            <div v-if="(task.indentLevel || 0) > 0" class="absolute left-0 top-0 bottom-0 w-[2px] bg-[#1e2126] rounded-full group-hover:bg-[#00f0ff]/30 transition-colors"></div>
+            <div v-if="(task.indentLevel || 0) > 0" class="absolute -left-4 top-0 bottom-0 w-[2px] bg-[#1e2126] rounded-full group-hover:bg-[#00f0ff]/30 transition-colors"></div>
 
-            <!-- 快速插入按钮 (+号) -->
-            <div class="mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 flex items-center justify-center relative" style="pointer-events: auto; z-index: 30;" draggable="false">
-              <span class="inline-flex items-center justify-center w-6 h-6 cursor-pointer text-[#00f0ff] hover:text-[#ffb000] hover:bg-[#1e2126] rounded transition-colors"
+            <!-- 悬浮控制手柄（+号 / 拖拽）：置于正文左边缘之外的负空间，保证文本与标题对齐。
+                 触屏设备无 hover，改为聚焦该块时常驻显示 -->
+            <div class="absolute -left-[72px] top-1 flex items-center gap-1 transition-opacity z-30"
+                 :class="focusedTaskId === task.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+                 draggable="false">
+              <span class="inline-flex items-center justify-center w-7 h-7 cursor-pointer text-[#00f0ff] hover:text-[#ffb000] hover:bg-[#1e2126] rounded transition-colors"
                     draggable="false"
                     @mousedown.stop.prevent="onInsertMouseDown(task.id, $event)"
-                    style="pointer-events: auto;"
-                    title="Alt+点击在上方插入，点击在下方插入">
+                    @touchstart.stop.prevent="insertTask(task.id, 'below')"
+                    title="点击在下方插入（Alt+点击在上方插入）">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events: none;">
                   <line x1="12" y1="5" x2="12" y2="19"></line>
                   <line x1="5" y1="12" x2="19" y2="12"></line>
                 </svg>
               </span>
+              <div class="cursor-grab active:cursor-grabbing text-[#6b7280] hover:text-[#e5e7eb] p-1 -m-1"
+                   @mousedown="draggableTaskId = task.id"
+                   @mouseup="draggableTaskId = null"
+                   @mouseleave="draggableTaskId = null"
+                   @click="(e) => openActionMenu(e, task.id)"
+                   @touchstart.stop="openActionMenuAtTouch(task.id, $event)"
+                   title="拖拽排序 / 点击操作菜单">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle>
+                  <circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle>
+                </svg>
+              </div>
             </div>
 
-            <!-- 拖拽与菜单手柄 -->
-            <div class="mt-1.5 cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity text-[#6b7280] hover:text-[#e5e7eb] shrink-0" 
-                 @mousedown="draggableTaskId = task.id"
-                 @mouseup="draggableTaskId = null"
-                 @mouseleave="draggableTaskId = null"
-                 @click="(e) => openActionMenu(e, task.id)" 
-                 title="长按拖拽 / 点击操作">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle>
-                <circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle>
-              </svg>
-            </div>
-
-            <!-- 基础区块类型前缀 -->
-            <template v-if="['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet'].includes(task.type)">
-              <div v-if="task.type === 'todo'" class="mt-1.5 relative flex items-center justify-center shrink-0">
+            <!-- 基础区块类型前缀：同样左突出到负空间，宽度统一，各类型文本起点严格一致 -->
+            <template v-if="EDITABLE_TYPES.includes(task.type)">
+              <div v-if="task.type === 'todo'" class="absolute -left-6 top-1.5 w-5 h-5 flex items-center justify-center">
                 <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })" 
                        class="peer appearance-none w-5 h-5 border-2 border-[#1e2126] bg-[#090a0c] checked:border-[#00f0ff] checked:bg-[#00f0ff]/20 cursor-pointer transition-all rounded-none outline-none" 
                        style="clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px)" />
@@ -153,26 +158,65 @@
                   <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <div v-else-if="task.type === 'bullet'" class="mt-3 flex items-center justify-center shrink-0 w-5">
+              <div v-else-if="task.type === 'bullet'" class="absolute -left-6 top-[0.6rem] w-5 flex items-center justify-center">
                 <div class="w-1.5 h-1.5 rounded-full bg-[#00f0ff]/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
               </div>
-              <div v-if="task.type === 'quote'" class="absolute left-9 top-2 bottom-2 w-0.5 bg-[#ffb000] rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
-              <div v-if="!task.type || ['text', 'h1', 'h2', 'h3'].includes(task.type)" class="w-1 shrink-0"></div>
+              <div v-else-if="task.type === 'numbered'" class="absolute -left-6 top-1.5 w-5 flex items-center justify-end">
+                <span class="font-['JetBrains_Mono',monospace] text-[13px] text-[#00f0ff]/80 select-none">{{ getNumberedIndex(task) }}.</span>
+              </div>
+              <button v-else-if="isCollapsible(task)"
+                      @click="toggleCollapse(task)"
+                      class="absolute -left-6 top-1 w-5 h-5 flex items-center justify-center text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
+                      :class="task.payload?.collapsed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+                      :title="task.payload?.collapsed ? '展开' : '折叠'">
+                <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
+              </button>
+              <div v-else-if="task.type === 'callout'" class="absolute -left-6 top-1.5 w-5 flex items-start justify-center select-none text-[15px] leading-5">
+                {{ task.payload?.icon || '💡' }}
+              </div>
+              <div v-if="task.type === 'quote'" class="absolute -left-4 top-1 bottom-1 w-0.5 bg-[#ffb000] rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
 
               <!-- ContentEditable 富文本 -->
-              <div class="flex-1 relative" :class="{ 'pl-4': task.type === 'quote' }">
+              <div class="flex-1 relative">
                 <div :ref="(el) => setInputRef(el, task.id)" 
                      contenteditable="true" 
                      @input="(e) => handleInput(e, task)"
                      @keydown="(e) => handleKeyDown(e, task, index)"
-                     @focus="setFocusConfig(task.id, null)"
-                     @blur="activeSlashTaskId = null"
+                     @paste="(e) => handlePaste(e, task, index)"
+                     @compositionstart="onCompositionStart"
+                     @compositionend="(e) => onCompositionEnd(e, task)"
+                     @focus="onBlockFocus(task.id)"
+                     @blur="onBlockBlur"
+                     :data-task-id="task.id"
                      :data-placeholder="getPlaceholder(task.type)"
                      class="ce-block w-full bg-transparent border-none outline-none leading-relaxed py-0.5 font-sans min-h-[24px] cursor-text"
-                     :class="getTextClass(task)">
+                     :class="[getTextClass(task), { 'show-placeholder': focusedTaskId === task.id }]">
                 </div>
               </div>
             </template>
+
+            <!-- 提及菜单：[[ 唤出页面链接（对齐 Notion 的双向链接入口） -->
+            <div v-if="mentionTaskId === task.id"
+                 class="absolute left-0 w-64 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm z-50 flex flex-col overflow-hidden"
+                 :class="slashMenuPosition === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'">
+              <div class="px-3 py-2 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] bg-[#090a0c] z-10 border-b border-[#1e2126]/50 shadow-sm shrink-0">
+                {{ filteredMentionPages.length > 0 ? '链接到页面' : '无匹配页面' }}
+              </div>
+              <div class="overflow-y-auto max-h-[220px] py-1 custom-scrollbar">
+                <div v-for="(page, idx) in filteredMentionPages" :key="page.id"
+                     @mousedown.prevent="insertPageLink(task.id, page.id)"
+                     class="flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors"
+                     :class="idx === mentionIndex ? 'bg-[#1e2126]/80' : 'hover:bg-[#1e2126]/40'">
+                  <svg class="w-4 h-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                  <span class="text-sm truncate" :class="idx === mentionIndex ? 'text-[#00f0ff]' : 'text-[#e5e7eb]'">{{ page.title || '无标题' }}</span>
+                </div>
+                <div v-if="filteredMentionPages.length === 0"
+                     @mousedown.prevent="insertPageLink(task.id, null)"
+                     class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[#1e2126]/40">
+                  <span class="text-sm text-[#6b7280]">+ 新建页面「{{ mentionQuery }}」并链接</span>
+                </div>
+              </div>
+            </div>
 
             <!-- 多媒体区块：图片上传器 (Image Block) -->
             <div v-else-if="task.type === 'image'" class="flex-1 mt-1">
@@ -192,14 +236,14 @@
                     <span class="w-2.5 h-2.5 rounded-full bg-[#ffb000]/80"></span>
                     <span class="w-2.5 h-2.5 rounded-full bg-[#00f0ff]/80"></span>
                   </div>
-                  <select v-model="task.payload.language" @change="saveTasks" class="bg-transparent text-xs font-bold text-[#6b7280] hover:text-[#00f0ff] outline-none cursor-pointer uppercase tracking-wider">
+                  <select v-model="task.payload.language" class="bg-transparent text-xs font-bold text-[#6b7280] hover:text-[#00f0ff] outline-none cursor-pointer uppercase tracking-wider">
                     <option value="javascript">JavaScript</option>
                     <option value="python">Python</option>
                     <option value="vue">Vue / HTML</option>
                     <option value="rust">Rust</option>
                   </select>
               </div>
-              <textarea v-model="task.payload.code" @input="saveTasks" @keydown.tab.prevent="insertTabInCode($event, task)" class="w-full bg-transparent text-[#00f0ff] p-4 text-sm outline-none resize-y min-h-[120px] custom-scrollbar leading-relaxed" placeholder="// TYPE YOUR DIRECTIVES HERE..."></textarea>
+              <textarea v-model="task.payload.code" @keydown.tab.prevent="insertTabInCode($event, task)" class="w-full bg-transparent text-[#00f0ff] p-4 text-sm outline-none resize-y min-h-[120px] custom-scrollbar leading-relaxed" placeholder="// TYPE YOUR DIRECTIVES HERE..."></textarea>
             </div>
 
             <!-- 可视化看板 (Kanban / Database) -->
@@ -213,7 +257,7 @@
                        <div class="flex flex-col gap-2 flex-1">
                            <div v-for="(card, cIdx) in col.cards" :key="card.id" class="bg-[#1e2126] border border-[#374151]/50 p-2.5 rounded-sm text-sm text-[#e5e7eb] shadow-sm relative group/card">
                                {{card.text}}
-                               <button @click="deleteKanbanCard(task, col, cIdx)" class="absolute top-1 right-1 p-1 opacity-0 group-hover/card:opacity-100 text-[#6b7280] hover:text-[#ff2a2a] transition-all"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+                               <button @click="deleteKanbanCard(task, col, Number(cIdx))" class="absolute top-1 right-1 p-1 opacity-0 group-hover/card:opacity-100 text-[#6b7280] hover:text-[#ff2a2a] transition-all"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                            </div>
                            <input type="text" placeholder="+ 新建数据片" class="bg-transparent border border-dashed border-[#1e2126] hover:border-[#00f0ff]/50 focus:border-[#00f0ff] focus:bg-[#1e2126]/30 rounded-sm px-3 py-1.5 text-sm outline-none text-[#e5e7eb] transition-all mt-1 font-['JetBrains_Mono',monospace]" @keydown.enter="(e) => addKanbanCard(e, task, col)">
                        </div>
@@ -221,13 +265,18 @@
                </div>
             </div>
 
+            <!-- 分割线 (Divider) -->
+            <div v-else-if="task.type === 'divider'" class="flex-1 py-3">
+              <div class="w-full h-px bg-[#1e2126]"></div>
+            </div>
+
             <!-- 统一 Slash 命令弹出菜单 -->
             <div v-if="activeSlashTaskId === task.id" 
                  class="absolute left-0 w-64 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm z-50 flex flex-col overflow-hidden"
                  :class="slashMenuPosition === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'">
-              <div class="px-3 py-2 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] bg-[#090a0c] z-10 border-b border-[#1e2126]/50 shadow-sm shrink-0">基础区块 & 多媒体容器</div>
+              <div class="px-3 py-2 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] bg-[#090a0c] z-10 border-b border-[#1e2126]/50 shadow-sm shrink-0">{{ filteredSlashOptions.length > 0 ? '基础区块 & 多媒体容器' : '无匹配命令' }}</div>
               <div class="overflow-y-auto max-h-[260px] py-1 custom-scrollbar">
-                <div v-for="(option, idx) in slashOptions" :key="option.id"
+                <div v-for="(option, idx) in filteredSlashOptions" :key="option.id"
                      :ref="(el) => setSlashItemRef(el, idx)"
                      @mousedown.prevent="executeSlashCommand(task.id, option.id)"
                      class="flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors"
@@ -249,18 +298,77 @@
           <div v-if="activePage.tasks.length === 0" class="text-[#6b7280]/50 font-['JetBrains_Mono',monospace] text-sm py-4 select-none pointer-events-none">
             [ 按 Enter 或点击此处开始编码你的矩阵... ]
           </div>
+
+          <!-- 反向链接（Backlinks）：自动聚合引用本页的页面 -->
+          <div v-if="backlinks.length > 0" class="mt-12 pt-4 border-t border-[#1e2126]">
+            <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] uppercase tracking-wider font-bold mb-2">
+              反向链接 · {{ backlinks.length }}
+            </div>
+            <div class="space-y-1">
+              <div v-for="bl in backlinks" :key="bl.page.id"
+                   class="flex items-start gap-2 text-sm text-[#6b7280] hover:text-[#00f0ff] cursor-pointer transition-colors px-2 py-1 rounded-sm hover:bg-[#1e2126]/40"
+                   @click="activePageId = bl.page.id">
+                <svg class="w-4 h-4 mt-0.5 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <div class="min-w-0">
+                  <div class="truncate">{{ bl.page.title || '无标题' }}</div>
+                  <div class="text-xs text-[#6b7280]/70 truncate">{{ bl.excerpt }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </main>
 
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
-    <div v-if="actionMenuConfig.isOpen" class="action-menu-popup fixed z-50 w-48 bg-[#090a0c] border border-[#1e2126] shadow-2xl py-1 rounded-sm text-sm" :style="{ top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }" @click.stop>
+    <!-- 选中文本后的浮动格式工具栏（对齐 Notion 的 selection toolbar） -->
+    <div v-if="formatToolbar.visible"
+         class="format-toolbar fixed z-50 flex items-center gap-0.5 px-1 py-1 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm"
+         :style="{ top: `${formatToolbar.y}px`, left: `${formatToolbar.x}px` }">
+      <button @mousedown.prevent="execFormat('bold')" title="加粗 (Ctrl/Cmd+B)" class="ft-btn font-bold">B</button>
+      <button @mousedown.prevent="execFormat('italic')" title="斜体 (Ctrl/Cmd+I)" class="ft-btn italic">I</button>
+      <button @mousedown.prevent="execFormat('underline')" title="下划线 (Ctrl/Cmd+U)" class="ft-btn underline">U</button>
+      <button @mousedown.prevent="execFormat('strikeThrough')" title="删除线 (Ctrl/Cmd+Shift+S)" class="ft-btn line-through">S</button>
+      <div class="w-px h-4 bg-[#1e2126] mx-0.5"></div>
+      <button @mousedown.prevent="execFormat('code')" title="行内代码 (Ctrl/Cmd+E)" class="ft-btn font-['JetBrains_Mono',monospace] text-xs">&lt;/&gt;</button>
+      <button @mousedown.prevent="execFormat('link')" title="链接 (Ctrl/Cmd+K)" class="ft-btn">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+      </button>
+      <div class="w-px h-4 bg-[#1e2126] mx-0.5"></div>
+      <button @mousedown.prevent="colorPanel = colorPanel === 'text' ? null : 'text'" title="文本颜色" class="ft-btn font-bold">A</button>
+      <button @mousedown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
+        <span class="px-1 bg-[#ffb000]/30 text-[#ffb000] rounded-sm">H</span>
+      </button>
+      <!-- 颜色面板 -->
+      <div v-if="colorPanel" class="absolute top-full mt-1 left-0 flex gap-1 px-2 py-1.5 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm">
+        <button v-for="c in colorPalette" :key="c.value"
+                @mousedown.prevent="applyColor(c.value)"
+                class="w-5 h-5 rounded-sm border border-[#1e2126] hover:scale-110 transition-transform"
+                :style="{ background: c.value }" :title="c.label"></button>
+        <button @mousedown.prevent="applyColor('transparent')" class="w-5 h-5 rounded-sm border border-[#6b7280] text-[10px] text-[#6b7280] flex items-center justify-center" title="清除">/</button>
+      </div>
+    </div>
+
+    <div v-if="actionMenuConfig.isOpen" class="action-menu-popup fixed z-50 w-52 bg-[#090a0c] border border-[#1e2126] shadow-2xl py-1 rounded-sm text-sm max-h-[70vh] overflow-y-auto custom-scrollbar" :style="{ top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }" @click.stop>
       <div class="px-3 py-1 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] mb-1 border-b border-[#1e2126]/50">转换区块为</div>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('text')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">T</span> 文本</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('todo')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">[]</span> 待办事项</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors text-[#00f0ff]/80 font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h1')"><span class="font-['JetBrains_Mono',monospace] text-[#00f0ff]/40 font-normal">H1</span> 标题 1</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h2')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280] font-normal">H2</span> 标题 2</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h3')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280] font-normal">H3</span> 标题 3</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('todo')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">[]</span> 待办事项</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('bullet')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">•</span> 无序列表</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('numbered')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">1.</span> 编号列表</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('toggle')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">▸</span> 折叠列表</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('quote')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">&quot;</span> 引用块</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('callout')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">💡</span> 标注块</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('divider')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">—</span> 分割线</button>
+      <div class="border-t border-[#1e2126]/50 my-1"></div>
+      <button v-if="isCollapsible(actionMenuTask!)" class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="toggleCollapse(actionMenuTask!); actionMenuConfig.isOpen = false">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">▸</span> {{ actionMenuTask?.payload?.collapsed ? '展开' : '折叠' }}
+      </button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), -1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↑</span> 上移</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), 1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↓</span> 下移</button>
       <div class="border-t border-[#1e2126]/50 my-1"></div>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors" @click="duplicateTask(actionMenuConfig.taskId)">复制</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a]" @click="deleteTask(actionMenuConfig.taskId); actionMenuConfig.isOpen = false">删除</button>
@@ -271,18 +379,24 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue';
-import { initSync, closeSync, pushAll, createRemotePage, deleteRemotePage, syncStatus, onlineDevices, type Page as SyncPage, type Task as SyncTask } from '../composables/useSync';
+import { initSync, closeSync, createRemotePage, deleteRemotePage, syncStatus, onlineDevices } from '../composables/useSync';
+import { newBlockId, newPageId } from '../composables/ids';
+import { writePrevIds } from '../composables/useSync';
 
 // === 数据结构 ===
-interface Task { 
-  id: string; 
-  type: string; 
-  content: string; 
-  completed: boolean; 
+interface Task {
+  id: string;
+  type: string;
+  content: string;
+  completed: boolean;
   indentLevel?: number;
-  payload?: any; 
+  payload?: any;
+  prevId?: string | null;
 }
 interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; }
+
+// 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
+const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
 
 // === 全局状态与持久化 (LocalFirst + 远端同步由 useSync 统一托管) ===
 const pages = ref<Page[]>([
@@ -302,6 +416,229 @@ const pages = ref<Page[]>([
 const activePageId = ref<string>('default-page');
 const activePage = computed(() => pages.value.find(p => p.id === activePageId.value));
 
+// 标题层级：用于「可折叠标题」（Notion 的 toggle heading）
+const HEADING_LEVEL: Record<string, number> = { h1: 1, h2: 2, h3: 3 };
+const isCollapsible = (task: Task) => task.type === 'toggle' || !!HEADING_LEVEL[task.type];
+
+// === 折叠引擎 ===
+// toggle：隐藏其后所有层级更深的块，直到遇到同级或更浅的块
+// 标题：忽略缩进，隐藏其后所有内容，直到遇到同级或更高级的标题
+const hiddenTaskIds = computed(() => {
+  const hidden = new Set<string>();
+  const list = activePage.value?.tasks ?? [];
+  let active: { ignoreLevel: boolean; level: number; isEnd: (t: Task) => boolean } | null = null;
+  for (const t of list) {
+    const level = t.indentLevel || 0;
+    if (active) {
+      const within = active.ignoreLevel || level > active.level;
+      if (within && !active.isEnd(t)) { hidden.add(t.id); continue; }
+      active = null;
+    }
+    if (!t.payload?.collapsed) continue;
+    if (t.type === 'toggle') {
+      active = { ignoreLevel: false, level, isEnd: () => false };
+    } else if (HEADING_LEVEL[t.type]) {
+      const lv: number = HEADING_LEVEL[t.type];
+      active = { ignoreLevel: true, level, isEnd: (x: Task): boolean => { const hl = HEADING_LEVEL[x.type]; return !!hl && hl <= lv; } };
+    }
+  }
+  return hidden;
+});
+const visibleTasks = computed(() => (activePage.value?.tasks ?? []).filter((t: Task) => !hiddenTaskIds.value.has(t.id)));
+// 渲染索引 ≠ 数据索引（折叠会跳过块），键盘逻辑必须使用数据索引
+const realIndexMap = computed(() => {
+  const map = new Map<string, number>();
+  (activePage.value?.tasks ?? []).forEach((t: Task, i: number) => map.set(t.id, i));
+  return map;
+});
+const realIndexOf = (task: Task) => realIndexMap.value.get(task.id) ?? 0;
+
+// 编号列表序号：只累计「同级且相邻」的 numbered 块，遇到其它类型或更浅层级则重置
+const getNumberedIndex = (task: Task) => {
+  const list = activePage.value?.tasks ?? [];
+  const idx = list.findIndex((t: Task) => t.id === task.id);
+  const level = task.indentLevel || 0;
+  let n = 1;
+  for (let i = idx - 1; i >= 0; i--) {
+    const prev = list[i];
+    const prevLevel = prev.indentLevel || 0;
+    if (prevLevel < level) break;
+    if (prevLevel === level) {
+      if (prev.type === 'numbered') n++;
+      else break;
+    }
+  }
+  return n;
+};
+const toggleCollapse = (task: Task) => {
+  if (!task.payload) task.payload = {};
+  task.payload.collapsed = !task.payload.collapsed;
+};
+
+// === 页面链接 [[ 与反向链接（对齐 Notion 的双向链接） ===
+const PAGE_LINK_RE = /<a[^>]+data-page-id="([^"]+)"[^>]*>/g;
+const getLinkedPageIds = (page: Page): string[] => {
+  const ids = new Set<string>();
+  for (const t of page.tasks) {
+    if (!t.content) continue;
+    let m: RegExpExecArray | null;
+    PAGE_LINK_RE.lastIndex = 0;
+    while ((m = PAGE_LINK_RE.exec(t.content))) ids.add(m[1]);
+  }
+  return [...ids];
+};
+// 引用了当前页面的其它页面（含引用处的上下文摘要）
+const backlinks = computed(() => {
+  const current = activePage.value;
+  if (!current) return [];
+  const result: Array<{ page: Page; excerpt: string }> = [];
+  for (const p of pages.value) {
+    if (p.id === current.id) continue;
+    const linked = getLinkedPageIds(p).includes(current.id);
+    if (!linked) continue;
+    const hit = p.tasks.find((t: Task) => t.content?.includes(`data-page-id="${current.id}"`));
+    const plain = (hit?.content ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    result.push({ page: p, excerpt: plain.slice(0, 80) || '（链接）' });
+  }
+  return result;
+});
+
+const mentionTaskId = ref<string | null>(null);
+const mentionIndex = ref(0);
+const mentionQuery = ref('');
+const filteredMentionPages = computed(() => {
+  const q = mentionQuery.value.trim().toLowerCase();
+  const pool = pages.value.filter(p => p.id !== activePageId.value);
+  if (!q) return pool.slice(0, 8);
+  return pool.filter(p => (p.title || '无标题').toLowerCase().includes(q)).slice(0, 8);
+});
+const closeMention = () => { mentionTaskId.value = null; mentionQuery.value = ''; mentionIndex.value = 0; };
+const insertPageLink = (taskId: string, pageId: string | null) => {
+  if (!activePage.value) return;
+  let targetId = pageId;
+  if (!targetId) {
+    // 无匹配时新建同名页面并链接（对齐 Notion 的 "+ Add new page"）
+    const newPage: Page = { id: newPageId(), title: mentionQuery.value.trim() || '无标题', tasks: [], parentId: null, isFavorite: false, isExpanded: true };
+    pages.value.push(newPage);
+    createRemotePage(newPage as any);
+    targetId = newPage.id;
+  }
+  const target = pages.value.find(p => p.id === targetId);
+  const task = activePage.value.tasks.find((t: Task) => t.id === taskId);
+  if (!task) { closeMention(); return; }
+  // 去掉行内尚未闭合的 [[ 前缀
+  const cleaned = task.content.replace(/\[\[([^\[\]]*)?$/, '');
+  const linkHtml = `<a data-page-id="${targetId}" href="#${targetId}">${target?.title || '无标题'}</a>`;
+  updateTask(taskId, { content: cleaned + linkHtml });
+  closeMention();
+  setFocusConfig(taskId, 'end');
+};
+
+// === 导出 Markdown ===
+const htmlToMarkdown = (html: string): string => {
+  let s = html;
+  s = s.replace(/<br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/(strong|b)>/gi, '**').replace(/<(strong|b)>/gi, '**');
+  s = s.replace(/<\/(em|i)>/gi, '*').replace(/<(em|i)>/gi, '*');
+  s = s.replace(/<\/(del|strike)>/gi, '~~').replace(/<(del|strike)>/gi, '~~');
+  s = s.replace(/<code>/gi, '`').replace(/<\/code>/gi, '`');
+  s = s.replace(/<a[^>]*data-page-id="[^"]*"[^>]*>([^<]*)<\/a>/gi, '[[$1]]');
+  s = s.replace(/<a[^>]*href="([^"]*)"[^>]*>([^<]*)<\/a>/gi, '[$2]($1)');
+  s = s.replace(/<[^>]+>/g, '');
+  return s.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+};
+const escapeMdText = (s: string) => s.replace(/[\\`*_[\]]/g, c => `\\${c}`);
+const exportMarkdown = () => {
+  const page = activePage.value;
+  if (!page) return;
+  const pageMd = (p: Page, depth: number): string => {
+    const lines: string[] = [`${'#'.repeat(Math.min(depth + 1, 6))} ${p.title || '无标题'}`, ''];
+    for (const t of p.tasks) {
+      const text = htmlToMarkdown(t.content || '');
+      const indent = '  '.repeat(t.indentLevel || 0);
+      switch (t.type) {
+        case 'h1': lines.push(`${indent}# ${text}`, ''); break;
+        case 'h2': lines.push(`${indent}## ${text}`, ''); break;
+        case 'h3': lines.push(`${indent}### ${text}`, ''); break;
+        case 'bullet': lines.push(`${indent}- ${text}`); break;
+        case 'numbered': lines.push(`${indent}1. ${text}`); break;
+        case 'todo': lines.push(`${indent}- [${t.completed ? 'x' : ' '}] ${text}`); break;
+        case 'quote': lines.push(`${indent}> ${text}`, ''); break;
+        case 'callout': lines.push(`${indent}> ${t.payload?.icon || '💡'} ${text}`, ''); break;
+        case 'toggle': lines.push(`${indent}<details><summary>${text}</summary>`, '', `${indent}</details>`, ''); break;
+        case 'divider': lines.push('', '---', ''); break;
+        case 'codeblock': lines.push('```' + (t.payload?.language || ''), t.payload?.code || '', '```', ''); break;
+        case 'image': lines.push(t.payload?.url ? `![](${String(t.payload.url).slice(0, 60)}…)` : '<!-- 未上传图片 -->', ''); break;
+        case 'kanban': {
+          lines.push('<!-- 看板 -->');
+          for (const col of t.payload?.columns ?? []) {
+            lines.push(`**${col.title}**`);
+            for (const c of col.cards) lines.push(`- ${escapeMdText(c.text)}`);
+          }
+          lines.push('');
+          break;
+        }
+        default: lines.push(`${indent}${text}`, '');
+      }
+    }
+    return lines.join('\n');
+  };
+  // 连同子页面一起导出（Notion 导出时每个子页面一个文件，这里合并为一个 md）
+  const collect = (parentId: string | null, depth: number): string[] => {
+    const out: string[] = [];
+    for (const child of pages.value.filter(p => p.parentId === parentId)) {
+      out.push(pageMd(child, depth));
+      out.push(...collect(child.id, depth + 1));
+    }
+    return out;
+  };
+  const body = [pageMd(page, 0), ...collect(page.id, 1)].join('\n\n---\n\n');
+  const blob = new Blob([body], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${(page.title || 'untitled').replace(/[\\/:*?"<>|]/g, '_')}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// === 块选择态（对齐 Notion：Esc 选中当前块，↑↓ 扩展，Enter 回到编辑） ===
+const selectedTaskIds = ref<Set<string>>(new Set());
+const blockSelectMode = ref(false);
+const clearBlockSelection = () => { selectedTaskIds.value = new Set(); blockSelectMode.value = false; };
+const selectSingleBlock = (id: string) => { selectedTaskIds.value = new Set([id]); blockSelectMode.value = true; };
+const isBlockSelected = (id: string) => selectedTaskIds.value.has(id);
+// 以最后一个被加入选区的块为锚点，向上/向下扩展整块选择
+const extendBlockSelection = (dir: -1 | 1) => {
+  const list = visibleTasks.value;
+  if (list.length === 0) return;
+  const ids = [...selectedTaskIds.value];
+  const anchorIdx = list.findIndex((t: Task) => t.id === ids[ids.length - 1]);
+  if (anchorIdx === -1) { selectSingleBlock(list[0].id); return; }
+  const nextIdx = anchorIdx + dir;
+  if (nextIdx < 0 || nextIdx >= list.length) return;
+  const nextId = list[nextIdx].id;
+  const next = new Set(selectedTaskIds.value);
+  // 反向移动时收缩选区，正向移动时扩展（Notion 行为）
+  if (dir < 0 && ids.length > 1 && isBlockSelected(list[nextIdx + 1]?.id ?? '')) next.delete(ids[ids.length - 1]);
+  else next.add(nextId);
+  selectedTaskIds.value = next;
+  blockSelectMode.value = true;
+};
+const deleteSelectedBlocks = () => {
+  if (!activePage.value || selectedTaskIds.value.size === 0) return;
+  activePage.value.tasks = activePage.value.tasks.filter((t: Task) => !selectedTaskIds.value.has(t.id));
+  clearBlockSelection();
+};
+const duplicateSelectedBlocks = () => {
+  if (!activePage.value || selectedTaskIds.value.size === 0) return;
+  const list = activePage.value.tasks;
+  const picked = list.filter((t: Task) => selectedTaskIds.value.has(t.id));
+  const lastIdx = list.findIndex((t: Task) => t.id === picked[picked.length - 1].id);
+  const copies = picked.map((t: Task) => ({ ...t, id: newBlockId() }));
+  list.splice(lastIdx + 1, 0, ...copies);
+};
+
 onMounted(async () => {
   // LocalFirst: 读本地 -> 远端握手对齐 -> 建立 WebSocket -> 变更自动持久化+广播
   await initSync(pages as any);
@@ -316,9 +653,12 @@ onMounted(async () => {
   // 全局点击关闭转换区块浮窗
   const handleGlobalClick = (e: MouseEvent) => {
     const target = e.target as HTMLElement;
-    // 点击菜单自身时不关闭（菜单上有 @click.stop）
+    // 点击菜单自身时不关闭（菜单上有 @click.stop / @mousedown.prevent）
     if (target.closest('.action-menu-popup')) return;
     actionMenuConfig.value.isOpen = false;
+    // 点击工具栏自身时不关闭，否则按钮的 mousedown 还没执行选区就被清掉了
+    if (!target.closest('.format-toolbar')) hideFormatToolbar();
+    if (!target.closest('.task-item-container')) clearBlockSelection();
   };
   document.addEventListener('mousedown', handleGlobalClick);
 
@@ -328,40 +668,106 @@ onMounted(async () => {
   };
   document.addEventListener('keydown', handleEscape);
 
-  // === 跨行鼠标选区支持 ===
-  // 参考 Notion 的做法：contentEditable 始终保持 true，通过 selectionchange 事件追踪选区。
-  // 核心原则：绝不主动调用 focus()（会清除选区），让浏览器自然管理焦点和选区。
-  let mouseDownTarget: HTMLElement | null = null;
+  // 撤销栈基线：初始矩阵入栈，保证第一次 Ctrl+Z 有可回退的状态
+  commitHistory();
 
+  // 任何数据变更都记入历史（防抖合并连续输入）；回退期间的变更不入栈
+  watch(pages, () => { if (isRestoring) return; debouncedCommit(); }, { deep: true });
+
+  // === 跨行鼠标选区支持（自建逻辑选区，不依赖浏览器跨宿主行为） ===
+  // 原则：绝不主动 focus()（会清掉选区），只重建 Range；焦点交给浏览器随 mousedown 自然处理。
   document.addEventListener('mousedown', (e: MouseEvent) => {
     const ceBlock = (e.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
     if (!ceBlock) return;
-    mouseDownTarget = ceBlock;
+    const info = caretInfoFromPoint(e.clientX, e.clientY);
+    if (!info) return;
+    isDragSelecting = true;
+    pointerDragged = false;
+    selAnchor.value = info;
+    selFocus.value = info;
+    hideFormatToolbar();
+  });
+
+  document.addEventListener('mousemove', (e: MouseEvent) => {
+    if (!isDragSelecting || !selAnchor.value) return;
+    // 鼠标未按下（单纯划过）时不处理
+    if (e.buttons === 0) { isDragSelecting = false; return; }
+    const info = caretInfoFromPoint(e.clientX, e.clientY);
+    if (!info) return;
+    const prev = selFocus.value;
+    if (prev && prev.blockId === info.blockId && prev.offset === info.offset) return;
+    pointerDragged = true;
+    selFocus.value = info;
+    applyLogicalSelection(selAnchor.value, info);
   });
 
   document.addEventListener('mouseup', (e: MouseEvent) => {
-    if (!mouseDownTarget) return;
+    if (!isDragSelecting) return;
+    isDragSelecting = false;
 
     const sel = window.getSelection();
-    const hasSelection = sel && sel.rangeCount > 0 && sel.toString().length > 0;
-
-    if (!hasSelection) {
-      // 没有选区：说明是单击，进入编辑模式
-      const mouseUpTarget = (e.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
-      if (mouseUpTarget && mouseDownTarget === mouseUpTarget) {
-        // 使用 caretRangeFromPoint 定位光标，这会自动 focus 元素
-        const range = document.caretRangeFromPoint(e.clientX, e.clientY);
-        if (range) {
-          sel?.removeAllRanges();
-          sel?.addRange(range);
-        }
-      }
+    if (hasTextSelection()) {
+      // 有选区：在选区上方弹出浮动格式工具栏（对齐 Notion 的 selection toolbar）
+      const rect = sel!.getRangeAt(0).getBoundingClientRect();
+      const above = rect.top > 48;
+      formatToolbar.value = {
+        visible: true,
+        x: Math.max(8, Math.round(rect.left)),
+        y: Math.round(above ? rect.top - 40 : rect.bottom + 8),
+      };
+      return;
     }
-    // 有选区时什么都不做——浏览器已正确设置选区和焦点，不干预就不会丢失
+    hideFormatToolbar();
 
-    mouseDownTarget = null;
+    // 无选区（单击定位光标）：用 caretRangeFromPoint 精确定位，避免点在块内空白处时光标丢失
+    const ceBlock = (e.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
+    if (ceBlock && selAnchor.value?.blockId === ceBlock.dataset.taskId) {
+      const info = caretInfoFromPoint(e.clientX, e.clientY);
+      if (info) { selFocus.value = info; applyLogicalSelection(info, info); }
+    }
+    selAnchor.value = null; selFocus.value = null;
   });
-});
+
+  document.addEventListener('touchstart', (e: TouchEvent) => {
+    // 单指触屏选区（移动端必备，且与鼠标路径共用同一套逻辑选区引擎）
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const ceBlock = (t.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
+    if (!ceBlock) return;
+    const info = caretInfoFromPoint(t.clientX, t.clientY);
+    if (!info) return;
+    isDragSelecting = true;
+    pointerDragged = false;
+    selAnchor.value = info;
+    selFocus.value = info;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e: TouchEvent) => {
+    if (!isDragSelecting || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const info = caretInfoFromPoint(t.clientX, t.clientY);
+    if (!info) return;
+    const prev = selFocus.value;
+    if (prev && prev.blockId === info.blockId && prev.offset === info.offset) return;
+    pointerDragged = true;
+    selFocus.value = info;
+    applyLogicalSelection(selAnchor.value!, info);
+    // 阻止页面滚动，否则长距离拖动选区时页面会跟着滚
+    if (e.cancelable) e.preventDefault();
+  }, { passive: false });
+
+  document.addEventListener('touchend', (e: TouchEvent) => {
+    if (!isDragSelecting) return;
+    isDragSelecting = false;
+    // 纯长按未拖动：把光标落到触点位置（移动端点选定位）
+    if (!pointerDragged) {
+      const t = e.changedTouches[0];
+      const info = caretInfoFromPoint(t.clientX, t.clientY);
+      if (info) { selFocus.value = info; applyLogicalSelection(info, info); }
+    }
+    selAnchor.value = null; selFocus.value = null;
+  });
+}); // end onMounted
 
 // 持久化与远端广播统一由 useSync 内部 watch 处理
 watch(activePageId, (newId) => { if(window.location.hash.slice(1) !== newId) window.location.hash = newId; });
@@ -388,13 +794,15 @@ const activePageBreadcrumbs = computed(() => {
 });
 
 const createPage = (parentId: string | null = null) => {
-  const newId = 'page-' + Date.now().toString();
-  pages.value.push({ id: newId, title: '', tasks: [{ id: Date.now().toString(), type: 'text', content: '', completed: false, indentLevel: 0 }], parentId, isFavorite: false, isExpanded: true });
+  const newId = newPageId();
+  pages.value.push({ id: newId, title: '', tasks: [{ id: newBlockId(), type: 'text', content: '', completed: false, indentLevel: 0 }], parentId, isFavorite: false, isExpanded: true });
   if (parentId) { const parent = pages.value.find(p => p.id === parentId); if (parent) parent.isExpanded = true; }
   activePageId.value = newId;
   // 同步到后端（失败不影响本地编辑）
   const created = pages.value.find(p => p.id === newId);
   if (created) createRemotePage(created as any);
+  // Notion：新建页面后光标自动落在标题，方便直接命名
+  focusTitle();
 };
 const toggleFavorite = (id: string) => { const p = pages.value.find(p => p.id === id); if (p) p.isFavorite = !p.isFavorite; };
 const toggleExpand = (id: string) => { const p = pages.value.find(p => p.id === id); if (p) p.isExpanded = !p.isExpanded; };
@@ -413,6 +821,53 @@ const deletePage = (id: string) => {
 const inputRefs = ref<Record<string, HTMLElement>>({});
 const setInputRef = (el: any, id: string) => { if (el) inputRefs.value[id] = el; else delete inputRefs.value[id]; };
 const focusConfig = ref<{ id: string | null, pos: any }>({ id: null, pos: null });
+// 当前获得焦点的文本块（用于对齐 Notion：占位提示只在聚焦/悬停时出现）
+const focusedTaskId = ref<string | null>(null);
+const onBlockFocus = (id: string) => { focusedTaskId.value = id; setFocusConfig(id, null); };
+const onBlockBlur = () => { activeSlashTaskId.value = null; focusedTaskId.value = null; };
+// 选中文本后的浮动格式工具栏
+const formatToolbar = ref({ visible: false, x: 0, y: 0 });
+const hideFormatToolbar = () => { formatToolbar.value.visible = false; colorPanel.value = null; };
+// 文本颜色 / 背景高亮（对齐 Notion 的 /color 与 /blue background）
+const colorPanel = ref<'text' | 'bg' | null>(null);
+const colorPalette = [
+  { label: '青', value: '#00f0ff' }, { label: '琥珀', value: '#ffb000' }, { label: '红', value: '#ff2a2a' },
+  { label: '绿', value: '#3ddc84' }, { label: '紫', value: '#a78bfa' }, { label: '灰', value: '#6b7280' },
+];
+const applyColor = (value: string) => {
+  const isText = colorPanel.value === 'text';
+  // execCommand 前必须先让 contenteditable 进入编辑态，且 styleWithCSS 打开才能写出 <span style>
+  document.execCommand('styleWithCSS', false, 'true');
+  document.execCommand(isText ? 'foreColor' : 'hiliteColor', false, value === 'transparent' ? 'transparent' : value);
+  colorPanel.value = null;
+  const sel = window.getSelection();
+  const n = sel?.anchorNode;
+  const el = ((n && n.nodeType === 3 ? n.parentElement : n as HTMLElement) ?? null)?.closest('.ce-block') as HTMLElement | null;
+  if (el?.dataset.taskId) updateTask(el.dataset.taskId, { content: el.innerHTML });
+};
+const execFormat = (cmd: string) => {
+  const blockFromSelection = () => {
+    const sel = window.getSelection();
+    const n = sel?.anchorNode;
+    const start: HTMLElement | null = n ? (n.nodeType === 3 ? n.parentElement : n as HTMLElement) : null;
+    return (start?.closest('.ce-block') as HTMLElement | null) ?? null;
+  };
+  if (cmd === 'code') wrapInlineCode();
+  else if (cmd === 'link') {
+    const url = window.prompt('输入链接地址', 'https://');
+    if (url) document.execCommand('createLink', false, url);
+  } else document.execCommand(cmd);
+  const el = blockFromSelection();
+  if (el?.dataset.taskId) updateTask(el.dataset.taskId, { content: el.innerHTML });
+};
+
+// 中文输入法（IME）组合态：组合期间一律不拦截按键，否则会吞掉候选词确认与换行
+const isComposing = ref(false);
+const onCompositionStart = () => { isComposing.value = true; };
+const onCompositionEnd = (e: CompositionEvent, task: Task) => {
+  isComposing.value = false;
+  updateTask(task.id, { content: (e.currentTarget as HTMLElement).innerHTML });
+};
 const actionMenuConfig = ref({ isOpen: false, x: 0, y: 0, taskId: '' });
 const formatMenuConfig = ref({ isOpen: false, x: 0, y: 0, position: 'top', activeTaskId: '' });
 
@@ -429,18 +884,34 @@ const slashMenuPosition = ref('bottom');
 const slashItemRefs = ref<HTMLElement[]>([]);
 const setSlashItemRef = (el: any, index: number) => { if (el) slashItemRefs.value[index] = el; };
 const slashOptions = [
-  { id: 'text', label: '普通文本', icon: 'T', desc: '基础的文字段落' }, { id: 'todo', label: '待办事项', icon: '[]', desc: '带有复选框的任务' },
-  { id: 'h1', label: '一级标题', icon: 'H1', desc: '大尺寸科幻标题' }, { id: 'h2', label: '二级标题', icon: 'H2', desc: '中等尺寸副标题' },
-  { id: 'h3', label: '三级标题', icon: 'H3', desc: '小尺寸副标题' }, { id: 'bullet', label: '无序列表', icon: '•', desc: '基础的点状列表' },
-  { id: 'quote', label: '引用块', icon: '"', desc: '高亮引用的重要文字' },
-  { id: 'image', label: '图片媒体', icon: 'IMG', desc: '上传或拖拽图片解析' },
-  { id: 'codeblock', label: '代码片段', icon: '</>', desc: '多行语法高亮容器' },
-  { id: 'kanban', label: '看板数据库', icon: '|||', desc: '可视化状态追踪画板' },
+  { id: 'text', label: '普通文本', icon: 'T', desc: '基础的文字段落', kw: 'text wenben duanluo 文本 段落' },
+  { id: 'todo', label: '待办事项', icon: '[]', desc: '带有复选框的任务', kw: 'todo daiban 待办 任务 checkbox' },
+  { id: 'h1', label: '一级标题', icon: 'H1', desc: '大尺寸科幻标题', kw: 'h1 heading biaoti 标题 一级' },
+  { id: 'h2', label: '二级标题', icon: 'H2', desc: '中等尺寸副标题', kw: 'h2 heading biaoti 标题 二级' },
+  { id: 'h3', label: '三级标题', icon: 'H3', desc: '小尺寸副标题', kw: 'h3 heading biaoti 标题 三级' },
+  { id: 'bullet', label: '无序列表', icon: '•', desc: '基础的点状列表', kw: 'bullet list liebiao 列表 无序 项目符号' },
+  { id: 'numbered', label: '编号列表', icon: '1.', desc: '自动编号的有序列表', kw: 'numbered num list liebiao 编号 有序 列表' },
+  { id: 'toggle', label: '折叠列表', icon: '▸', desc: '可折叠展开的内容块', kw: 'toggle zhedie 折叠 展开' },
+  { id: 'quote', label: '引用块', icon: '"', desc: '高亮引用的重要文字', kw: 'quote yinyong 引用' },
+  { id: 'callout', label: '标注块', icon: '💡', desc: '带图标的高亮提示框', kw: 'callout biaozhu 标注 callout 提示' },
+  { id: 'divider', label: '分割线', icon: '—', desc: '水平分割线', kw: 'divider hr fengexian 分割线' },
+  { id: 'image', label: '图片媒体', icon: 'IMG', desc: '上传或拖拽图片解析', kw: 'image tupian 图片 媒体' },
+  { id: 'codeblock', label: '代码片段', icon: '</>', desc: '多行语法高亮容器', kw: 'code daima 代码 片段' },
+  { id: 'kanban', label: '看板数据库', icon: '|||', desc: '可视化状态追踪画板', kw: 'kanban kanban 看板 数据库' },
 ];
-const blockTypes = [ { id: 'text', label: '文本' }, { id: 'h1', label: 'H1' }, { id: 'h2', label: 'H2' }, { id: 'quote', label: '引用' } ];
+// 斜杠菜单支持关键字过滤（对齐 Notion：输入 /code 直接定位到代码片段）
+const slashQuery = ref('');
+const filteredSlashOptions = computed(() => {
+  const q = slashQuery.value.trim().toLowerCase();
+  if (!q) return slashOptions;
+  return slashOptions.filter(o => o.label.toLowerCase().includes(q) || o.id.includes(q) || o.kw.includes(q));
+});
 
 // === 拖拽引擎实现 ===
 const handleDragStart = (e: DragEvent, task: Task) => {
+  // 只有从手柄按下才允许「块拖拽」。否则「拖动选中的文字」会冒泡触发 dragstart，
+  // 被本处理器劫持成块拖拽并在 drop 时重排块（实测会打乱文档顺序）——这里直接取消。
+  if (draggableTaskId.value !== task.id) { e.preventDefault(); return; }
   if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', task.id); }
   draggedTaskId.value = task.id; formatMenuConfig.value.isOpen = false;
 };
@@ -450,7 +921,7 @@ const handleDragOver = (e: DragEvent, task: Task) => {
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
   dropPosition.value = e.clientY < rect.top + rect.height / 2 ? 'top' : 'bottom';
 };
-const handleDragLeave = (e: DragEvent, task: Task) => { if (dragOverTaskId.value === task.id) dragOverTaskId.value = null; };
+const handleDragLeave = (_e: DragEvent, task: Task) => { if (dragOverTaskId.value === task.id) dragOverTaskId.value = null; };
 const handleDrop = (e: DragEvent, task: Task) => {
   const draggedId = e.dataTransfer?.getData('text/plain');
   if (!draggedId || draggedId === task.id || !activePage.value) { resetDragState(); return; }
@@ -468,6 +939,91 @@ const handleDrop = (e: DragEvent, task: Task) => {
 };
 const handleDragEnd = () => resetDragState();
 const resetDragState = () => { draggedTaskId.value = null; dragOverTaskId.value = null; draggableTaskId.value = null; };
+
+// === 撤销 / 重做（快照式历史栈） ===
+// 关键：必须自己接管 Cmd/Ctrl+Z。否则浏览器原生 undo 会直接回滚 contenteditable 的 DOM，
+// 与 Vue 的响应式数据分叉，随后任何一次输入都会把错乱的 DOM 写回数据。
+const undoStack = ref<string[]>([]);
+const redoStack = ref<string[]>([]);
+let isRestoring = false;
+const MAX_HISTORY = 100;
+
+function makeDebounce<T extends (...args: any[]) => void>(fn: T, wait: number) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const wrapped = (...args: Parameters<T>) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; fn(...args); }, wait);
+  };
+  return Object.assign(wrapped, { cancel: () => { if (timer) { clearTimeout(timer); timer = null; } } });
+}
+const snapshot = () => JSON.stringify({ pages: pages.value, activePageId: activePageId.value });
+
+const commitHistory = () => {
+  if (isRestoring) return;
+  const snap = snapshot();
+  if (undoStack.value[undoStack.value.length - 1] === snap) return;
+  undoStack.value.push(snap);
+  if (undoStack.value.length > MAX_HISTORY) undoStack.value.shift();
+  redoStack.value = [];
+};
+// 连续打字合并为一条历史记录，避免每个字符一步
+const debouncedCommit = makeDebounce(commitHistory, 800);
+
+const restore = (snap: string) => {
+  isRestoring = true;
+  debouncedCommit.cancel(); // 撤销/重做本身绝不能产生新的历史记录
+  try {
+    const parsed = JSON.parse(snap);
+    pages.value = parsed.pages;
+    if (parsed.activePageId && pages.value.some((p: Page) => p.id === parsed.activePageId)) activePageId.value = parsed.activePageId;
+  } catch { /* 快照损坏则放弃本次回退 */ }
+  nextTick(() => { isRestoring = false; });
+};
+const undo = () => {
+  if (undoStack.value.length === 0) return;
+  const current = snapshot();
+  redoStack.value.push(current);
+  let target = undoStack.value.pop() as string;
+  if (target === current && undoStack.value.length > 0) target = undoStack.value.pop() as string;
+  restore(target);
+};
+const redo = () => {
+  if (redoStack.value.length === 0) return;
+  undoStack.value.push(snapshot());
+  restore(redoStack.value.pop() as string);
+};
+
+// === 标题区 ⇄ 正文区 的光标流转（对齐 Notion） ===
+const titleInputRef = ref<HTMLInputElement | null>(null);
+
+const focusTitle = () => {
+  nextTick(() => {
+    const el = titleInputRef.value;
+    if (!el) return;
+    el.focus();
+    const len = el.value.length;
+    el.setSelectionRange(len, len);
+  });
+};
+
+// 进入正文：优先落到第一个可编辑块，若页面无正文则自动创建首个块
+const focusFirstEditableBlock = (pos: any = 'start') => {
+  if (!activePage.value) return;
+  const tasksList = activePage.value.tasks;
+  const idx = tasksList.findIndex((t: Task) => EDITABLE_TYPES.includes(t.type));
+  if (idx > -1) { setFocusConfig(tasksList[idx].id, pos); return; }
+  const newId = newBlockId();
+  tasksList.unshift({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0 });
+  setFocusConfig(newId, pos);
+};
+
+const handleTitleKeyDown = (e: KeyboardEvent) => {
+  // Notion：标题处 Enter / ↓ / Tab 都会把光标送进正文
+  if (e.key !== 'Enter' && e.key !== 'ArrowDown' && e.key !== 'Tab') return;
+  e.preventDefault();
+  (e.currentTarget as HTMLInputElement).blur();
+  focusFirstEditableBlock('start');
+};
 
 // === 光标引擎 ===
 const setCaretPosition = (el: HTMLElement, pos: any) => {
@@ -494,48 +1050,172 @@ const getCaretPosition = (el: HTMLElement) => {
   return preCaretRange.toString().length;
 };
 
-// 扩展选区到指定元素（支持跨行选择）
-const extendSelectionTo = (el: HTMLElement | undefined, pos: 'start' | 'end') => {
-  if (!el) return;
-  el.focus();
-  
+// === 跨块选区引擎 ===
+// 每个块是独立的 contenteditable（各自一个「编辑宿主」），浏览器对跨宿主的原生选区支持不可靠：
+// 实测 Chromium 下 Selection.toString() 会漏掉中间块，且拖动选中文字会被误判成块拖拽。
+// 因此这里自己维护「逻辑选区」：anchor / focus 均为 { blockId, offset }，再据此重建 DOM Range。
+interface SelPoint { blockId: string; offset: number }
+const selAnchor = ref<SelPoint | null>(null);
+const selFocus = ref<SelPoint | null>(null);
+let isDragSelecting = false;
+// 标记本次按下是否发生过拖动。跨块拖动时 click 会冒泡到共同祖先，
+// 若不加区分会被「点击空白处新建块」的逻辑接管，导致选区被抢焦点销毁。
+let pointerDragged = false;
+
+const blockIndexOf = (id: string) => (activePage.value?.tasks ?? []).findIndex((t: Task) => t.id === id);
+
+// 把 DOM 的 (node, offset) 归一成「块内字符偏移」
+const toBlockOffset = (block: HTMLElement, node: Node, offset: number): number => {
+  const r = document.createRange();
+  r.selectNodeContents(block);
+  try { r.setEnd(node, offset); } catch { return 0; }
+  return r.toString().length;
+};
+
+// 逻辑偏移 → Range 边界（只在单一宿主内定位，避免跨宿主的不确定行为）
+const setBoundary = (range: Range, block: HTMLElement, offset: number, isStart: boolean) => {
+  const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+  let remaining = offset;
+  let node: Text | null = null;
+  while (walker.nextNode()) {
+    const t = walker.currentNode as Text;
+    if (remaining <= t.length) { node = t; break; }
+    remaining -= t.length;
+    node = t; // 兜底：指向最后一个文本节点
+  }
+  if (!node) {
+    // 无文本节点（空块）：边界落在块本身
+    if (isStart) range.setStart(block, 0); else range.setEnd(block, 0);
+    return;
+  }
+  if (isStart) range.setStart(node, Math.min(remaining, node.length));
+  else range.setEnd(node, Math.min(remaining, node.length));
+};
+
+// 由屏幕坐标解析出 { blockId, offset }
+const caretInfoFromPoint = (x: number, y: number): SelPoint | null => {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null;
+  const block = el?.closest('.ce-block') as HTMLElement | null;
+  if (!block || !block.dataset.taskId) return null;
+  const blockId = block.dataset.taskId;
+  const anyDoc = document as any;
+  let node: Node | null = null; let offset = 0;
+  if (typeof anyDoc.caretPositionFromPoint === 'function') {
+    const pos = anyDoc.caretPositionFromPoint(x, y);
+    if (pos) { node = pos.offsetNode; offset = pos.offset; }
+  } else if (typeof anyDoc.caretRangeFromPoint === 'function') {
+    const r = anyDoc.caretRangeFromPoint(x, y);
+    if (r) { node = r.startContainer; offset = r.startOffset; }
+  }
+  if (!node || !block.contains(node)) {
+    // 指针落在块的空白处：按 y 判断落在文本上方还是下方
+    const rect = block.getBoundingClientRect();
+    return { blockId, offset: y < rect.top + rect.height / 2 ? 0 : (block.textContent || '').length };
+  }
+  return { blockId, offset: toBlockOffset(block, node, offset) };
+};
+
+// 依据逻辑 anchor / focus 重建选区（自动按文档顺序校正首尾）
+const applyLogicalSelection = (a: SelPoint, f: SelPoint) => {
+  const elA = inputRefs.value[a.blockId]; const elF = inputRefs.value[f.blockId];
+  if (!elA || !elF) return;
+  const ia = blockIndexOf(a.blockId); const ifr = blockIndexOf(f.blockId);
+  if (ia < 0 || ifr < 0) return;
+  let s: { el: HTMLElement; off: number }; let e: { el: HTMLElement; off: number };
+  if (ia === ifr) {
+    s = { el: elA, off: Math.min(a.offset, f.offset) };
+    e = { el: elA, off: Math.max(a.offset, f.offset) };
+  } else if (ia < ifr) {
+    s = { el: elA, off: a.offset }; e = { el: elF, off: f.offset };
+  } else {
+    s = { el: elF, off: f.offset }; e = { el: elA, off: a.offset };
+  }
+  const range = document.createRange();
+  try {
+    setBoundary(range, s.el, s.off, true);
+    setBoundary(range, e.el, e.off, false);
+  } catch { return; }
   const sel = window.getSelection();
   if (!sel) return;
-  
-  // 获取目标位置
-  const targetRange = document.createRange();
-  if (pos === 'start') {
-    targetRange.setStart(el, 0);
-    targetRange.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+};
+
+// 当前是否存在跨块（或块内）非空选区
+const hasTextSelection = () => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+  return sel.getRangeAt(0).toString().length > 0;
+};
+
+// 从当前 DOM 选区反推出逻辑端点（键盘 Shift+方向键造出的选区也走这条路）
+const getLogicalSelection = (): { a: SelPoint; f: SelPoint } | null => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  const r = sel.getRangeAt(0);
+  const toBlock = (n: Node) => {
+    const el = (n.nodeType === 3 ? n.parentElement : n as HTMLElement) as HTMLElement | null;
+    return el?.closest('.ce-block') as HTMLElement | null;
+  };
+  const b1 = toBlock(r.startContainer); const b2 = toBlock(r.endContainer);
+  if (!b1?.dataset.taskId || !b2?.dataset.taskId) return null;
+  return {
+    a: { blockId: b1.dataset.taskId, offset: toBlockOffset(b1, r.startContainer, r.startOffset) },
+    f: { blockId: b2.dataset.taskId, offset: toBlockOffset(b2, r.endContainer, r.endOffset) },
+  };
+};
+
+// 键盘扩展选区：锚点沿用已有选区的起点，没有则以当前光标为锚点。
+// 注意：绝不能先 focus() 再读选区——focus 会清掉选区导致锚点丢失（原 extendSelectionTo 正是踩了这个坑）。
+const extendSelectionByKeyboard = (fromId: string, fromPos: number, targetId: string, targetOffset: number) => {
+  let anchor = selAnchor.value;
+  const stillValid = anchor && blockIndexOf(anchor.blockId) >= 0 && hasTextSelection();
+  const safeAnchor: SelPoint = stillValid && anchor ? anchor : { blockId: fromId, offset: fromPos };
+  const focus: SelPoint = { blockId: targetId, offset: targetOffset };
+  selAnchor.value = safeAnchor; selFocus.value = focus;
+  applyLogicalSelection(safeAnchor, focus);
+};
+
+// 删除逻辑选区覆盖的内容：中间块整块删除，首尾块保留未选中的部分并合并
+const deleteSelectionContents = (): boolean => {
+  const logical = getLogicalSelection();
+  const a = logical?.a ?? selAnchor.value; const f = logical?.f ?? selFocus.value;
+  if (!a || !f) return false;
+  if (a.blockId === f.blockId && a.offset === f.offset) return false;
+  const list = activePage.value?.tasks;
+  if (!list) return false;
+  const ia = blockIndexOf(a.blockId); const ifr = blockIndexOf(f.blockId);
+  if (ia < 0 || ifr < 0) return false;
+  const lo = ia < ifr ? a : f;
+  const hi = ia < ifr ? f : a;
+  const firstIdx = Math.min(ia, ifr); const lastIdx = Math.max(ia, ifr);
+  const firstTask = list[firstIdx]; const lastTask = list[lastIdx];
+  const firstEl = inputRefs.value[firstTask.id]; const lastEl = inputRefs.value[lastTask.id];
+  if (!firstEl || !lastEl) return false;
+
+  // 块内删除（单一宿主内操作，安全）
+  const cutBlock = (el: HTMLElement, from: number, to: number) => {
+    const r = document.createRange();
+    setBoundary(r, el, from, true);
+    setBoundary(r, el, to, false);
+    r.deleteContents();
+    return el.innerHTML;
+  };
+  if (firstIdx === lastIdx) {
+    cutBlock(firstEl, Math.min(lo.offset, hi.offset), Math.max(lo.offset, hi.offset));
+    updateTask(firstTask.id, { content: firstEl.innerHTML });
+    setFocusConfig(firstTask.id, Math.min(lo.offset, hi.offset));
   } else {
-    targetRange.setEnd(el, el.childNodes.length);
-    targetRange.collapse(false);
+    const firstLen = (firstEl.textContent || '').length;
+    cutBlock(firstEl, lo.offset, firstLen);            // 起点块：删到行尾
+    cutBlock(lastEl, 0, hi.offset);                     // 终点块：删到选区末端
+    const merged = firstEl.innerHTML + lastEl.innerHTML;
+    updateTask(firstTask.id, { content: merged });
+    list.splice(firstIdx + 1, lastIdx - firstIdx);      // 移除中间块与终点块
+    setFocusConfig(firstTask.id, lo.offset);
   }
-  
-  // 如果有现有选区，扩展它；否则从当前光标位置开始选区
-  if (sel.rangeCount > 0) {
-    const existingRange = sel.getRangeAt(0);
-    const newRange = document.createRange();
-    
-    // 比较位置，确定锚点和焦点
-    const comparison = existingRange.compareBoundaryPoints(Range.END_TO_END, targetRange);
-    
-    if (comparison <= 0) {
-      // 目标在现有选区之后或相同位置：锚点不变，焦点移到目标
-      newRange.setStart(existingRange.startContainer, existingRange.startOffset);
-      newRange.setEnd(targetRange.endContainer, targetRange.endOffset);
-    } else {
-      // 目标在现有选区之前：锚点变为原焦点，焦点移到目标
-      newRange.setStart(targetRange.startContainer, targetRange.startOffset);
-      newRange.setEnd(existingRange.endContainer, existingRange.endOffset);
-    }
-    
-    sel.removeAllRanges();
-    sel.addRange(newRange);
-  } else {
-    // 无现有选区，创建一个从光标到目标的选区
-    sel.addRange(targetRange);
-  }
+  selAnchor.value = null; selFocus.value = null;
+  return true;
 };
 
 // 状态同步
@@ -544,7 +1224,7 @@ watch(() => activePage.value?.tasks, () => {
     if (!activePage.value) return;
     activePage.value.tasks.forEach(task => {
       const el = inputRefs.value[task.id]; 
-      if (el && el.innerHTML !== task.content && ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet'].includes(task.type)) {
+      if (el && el.innerHTML !== task.content && EDITABLE_TYPES.includes(task.type)) {
           el.innerHTML = task.content; 
       }
     });
@@ -566,38 +1246,256 @@ const deleteTask = (id: string) => { if (!activePage.value) return; activePage.v
 const duplicateTask = (id: string) => {
   if (!activePage.value) return;
   const idx = activePage.value.tasks.findIndex((t: Task) => t.id === id);
-  if (idx !== -1) { const newId = Date.now().toString(); activePage.value.tasks.splice(idx + 1, 0, { ...activePage.value.tasks[idx], id: newId }); }
+  if (idx !== -1) { const newId = newBlockId(); activePage.value.tasks.splice(idx + 1, 0, { ...activePage.value.tasks[idx], id: newId }); }
   actionMenuConfig.value.isOpen = false;
+};
+// 上下移动块（Cmd/Ctrl + Shift + ↑/↓）
+const moveBlock = (index: number, dir: number) => {
+  if (!activePage.value) return;
+  const list = activePage.value.tasks;
+  const target = index + dir;
+  if (index < 0 || target < 0 || target >= list.length) return;
+  const [item] = list.splice(index, 1);
+  list.splice(target, 0, item);
 };
 
 // 拦截文本输入 (Markdown 与 Slash)
 const handleInput = (e: Event, task: Task) => {
   const target = e.currentTarget as HTMLElement; let htmlVal = target.innerHTML; let textVal = target.textContent || '';
   if (htmlVal === '<br>' || htmlVal === '<div><br></div>') { target.innerHTML = ''; htmlVal = ''; textVal = ''; }
+
+  // 中文输入法组合期间只同步内容，绝不触发 Markdown 转换 / Slash 菜单，避免把未上屏的拼音当正式输入
+  if (isComposing.value || (e as InputEvent).isComposing) { updateTask(task.id, { content: htmlVal }); return; }
+
   const normalizedText = textVal.replace(/\u00A0/g, ' '); 
-  const triggerShortcut = (type: string) => { updateTask(task.id, { type, content: '' }); setFocusConfig(task.id, 'start'); activeSlashTaskId.value = null; };
-  if (normalizedText === '/') {
-    activeSlashTaskId.value = task.id; slashIndex.value = 0; updateTask(task.id, { content: htmlVal });
+  const triggerShortcut = (type: string) => {
+    updateTask(task.id, { type, content: '', payload: makePayload(type) });
+    activeSlashTaskId.value = null; slashQuery.value = '';
+    if (EDITABLE_TYPES.includes(type)) setFocusConfig(task.id, 'start'); else focusAfterBlock(task.id);
+  };
+  // [[ 唤出页面链接菜单（对齐 Notion 的页面引用）
+  const mentionMatch = /\[\[([^\[\]]*)$/.exec(normalizedText);
+  if (mentionMatch) {
+    mentionTaskId.value = task.id;
+    mentionQuery.value = mentionMatch[1];
+    if (mentionIndex.value >= filteredMentionPages.value.length) mentionIndex.value = 0;
+    updateTask(task.id, { content: htmlVal });
     nextTick(() => { slashMenuPosition.value = (window.innerHeight - target.getBoundingClientRect().bottom < 300) ? 'top' : 'bottom'; });
-  } else if (activeSlashTaskId.value === task.id && !normalizedText.includes('/')) { activeSlashTaskId.value = null; updateTask(task.id, { content: htmlVal }); } 
+    return;
+  }
+
+  // Slash 菜单：行首 / 唤起，其后内容作为过滤关键字（对齐 Notion 的搜索式斜杠菜单）
+  const slashMatch = /^\/([^\n]*)$/.exec(normalizedText);
+  if (slashMatch) {
+    activeSlashTaskId.value = task.id;
+    slashQuery.value = slashMatch[1];
+    if (slashIndex.value >= filteredSlashOptions.value.length) slashIndex.value = 0;
+    updateTask(task.id, { content: htmlVal });
+    nextTick(() => { slashMenuPosition.value = (window.innerHeight - target.getBoundingClientRect().bottom < 300) ? 'top' : 'bottom'; });
+  } else if (activeSlashTaskId.value === task.id) { activeSlashTaskId.value = null; slashQuery.value = ''; updateTask(task.id, { content: htmlVal }); }
+  else if (mentionTaskId.value === task.id) { closeMention(); updateTask(task.id, { content: htmlVal }); }
   else if (normalizedText === '[] ') triggerShortcut('todo'); else if (normalizedText === '# ') triggerShortcut('h1'); else if (normalizedText === '## ') triggerShortcut('h2');
-  else if (normalizedText === '### ') triggerShortcut('h3'); else if (normalizedText === '- ') triggerShortcut('bullet'); else if (normalizedText === '" ') triggerShortcut('quote');
+  else if (normalizedText === '### ') triggerShortcut('h3'); else if (normalizedText === '- ') triggerShortcut('bullet'); else if (normalizedText === '* ') triggerShortcut('bullet');
+  else if (normalizedText === '1. ') triggerShortcut('numbered'); else if (normalizedText === '--- ') triggerShortcut('divider'); else if (normalizedText === '> ') triggerShortcut('toggle');
+  else if (normalizedText === '" ') triggerShortcut('quote');
+  else if (applyInlineMarkdown(target, task)) { /* 行内 Markdown 已转换并同步 */ }
   else updateTask(task.id, { content: htmlVal });
+};
+
+// 行内 Markdown 即时转换（对齐 Notion：敲 **粗体** / `代码` / ~~删除线~~ 当场变成富文本）
+// 只改写「光标所在的那一个文本节点」，不重建 innerHTML，避免破坏块内已有的其它格式
+const applyInlineMarkdown = (target: HTMLElement, task: Task): boolean => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return false;
+  const range = sel.getRangeAt(0);
+  if (!range.collapsed) return false;
+  const node = range.endContainer;
+  if (node.nodeType !== 3) return false; // 光标不在纯文本节点上时不处理
+  const offset = range.endOffset;
+  const before = (node.textContent || '').slice(0, offset);
+  const rules: Array<[RegExp, string]> = [
+    [/\*\*([^*\n]+)\*\*$/, 'strong'],
+    [/~~([^~\n]+)~~$/, 'del'],
+    [/`([^`\n]+)`$/, 'code'],
+    [/(?<!\*)\*([^*\n]+)\*$/, 'em'],
+  ];
+  for (const [re, tag] of rules) {
+    const m = re.exec(before);
+    if (!m) continue;
+    const start = offset - m[0].length;
+    if (start < 0) continue;
+    try {
+      const r = document.createRange();
+      r.setStart(node, start);
+      r.setEnd(node, offset);
+      r.deleteContents();
+      const el = document.createElement(tag);
+      el.textContent = m[1];
+      r.insertNode(el);
+      const after = document.createRange();
+      after.setStartAfter(el); after.collapse(true);
+      sel.removeAllRanges(); sel.addRange(after);
+      updateTask(task.id, { content: target.innerHTML });
+      return true;
+    } catch { return false; }
+  }
+  return false;
+};
+
+// 极简 HTML 转义：粘贴进来的纯文本不能直接当 innerHTML 用
+const escapeHtml = (str: string) => str.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c] as string));
+
+// 把选区包进 <code>（对齐 Notion 的 Cmd/Ctrl + E 行内代码，execCommand 没有对应命令）
+const wrapInlineCode = () => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  const code = document.createElement('code');
+  try { code.appendChild(range.extractContents()); } catch { code.textContent = range.toString(); }
+  range.deleteContents();
+  range.insertNode(code);
+  const after = document.createRange();
+  after.setStartAfter(code); after.collapse(true);
+  sel.removeAllRanges(); sel.addRange(after);
+};
+
+// 块内软换行（对齐 Notion 的 Shift+Enter：只换行，不拆块）
+const insertSoftBreak = () => {
+  if (document.execCommand('insertLineBreak')) return;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return;
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+  const br = document.createElement('br');
+  range.insertNode(br);
+  range.setStartAfter(br); range.collapse(true);
+  sel.removeAllRanges(); sel.addRange(range);
+};
+
+// 多行粘贴自动拆块（对齐 Notion：多行文本粘贴后按行拆成多个块）
+const handlePaste = (e: ClipboardEvent, task: Task, index: number) => {
+  if (!activePage.value) return;
+  index = realIndexOf(task);
+  const raw = e.clipboardData?.getData('text/plain') ?? '';
+  const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  if (normalized.indexOf('\n') === -1) return; // 单行交给浏览器默认行为，保留富文本
+  e.preventDefault();
+
+  const target = e.currentTarget as HTMLElement;
+  const pos = getCaretPosition(target);
+  const currentText = target.textContent || '';
+  const before = currentText.slice(0, pos);
+  const after = currentText.slice(pos);
+
+  let lines = normalized.split('\n');
+  while (lines.length > 1 && lines[lines.length - 1] === '') lines.pop(); // 丢弃末尾空行
+
+  const inheritType = ['bullet', 'todo'].includes(task.type) ? task.type : 'text';
+  const blocks = lines.map((line, i) => {
+    let content = escapeHtml(line);
+    if (i === 0) content = before + content;
+    if (i === lines.length - 1) content = content + after;
+    return content;
+  });
+
+  updateTask(task.id, { content: blocks[0] });
+  const rest = blocks.slice(1).map((content) => ({
+    id: newBlockId(),
+    type: inheritType,
+    content,
+    completed: false,
+    indentLevel: task.indentLevel || 0,
+  }));
+  activePage.value.tasks.splice(index + 1, 0, ...rest);
+  if (rest.length > 0) setFocusConfig(rest[rest.length - 1].id, 'end');
 };
 
 // 键盘高级拦截 (Tab 层级引擎 & 级联退格)
 const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
   if (!activePage.value) return; const tasksList = activePage.value.tasks;
+  index = realIndexOf(task); // 折叠会跳过块，必须以数据索引为准
+
+  // IME 组合期（拼音候选尚未上屏）不拦截任何按键，否则会吞掉候选词确认、方向键与换行
+  if (e.isComposing || isComposing.value) return;
+
+  // 块选择态：整块被选中后，方向键扩展选区、Enter 回到编辑、退格删除、Cmd+D 复制
+  if (blockSelectMode.value) {
+    if (e.key === 'ArrowUp') { e.preventDefault(); extendBlockSelection(-1); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); extendBlockSelection(1); return; }
+    if (e.key === 'Escape') { e.preventDefault(); clearBlockSelection(); setFocusConfig(task.id, 'end'); return; }
+    if (e.key === 'Enter') { e.preventDefault(); clearBlockSelection(); setFocusConfig(task.id, 'end'); return; }
+    if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); deleteSelectedBlocks(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelectedBlocks(); return; }
+    if (e.key === 'Tab') { e.preventDefault(); const sel = [...selectedTaskIds.value]; sel.forEach(id => { const t = tasksList.find((x: Task) => x.id === id); if (t) updateTask(id, { indentLevel: Math.max(0, (t.indentLevel || 0) + (e.shiftKey ? -1 : 1)) }); }); return; }
+  }
+  // Esc 进入块选择态（光标处无选区时）
+  if (e.key === 'Escape') {
+    const sel = window.getSelection();
+    if (!sel || sel.toString().length === 0) { e.preventDefault(); selectSingleBlock(task.id); }
+    return;
+  }
+
+  // 提及菜单拦截
+  if (mentionTaskId.value === task.id) {
+    const mList = filteredMentionPages.value;
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (mList.length) mentionIndex.value = (mentionIndex.value + 1) % mList.length; return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); if (mList.length) mentionIndex.value = (mentionIndex.value - 1 + mList.length) % mList.length; return; }
+    if (e.key === 'Enter') { e.preventDefault(); insertPageLink(task.id, mList[mentionIndex.value]?.id ?? null); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closeMention(); return; }
+  }
 
   // Slash 拦截
   if (activeSlashTaskId.value === task.id) {
-    if (e.key === 'ArrowDown') { e.preventDefault(); slashIndex.value = (slashIndex.value + 1) % slashOptions.length; scrollSlashIntoView(); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); slashIndex.value = (slashIndex.value - 1 + slashOptions.length) % slashOptions.length; scrollSlashIntoView(); return; }
-    if (e.key === 'Enter') { e.preventDefault(); executeSlashCommand(task.id, slashOptions[slashIndex.value].id); return; }
-    if (e.key === 'Escape') { activeSlashTaskId.value = null; return; }
+    const list = filteredSlashOptions.value;
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (list.length) slashIndex.value = (slashIndex.value + 1) % list.length; scrollSlashIntoView(); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); if (list.length) slashIndex.value = (slashIndex.value - 1 + list.length) % list.length; scrollSlashIntoView(); return; }
+    if (e.key === 'Enter') { e.preventDefault(); if (list.length) executeSlashCommand(task.id, list[slashIndex.value].id); return; }
+    if (e.key === 'Escape') { activeSlashTaskId.value = null; slashQuery.value = ''; return; }
   }
 
   const target = e.currentTarget as HTMLElement; const textContent = target.textContent || ''; const currentPos = getCaretPosition(target); 
+
+  // 存在（跨块）选区时：退格 / 删除 / 可打印字符先删掉选区，再走原逻辑。
+  // 否则原生行为只作用在焦点所在的单个块内，另一部分选区会残留。
+  if (hasTextSelection()) {
+    const isPrintable = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); deleteSelectionContents(); return; }
+    if (isPrintable) { deleteSelectionContents(); return; } // 不 preventDefault，让字符正常输入
+  }
+
+  // 撤销 / 重做：必须优先于浏览器原生 undo 拦截
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) redo(); else undo();
+    return;
+  }
+
+  // 块级操作快捷键（对齐 Notion）
+  if (e.ctrlKey || e.metaKey) {
+    const k = e.key.toLowerCase();
+    if (k === 'd' && !e.shiftKey) { e.preventDefault(); duplicateTask(task.id); return; }
+    if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); moveBlock(index, e.key === 'ArrowUp' ? -1 : 1); return; }
+    if (e.key === 'Enter' && task.type === 'todo') { e.preventDefault(); updateTask(task.id, { completed: !task.completed }); return; }
+  }
+
+  // 行内格式快捷键（对齐 Notion：Cmd/Ctrl + B / I / U / E，Cmd/Ctrl + Shift + S 删除线）
+  if (e.ctrlKey || e.metaKey) {
+    const key = e.key.toLowerCase();
+    if (key === 'e' && !e.shiftKey && !e.altKey) {
+      e.preventDefault(); wrapInlineCode(); updateTask(task.id, { content: target.innerHTML }); return;
+    }
+    if (key === 's' && e.shiftKey && !e.altKey) {
+      e.preventDefault(); document.execCommand('strikeThrough'); updateTask(task.id, { content: target.innerHTML }); return;
+    }
+    const formatMap: Record<string, string> = { b: 'bold', i: 'italic', u: 'underline' };
+    const cmd = formatMap[key];
+    if (cmd && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      document.execCommand(cmd);
+      updateTask(task.id, { content: target.innerHTML });
+      return;
+    }
+  }
 
   // Ctrl+A：选中所有行的所有内容
   if (e.key === 'a' && (e.ctrlKey || e.metaKey)) {
@@ -634,8 +1532,19 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
   // Enter 键：在任意位置拆分当前行为两行
   if (e.key === 'Enter') {
     e.preventDefault();
-    const newType = ['bullet', 'todo'].includes(task.type) ? task.type : 'text';
-    const newId = Date.now().toString();
+
+    // Notion：Shift+Enter 是块内软换行，不拆块
+    if (e.shiftKey) { insertSoftBreak(); updateTask(task.id, { content: target.innerHTML }); return; }
+
+    // Notion「逃生舱」：空的列表 / 待办块按 Enter 不再续接同类块，而是降级为普通段落
+    if (textContent === '' && ['bullet', 'todo', 'numbered'].includes(task.type)) {
+      updateTask(task.id, { type: 'text', completed: false });
+      setFocusConfig(task.id, 'start');
+      return;
+    }
+
+    const newType = ['bullet', 'todo', 'numbered'].includes(task.type) ? task.type : 'text';
+    const newId = newBlockId();
     
     // 从 DOM 获取当前行的实际内容和光标位置
     const actualText = target.textContent || '';
@@ -646,14 +1555,21 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
     updateTask(task.id, { content: beforeCursor });
     
     // 在当前行之后插入新行，内容为光标后的部分
-    tasksList.splice(index + 1, 0, { 
-      id: newId, 
-      type: newType, 
-      content: afterCursor, 
-      completed: false, 
-      indentLevel: task.indentLevel 
+    tasksList.splice(index + 1, 0, {
+      id: newId,
+      type: newType,
+      content: afterCursor,
+      completed: false,
+      indentLevel: task.indentLevel,
+      // prevId 链：新块的「前一个」是当前块，原后继块的「前一个」变成新块。
+      // 三端并发插入时靠这条链确定性重建顺序（见 useSync.orderTasks）
+      prevId: task.id,
     });
-    
+    const nextBlock = tasksList[index + 2];
+    if (nextBlock) updateTask(nextBlock.id, { prevId: newId });
+    // 一次性重写整条链，兜底修复历史数据里缺失/错乱的 prevId
+    tasksList.splice(0, tasksList.length, ...writePrevIds(tasksList));
+
     // 光标定位到新行开头
     setFocusConfig(newId, 'start');
   } 
@@ -665,6 +1581,8 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
       updateTask(task.id, { indentLevel: (task.indentLevel || 0) - 1 });
       return;
     }
+    // Notion：正文第一个块行首退格，光标回到标题末尾（空块则先删掉再回标题）
+    if (index === 0) { e.preventDefault(); if (textContent === '') deleteTask(task.id); focusTitle(); return; }
     // 无缩进且非首行时，合并到上一行末尾
     if (index > 0) {
       e.preventDefault();
@@ -700,25 +1618,26 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
     }
   }
   // 方向键：支持 Shift 跨行选区
-  else if (e.key === 'ArrowUp') {
+  else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    const dir = e.key === 'ArrowUp' ? -1 : 1;
+    // 已有选区时以「逻辑焦点所在块」为基准继续扩展，否则连续按同一个键会原地踏步
+    const focusValid = selFocus.value && blockIndexOf(selFocus.value.blockId) >= 0 && hasTextSelection();
+    const baseIdx = focusValid ? blockIndexOf(selFocus.value!.blockId) : index;
+    const targetIdx = baseIdx + dir;
+
+    // Notion：第一个块按 ↑ 直接回到标题（首块无上一行，原实现会越界报错）
+    if (targetIdx < 0) { if (!e.shiftKey) { e.preventDefault(); focusTitle(); } return; }
+    if (targetIdx >= tasksList.length) return; // 末块无下一行，避免越界
+
     e.preventDefault();
-    const targetId = tasksList[index - 1].id;
+    const targetId = tasksList[targetIdx].id;
     const targetEl = inputRefs.value[targetId];
     if (e.shiftKey) {
-      // 跨行扩展选区到上一行末尾
-      extendSelectionTo(targetEl, 'end');
+      // 跨行扩展选区：向下取目标行开头，向上取目标行末尾
+      const targetOffset = dir > 0 ? 0 : (targetEl?.textContent || '').length;
+      extendSelectionByKeyboard(task.id, currentPos, targetId, targetOffset);
     } else {
-      setFocusConfig(targetId, currentPos);
-    }
-  }
-  else if (e.key === 'ArrowDown') {
-    e.preventDefault();
-    const targetId = tasksList[index + 1].id;
-    const targetEl = inputRefs.value[targetId];
-    if (e.shiftKey) {
-      // 跨行扩展选区到下一行开头
-      extendSelectionTo(targetEl, 'start');
-    } else {
+      selAnchor.value = null; selFocus.value = null;
       setFocusConfig(targetId, currentPos);
     }
   }
@@ -729,8 +1648,9 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
       const targetEl = inputRefs.value[targetId];
       if (e.shiftKey) {
         // 跨行扩展选区到上一行末尾
-        extendSelectionTo(targetEl, 'end');
+        extendSelectionByKeyboard(task.id, currentPos, targetId, (targetEl?.textContent || '').length);
       } else {
+        selAnchor.value = null; selFocus.value = null;
         setFocusConfig(targetId, 'end');
       }
     }
@@ -739,27 +1659,43 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
     if (currentPos === textContent.length && index < tasksList.length - 1) {
       e.preventDefault();
       const targetId = tasksList[index + 1].id;
-      const targetEl = inputRefs.value[targetId];
       if (e.shiftKey) {
         // 跨行扩展选区到下一行开头
-        extendSelectionTo(targetEl, 'start');
+        extendSelectionByKeyboard(task.id, currentPos, targetId, 0);
       } else {
+        selAnchor.value = null; selFocus.value = null;
         setFocusConfig(targetId, 'start');
       }
     }
   }
 };
 
+// 各块类型的 payload 初始化
+const makePayload = (newType: string) => {
+  if (newType === 'codeblock') return { language: 'javascript', code: '' };
+  if (newType === 'image') return { url: '' };
+  if (newType === 'toggle') return { collapsed: false };
+  if (newType === 'callout') return { icon: '💡' };
+  if (newType === 'kanban') return { columns: [{id:'c1',title:'待办',cards:[]}, {id:'c2',title:'进行中',cards:[]}, {id:'c3',title:'已完成',cards:[]}] };
+  return {};
+};
+
+// 不可编辑块（如分割线）转换后，把光标送到它的下一块，没有则新建
+const focusAfterBlock = (taskId: string) => {
+  if (!activePage.value) return;
+  const idx = realIndexOf({ id: taskId } as Task);
+  const next = activePage.value.tasks[idx + 1];
+  if (next && EDITABLE_TYPES.includes(next.type)) setFocusConfig(next.id, 'start');
+  else insertTask(taskId, 'below');
+};
+
 // 触发多媒体与复杂块的挂载逻辑
 const executeSlashCommand = (taskId: string, newType: string) => { 
-  const payloadInit: any = {};
-  if (newType === 'codeblock') Object.assign(payloadInit, { language: 'javascript', code: '' });
-  if (newType === 'image') Object.assign(payloadInit, { url: '' });
-  if (newType === 'kanban') Object.assign(payloadInit, { columns: [{id:'c1',title:'待办',cards:[]}, {id:'c2',title:'进行中',cards:[]}, {id:'c3',title:'已完成',cards:[]}] });
-  
-  updateTask(taskId, { type: newType, content: '', payload: payloadInit }); 
+  updateTask(taskId, { type: newType, content: '', payload: makePayload(newType) }); 
   activeSlashTaskId.value = null; 
-  if (['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet'].includes(newType)) setFocusConfig(taskId, 'start'); 
+  slashQuery.value = '';
+  if (EDITABLE_TYPES.includes(newType)) setFocusConfig(taskId, 'start'); 
+  else focusAfterBlock(taskId);
 };
 const scrollSlashIntoView = () => { nextTick(() => { const el = slashItemRefs.value[slashIndex.value]; if (el) el.scrollIntoView({ block: 'nearest' }); }); };
 
@@ -783,7 +1719,7 @@ const handleGlobalDrop = (e: DragEvent) => {
       reader.onload = (event) => {
         if (activePage.value) {
           activePage.value.tasks.push({
-             id: Date.now().toString(), type: 'image', content: '', completed: false, indentLevel: 0,
+             id: newBlockId(), type: 'image', content: '', completed: false, indentLevel: 0,
              payload: { url: event.target?.result }
           });
         }
@@ -804,19 +1740,22 @@ const insertTabInCode = (e: KeyboardEvent, task: Task) => {
 };
 
 // Kanban API
-const addKanbanCard = (e: Event, task: Task, col: any) => {
+const addKanbanCard = (e: Event, _task: Task, col: any) => {
    const val = (e.target as HTMLInputElement).value;
-   if(val.trim()) { col.cards.push({ id: Date.now().toString(), text: val }); (e.target as HTMLInputElement).value = ''; saveTasks(); }
+   if(val.trim()) { col.cards.push({ id: newBlockId(), text: val }); (e.target as HTMLInputElement).value = ''; }
 };
-const deleteKanbanCard = (task: Task, col: any, cardIdx: number) => {
-   col.cards.splice(cardIdx, 1); saveTasks();
+const deleteKanbanCard = (_task: Task, col: any, cardIdx: number) => {
+   col.cards.splice(cardIdx, 1);
 };
 
 const handleEmptyClick = (e: MouseEvent) => {
-  if (!activePage.value) return; if ((e.target as HTMLElement).closest('.task-item-container') || (e.target as HTMLElement).closest('.fixed')) return;
+  if (!activePage.value) return;
+  if ((e.target as HTMLElement).closest('.task-item-container') || (e.target as HTMLElement).closest('.fixed')) return;
+  // 跨块拖拽选区 / 已有选区时，绝不新建块或抢焦点（click 会冒泡到本容器）
+  if (pointerDragged || hasTextSelection()) return;
   const tasksList = activePage.value.tasks; const lastTask = tasksList[tasksList.length - 1];
   if (lastTask && lastTask.content === '' && ['text', 'todo'].includes(lastTask.type)) setFocusConfig(lastTask.id, 'end');
-  else { const newId = Date.now().toString(); tasksList.push({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0 }); setFocusConfig(newId, 'start'); }
+  else { const newId = newBlockId(); tasksList.push({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0 }); setFocusConfig(newId, 'start'); }
 };
 // 点击+号按钮的处理函数（使用mousedown避免与拖拽冲突）
 let insertClickHandled = false;
@@ -843,7 +1782,7 @@ const insertTask = (targetId: string, position: 'above' | 'below' = 'below') => 
   if (!activePage.value) return;
   const idx = activePage.value.tasks.findIndex((t: Task) => t.id === targetId);
   if (idx === -1) return;
-  const newId = Date.now().toString();
+  const newId = newBlockId();
   const insertIdx = position === 'above' ? idx : idx + 1;
   const targetTask = activePage.value.tasks[idx];
   activePage.value.tasks.splice(insertIdx, 0, {
@@ -858,7 +1797,18 @@ const insertTask = (targetId: string, position: 'above' | 'below' = 'below') => 
 };
 
 const openActionMenu = (e: MouseEvent, taskId: string) => { e.stopPropagation(); actionMenuConfig.value = { isOpen: true, x: (e.currentTarget as HTMLElement).getBoundingClientRect().left, y: (e.currentTarget as HTMLElement).getBoundingClientRect().bottom + 4, taskId }; };
-const handleActionCommand = (type: string) => { updateTask(actionMenuConfig.value.taskId, { type }); actionMenuConfig.value.isOpen = false; };
+// 触屏：由 touch 坐标直接定位菜单（e.currentTarget 在 touch 事件里拿不到可靠元素）
+const openActionMenuAtTouch = (taskId: string, e: TouchEvent) => {
+  e.stopPropagation();
+  const t = e.touches[0];
+  if (!t) return;
+  actionMenuConfig.value = { isOpen: true, x: Math.round(t.clientX), y: Math.round(t.clientY), taskId };
+};
+const actionMenuTask = computed(() => activePage.value?.tasks.find((t: Task) => t.id === actionMenuConfig.value.taskId) ?? null);
+const handleActionCommand = (type: string) => {
+  updateTask(actionMenuConfig.value.taskId, { type, payload: makePayload(type) });
+  actionMenuConfig.value.isOpen = false;
+};
 
 // 样式与提示
 const getTextClass = (task: Task) => {
@@ -866,10 +1816,14 @@ const getTextClass = (task: Task) => {
   if (task.type === 'h2') return 'text-xl font-bold font-["Rajdhani",sans-serif] text-[#e5e7eb]';
   if (task.type === 'h3') return 'text-lg font-bold font-["Rajdhani",sans-serif] text-[#6b7280]';
   if (task.type === 'quote') return 'italic text-[#ffb000]/90';
+  if (task.type === 'toggle') return 'text-[15px] font-medium text-[#00f0ff]/80';
   if (task.completed && task.type === 'todo') return 'text-[15px] line-through text-[#6b7280]';
   return 'text-[15px] text-[#e5e7eb]';
 };
-const getPlaceholder = (type: string) => { if (type === 'h1') return '标题 1'; if (type === 'h2') return '标题 2'; if (type === 'text') return "输入 '/' 唤出命令菜单..."; return '...'; };
+const getPlaceholder = (type: string) => { if (type === 'h1') return '标题 1'; if (type === 'h2') return '标题 2'; if (type === 'h3') return '标题 3'; if (type === 'callout') return '写点提示…'; if (type === 'text') return "输入 '/' 唤出命令菜单..."; return '...'; };
+
+// 供 App.vue 的备份工具栏调用
+defineExpose({ exportMarkdown });
 </script>
 
 <style scoped>
@@ -877,11 +1831,19 @@ const getPlaceholder = (type: string) => { if (type === 'h1') return '标题 1';
 .ce-block i, .ce-block em { font-style: italic; color: #ffb000; }
 .ce-block u { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(0, 240, 255, 0.6); }
 .ce-block strike, .ce-block del { text-decoration: line-through; color: #6b7280; opacity: 0.8; }
+/* 浮动格式工具栏 */
+.ft-btn { display: flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 2px; color: #e5e7eb; font-size: 13px; transition: all 0.15s; }
+.ft-btn:hover { background: #1e2126; color: #00f0ff; }
 .ce-block a { color: #00f0ff; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; transition: all 0.2s; }
 .ce-block a:hover { text-shadow: 0 0 8px rgba(0, 240, 255, 0.6); }
 .ce-block code { background: rgba(0, 240, 255, 0.08); color: #00f0ff; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; border: 1px solid rgba(0, 240, 255, 0.15); }
 .ce-block kbd { background: #1e2126; border: 1px solid #374151; border-bottom: 2px solid #111827; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; color: #e5e7eb; font-family: 'JetBrains Mono', monospace; }
-[contenteditable]:empty::before { content: attr(data-placeholder); color: rgba(107, 114, 128, 0.45); pointer-events: none; display: block; }
+/* 页内页面链接（[[ 插入） */
+.ce-block a[data-page-id] { color: #00f0ff; text-decoration: none; border-bottom: 1px solid rgba(0, 240, 255, 0.35); transition: all 0.2s; }
+.ce-block a[data-page-id]:hover { background: rgba(0, 240, 255, 0.1); border-bottom-color: #00f0ff; }
+/* Notion 行为：占位提示只在「当前编辑的空块」或「鼠标悬停的空块」上出现，避免整页刷屏 */
+.ce-block.show-placeholder:empty::before,
+.task-item-container:hover .ce-block:empty::before { content: attr(data-placeholder); color: rgba(107, 114, 128, 0.45); pointer-events: none; display: block; }
 .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: rgba(30, 33, 38, 0.3); }
 .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0, 240, 255, 0.3); border-radius: 2px; }

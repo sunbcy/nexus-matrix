@@ -8,9 +8,14 @@ import { exportBackup, importBackup } from './composables/useSync'
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const importMsg = ref('')
+const editorRef = ref<{ exportMarkdown?: () => void } | null>(null)
 
 function onExport() {
   exportBackup()
+}
+
+function onExportMarkdown() {
+  editorRef.value?.exportMarkdown?.()
 }
 
 function triggerImport() {
@@ -31,7 +36,7 @@ async function onImport(e: Event) {
 <template>
   <div class="min-h-screen bg-nexus-void relative">
     <!-- 直接渲染 Notion 级核心组件 -->
-    <NexusTaskMatrix />
+    <NexusTaskMatrix ref="editorRef" />
 
     <!-- 备份工具栏（SQLite 之外的额外保险） -->
     <div class="fixed bottom-4 right-4 z-50 flex items-center gap-2">
@@ -39,6 +44,10 @@ async function onImport(e: Event) {
             class="text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace] bg-[#090a0c] border border-[#1e2126] px-2 py-1 rounded shadow-lg">
         {{ importMsg }}
       </span>
+      <button @click="onExportMarkdown" title="导出 Markdown"
+              class="w-9 h-9 flex items-center justify-center rounded bg-[#14161a] border border-[#1e2126] text-[#6b7280] hover:text-[#00f0ff] hover:border-[#00f0ff] transition-colors shadow-lg">
+        <span class="text-[11px] font-['JetBrains_Mono',monospace] font-bold">MD</span>
+      </button>
       <button @click="onExport" title="导出 JSON 备份"
               class="w-9 h-9 flex items-center justify-center rounded bg-[#14161a] border border-[#1e2126] text-[#6b7280] hover:text-[#00f0ff] hover:border-[#00f0ff] transition-colors shadow-lg">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
