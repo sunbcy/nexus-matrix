@@ -1,0 +1,141 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;700&family=Rajdhani:wght@600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 工业风核心 CSS 原生变量声明 - 保证本地编译免受 tailwind.config 加载顺序影响 */
+@layer base {
+  :root {
+    --nexus-void: #090a0c;
+    --nexus-surface: #14161a;
+    --nexus-panel: #1e2126;
+    --cyan-glow: #00f0ff;
+    --amber-warn: #ffb000;
+    --danger-red: #ff2a2a;
+    --text-dim: #6b7280;
+    --text-display: #e5e7eb;
+  }
+
+  /* 替换脆弱的 @apply 规则，使用 100% 稳健的 CSS 属性与标准变量 */
+  body {
+    background-color: var(--nexus-void);
+    color: var(--text-display);
+    font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* 核心选区主题色 */
+  ::selection {
+    background-color: rgba(0, 240, 255, 0.3);
+    color: #ffffff;
+  }
+}
+
+/* 扫光动画（TacticalButton 等控件可用） */
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* 工业风超窄自定义滚动条 (Custom Scrollbar) */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(30, 33, 38, 0.3);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.3);
+  border-radius: 2px;
+  transition: background 0.2s ease-in-out;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.6);
+}
+
+/* ContentEditable 空白时的占位提示符 (Placeholder) 逻辑 */
+[contenteditable]:empty::before {
+  content: attr(data-placeholder);
+  color: rgba(107, 114, 128, 0.45);
+  pointer-events: none;
+  font-style: normal;
+  font-weight: normal;
+  display: block;
+}
+
+/* -------------------------------------------------------------
+   富文本渲染细化样式（针对 ce-block 富文本编辑器内部标签定制）
+   ------------------------------------------------------------- */
+
+/* 1. 粗体 (Bold)：青色霓虹发光文字 */
+.ce-block b,
+.ce-block strong {
+  color: var(--cyan-glow);
+  font-weight: 700;
+  text-shadow: 0 0 4px rgba(0, 240, 255, 0.3);
+}
+
+/* 2. 斜体 (Italic)：琥珀警告色文字 */
+.ce-block i,
+.ce-block em {
+  font-style: italic;
+  color: var(--amber-warn);
+}
+
+/* 3. 下划线 (Underline)：带微调偏移的下划线 */
+.ce-block u {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(0, 240, 255, 0.6);
+}
+
+/* 4. 删除线 (StrikeThrough)：深色调低对比删除线 */
+.ce-block strike,
+.ce-block del {
+  text-decoration: line-through;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+/* 5. 链接 (Anchor)：青色下划线，带悬停发光动画 */
+.ce-block a {
+  color: var(--cyan-glow);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+}
+
+.ce-block a:hover {
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+}
+
+/* 6. 行内代码块 (Code)：碳素灰底纹配合青色外框与等宽字体 */
+.ce-block code {
+  background: rgba(0, 240, 255, 0.08);
+  color: var(--cyan-glow);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9em;
+  border: 1px solid rgba(0, 240, 255, 0.15);
+}
+
+/* 7. 键盘按键风格 (Keyboard Key)：立体硬件感的小卡片 */
+.ce-block kbd {
+  background: var(--nexus-panel);
+  border: 1px solid #374151;
+  border-bottom: 2px solid #111827;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  color: var(--text-display);
+  font-family: 'JetBrains Mono', monospace;
+}
