@@ -24,6 +24,7 @@ export interface Page {
   isFavorite: boolean;
   isExpanded: boolean;
   updatedAt?: number;   // 客户端生成的时间戳（ms），供后端 LWW 合并
+  icon?: string;        // 文档图标（Notion 的 Page Icon），单个 emoji 字符
 }
 
 // === 顺序模型（CRDT 前置） ===
@@ -116,6 +117,25 @@ const stampUpdated = (pages: Page[]) => {
   }
 };
 
+// === 历史数据清洗 ===
+// 早期版本把粘贴的图片以 <img src="blob:..."> 内联存进 content。
+// blob: URL 随文档卸载即失效，重启后必然变成破图。这里在加载时把这些死链接清掉，
+// 让存量数据不会一直显示破碎图标（图片本身已无法恢复，但至少不留残留）。
+const stripDeadBlobImages = (html: string): string => {
+  if (html.indexOf('blob:') === -1) return html;
+  return html
+    .replace(/<img\b[^>]*\bsrc\s*=\s*["']blob:[^"']*["'][^>]*>/gi, '')
+    .replace(/(\s|&nbsp;)+$/g, '');
+};
+
+export const sanitizeLoadedPages = (pages: Page[]): Page[] =>
+  pages.map((p) => ({
+    ...p,
+    tasks: (p.tasks ?? []).map((t) => (
+      t.content && t.content.indexOf('blob:') > -1 ? { ...t, content: stripDeadBlobImages(t.content) } : t
+    )),
+  }));
+
 // === 配置 ===
 const LOCAL_STORAGE_KEY = 'nexus_matrix_pages_v3';
 // 走 Vite 代理（/api -> 后端），同源自相对路径，避免硬编码端口
@@ -141,7 +161,7 @@ export const loadLocal = async (): Promise<Page[] | null> => {
     const raw = await getStore().get(LOCAL_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+    return Array.isArray(parsed) && parsed.length > 0 ? sanitizeLoadedPages(parsed) : null;
   } catch (e) {
     console.error('[NEXUS SYNC] 本地数据反序列化失败', e);
     return null;
@@ -266,7 +286,7 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
         void (async () => {
           const existing = await loadLocal();
           if (existing && existing.length > 0) {
-            const merged = mergePages(existing, msg.data as Page[]);
+            const merged = mergePages(existing, sanitizeLoadedPages(msg.data as Page[]));
             // 只在真正有变化时才写回，避免无谓触发 watch -> 广播回环
             if (JSON.stringify(merged) === JSON.stringify(existing)) { remoteApplying = false; return; }
             remoteApplying = true;
@@ -277,7 +297,7 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
           }
           // 本地为空（首次装机/换设备）：直接采用远端
           remoteApplying = true;
-          pagesRef.value = orderPages(msg.data as Page[]);
+          pagesRef.value = orderPages(sanitizeLoadedPages(msg.data as Page[]));
           await saveLocal(pagesRef.value);
           remoteApplying = false;
         })();
@@ -301,14 +321,35 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
   };
 };
 
+// 自动重连上限。超过后停止重试——LocalFirst 模式下纯本地编辑完全可用，
+// 没必要持续敲一个已下线的后端（Vite 代理每次失败都会打印一条红色 ECONNREFUSED，
+// 无限重试会把控制台刷满，也会让用户误以为编辑器坏了）。
+const MAX_RECONNECT_ATTEMPTS = 5;
+
 const scheduleReconnect = (pagesRef: Ref<Page[]>) => {
   if (reconnectTimer) return;
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    // 达到上限：转入「纯本地模式」，等用户手动重试
+    syncStatus.value = 'offline';
+    lastSyncError.value = '后端未连接，已切换纯本地模式（点击同步状态可重试）';
+    return;
+  }
   const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 15000);
   reconnectAttempts++;
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectWS(pagesRef);
   }, delay);
+};
+
+// 手动重试（UI 的同步状态按钮调用）。重置计数后立即重连。
+export const retrySync = async () => {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (socket) { socket.onclose = null; socket.close(); socket = null; }
+  reconnectAttempts = 0;
+  syncStatus.value = 'connecting';
+  lastSyncError.value = '';
+  if (currentPagesRef) connectWS(currentPagesRef);
 };
 
 export const closeSync = () => {
@@ -372,8 +413,8 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   // 2) 远端握手：仅当本地为空时才以远端为准（首次装机/换设备场景）
   const remote = await fetchRemotePages();
   if (!local && remote) {
-    pagesRef.value = remote;
-    await saveLocal(remote);
+    pagesRef.value = sanitizeLoadedPages(remote);
+    await saveLocal(pagesRef.value);
   } else if (local && remote) {
     // 本地与远端都有：保留本地，但把本地上推到服务端，让服务端对齐最新（避免陈旧种子）
     await pushAll(pagesRef.value);

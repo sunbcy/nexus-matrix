@@ -8,13 +8,16 @@
           <span class="w-2 h-2 bg-[#00f0ff] rounded-sm shadow-[0_0_8px_rgba(0,240,255,0.6)] animate-pulse"></span>
           <span class="font-['Rajdhani',sans-serif] font-bold tracking-widest text-[#e5e7eb] text-sm">NEXUS MATRIX</span>
         </div>
-        <div class="flex items-center gap-1" :title="syncStatus === 'online' ? `已同步 · 在线设备 ${onlineDevices}` : (syncStatus === 'connecting' ? '连接中…' : '离线 / 纯本地模式')">
+        <!-- 同步状态指示：点击可手动重试（后端离线时不再无限自动重连） -->
+        <button class="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
+                :title="syncStatus === 'online' ? `已同步 · 在线设备 ${onlineDevices}` : (syncStatus === 'connecting' ? '正在连接后端…' : '纯本地模式（数据已存本机）· 点击重试连接')"
+                @click="onSyncIndicatorClick">
           <span class="w-1.5 h-1.5 rounded-full transition-colors"
                 :class="syncStatus === 'online' ? 'bg-[#00f0ff] shadow-[0_0_6px_rgba(0,240,255,0.8)]' : (syncStatus === 'connecting' ? 'bg-[#ffb000]' : 'bg-[#6b7280]')"></span>
           <span class="text-[10px] font-['JetBrains_Mono',monospace] text-[#6b7280] uppercase">
             {{ syncStatus === 'online' ? 'SYNC' : (syncStatus === 'connecting' ? 'LINK' : 'LOCAL') }}
           </span>
-        </div>
+        </button>
       </div>
 
       <div class="flex-1 overflow-y-auto py-4 space-y-6 custom-scrollbar">
@@ -55,7 +58,15 @@
                   <svg v-if="page.hasChildren" class="w-3 h-3 transition-transform duration-200" :class="{'rotate-90': page.isExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
                   <div v-else class="w-3 h-3"></div> 
                 </button>
-                <svg class="w-4 h-4 opacity-70 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <!-- 文档图标：有图标显示 emoji，无图标显示默认文件图标。
+                     点击即可设置（对齐 Notion：图标是页面的第一公民） -->
+                <span class="w-4 h-4 flex items-center justify-center shrink-0 text-[15px] leading-none cursor-pointer rounded-sm hover:bg-[#1e2126] transition-colors"
+                      :class="page.icon ? '' : 'text-[#6b7280]'"
+                      :title="page.icon ? `图标：${page.icon}（点击修改）` : '点击设置文档图标'"
+                      @click.stop="openIconPicker(page.id, $event)">
+                  <template v-if="page.icon">{{ page.icon }}</template>
+                  <svg v-else class="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                </span>
                 <span class="text-sm truncate font-medium">{{ page.title || '无标题' }}</span>
               </div>
               
@@ -84,9 +95,27 @@
         <!-- 面包屑导航 -->
         <div class="flex items-center gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] mb-8" v-if="activePageBreadcrumbs.length > 0">
            <template v-for="(crumb, idx) in activePageBreadcrumbs" :key="crumb.id">
-              <span class="hover:text-[#e5e7eb] cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id">{{ crumb.title || '无标题' }}</span>
+              <span class="hover:text-[#e5e7eb] cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id"><span v-if="crumb.icon" class="mr-1">{{ crumb.icon }}</span>{{ crumb.title || '无标题' }}</span>
               <span v-if="idx < activePageBreadcrumbs.length - 1" class="opacity-50">/</span>
            </template>
+        </div>
+
+        <!-- 文档图标（Notion 的 Page Icon）：位于标题上方的大图标。
+             无图标时显示「添加图标」，hover 时高亮；点击唤出选择器 -->
+        <div class="mb-2 -ml-1">
+          <button ref="titleIconBtnRef"
+                  class="w-16 h-16 flex items-center justify-center rounded-md transition-colors group/icon"
+                  :class="activePage.icon ? 'text-[64px] leading-none hover:bg-[#1e2126]/50' : 'text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126]/50'"
+                  :title="activePage.icon ? `文档图标：${activePage.icon}（点击修改）` : '添加文档图标'"
+                  @click="openIconPicker(activePage.id, $event)">
+            <template v-if="activePage.icon">{{ activePage.icon }}</template>
+            <svg v-else class="w-10 h-10 opacity-40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M8 14s1.5 2 4 2 4-2 4-2"></path>
+              <line x1="9" y1="9" x2="9.01" y2="9"></line>
+              <line x1="15" y1="9" x2="15.01" y2="9"></line>
+            </svg>
+          </button>
         </div>
 
         <input ref="titleInputRef" type="text" v-model="activePage.title" 
@@ -124,7 +153,7 @@
             <div class="absolute -left-[72px] top-1 flex items-center gap-1 transition-opacity z-30"
                  :class="focusedTaskId === task.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
                  draggable="false">
-              <span class="inline-flex items-center justify-center w-7 h-7 cursor-pointer text-[#00f0ff] hover:text-[#ffb000] hover:bg-[#1e2126] rounded transition-colors"
+              <span class="inline-flex items-center justify-center w-7 h-7 cursor-pointer text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
                     draggable="false"
                     @mousedown.stop.prevent="onInsertMouseDown(task.id, $event)"
                     @touchstart.stop.prevent="insertTask(task.id, 'below')"
@@ -207,7 +236,8 @@
                      @mousedown.prevent="insertPageLink(task.id, page.id)"
                      class="flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors"
                      :class="idx === mentionIndex ? 'bg-[#1e2126]/80' : 'hover:bg-[#1e2126]/40'">
-                  <svg class="w-4 h-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                  <span v-if="page.icon" class="text-[15px] leading-none shrink-0">{{ page.icon }}</span>
+                  <svg v-else class="w-4 h-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                   <span class="text-sm truncate" :class="idx === mentionIndex ? 'text-[#00f0ff]' : 'text-[#e5e7eb]'">{{ page.title || '无标题' }}</span>
                 </div>
                 <div v-if="filteredMentionPages.length === 0"
@@ -219,13 +249,39 @@
             </div>
 
             <!-- 多媒体区块：图片上传器 (Image Block) -->
-            <div v-else-if="task.type === 'image'" class="flex-1 mt-1">
-              <img v-if="task.payload?.url" :src="task.payload.url" class="max-w-full rounded-md border border-[#1e2126] shadow-sm object-contain max-h-[500px]" />
+            <div v-else-if="task.type === 'image'" class="flex-1 mt-1 relative group/img"
+                 tabindex="0"
+                 @mousedown="selectedMediaId = task.id"
+                 @touchstart.stop="selectedMediaId = task.id"
+                 @keydown.enter.prevent="insertTask(task.id, 'below')"
+                 @keydown.backspace.prevent="deleteBlockAndFocus(task)"
+                 @keydown.delete.prevent="deleteBlockAndFocus(task)">
+              <img v-if="task.payload?.url" :src="task.payload.url"
+                   class="max-w-full rounded-md border border-[#1e2126] shadow-sm object-contain max-h-[500px] block" />
+              <!-- 图片操作浮层：替换 / 删除。
+                   desktop 靠 hover，触屏无 hover 故点击后（selectedMediaId）常驻显示 -->
+              <div v-if="task.payload?.url"
+                   class="absolute top-2 right-2 flex items-center gap-1 transition-opacity z-10"
+                   :class="selectedMediaId === task.id ? 'opacity-100' : 'opacity-0 group-hover/img:opacity-100'">
+                <button @mousedown.stop.prevent="triggerImageUpload(task.id)"
+                        @touchstart.stop.prevent="triggerImageUpload(task.id)"
+                        title="替换图片"
+                        class="w-7 h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#00f0ff] hover:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9c-9 9-9 0 0-9 9-9 9 0 0-9z"></path><path d="M21 3v6h-6"></path><path d="M3 21v-6h6"></path></svg>
+                </button>
+                <button @mousedown.stop.prevent="deleteBlockAndFocus(task)"
+                        @touchstart.stop.prevent="deleteBlockAndFocus(task)"
+                        title="删除图片"
+                        class="w-7 h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#ff2a2a] hover:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+              </div>
               <div v-else class="w-full h-32 border-2 border-dashed border-[#1e2126] bg-[#14161a] hover:bg-[#1e2126]/50 flex flex-col items-center justify-center rounded-md cursor-pointer hover:border-[#00f0ff] transition-all" @click="triggerImageUpload(task.id)">
                   <svg class="w-8 h-8 text-[#6b7280] mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                   <span class="text-sm font-['JetBrains_Mono',monospace] text-[#6b7280]">点击选择图片，或拖拽文件至屏幕任意位置</span>
-                  <input type="file" :id="'img-upload-'+task.id" class="hidden" @change="(e) => handleImageUpload(e, task.id)" accept="image/*">
               </div>
+              <!-- 上传输入框常驻：既服务初始上传，也服务「替换图片」 -->
+              <input type="file" :id="'img-upload-'+task.id" class="hidden" @change="(e) => handleImageUpload(e, task.id)" accept="image/*">
             </div>
 
             <!-- 多行代码容器 (Code Block) -->
@@ -308,7 +364,8 @@
               <div v-for="bl in backlinks" :key="bl.page.id"
                    class="flex items-start gap-2 text-sm text-[#6b7280] hover:text-[#00f0ff] cursor-pointer transition-colors px-2 py-1 rounded-sm hover:bg-[#1e2126]/40"
                    @click="activePageId = bl.page.id">
-                <svg class="w-4 h-4 mt-0.5 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span v-if="bl.page.icon" class="text-[15px] leading-none mt-0.5 shrink-0">{{ bl.page.icon }}</span>
+                <svg v-else class="w-4 h-4 mt-0.5 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                 <div class="min-w-0">
                   <div class="truncate">{{ bl.page.title || '无标题' }}</div>
                   <div class="text-xs text-[#6b7280]/70 truncate">{{ bl.excerpt }}</div>
@@ -398,17 +455,26 @@
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), 1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↓</span> 下移</button>
       <div class="border-t border-[#1e2126]/50 my-1"></div>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors" @click="duplicateTask(actionMenuConfig.taskId)">复制</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a]" @click="deleteTask(actionMenuConfig.taskId); actionMenuConfig.isOpen = false">删除</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a]" @click="deleteBlockAndFocus(actionMenuTask!); actionMenuConfig.isOpen = false">删除</button>
     </div>
+
+    <!-- 文档图标选择器（侧边栏与标题区共用） -->
+    <PageIconPicker v-if="iconPicker"
+                    :current="pages.find(p => p.id === iconPicker!.pageId)?.icon"
+                    :anchor-el="iconPicker!.anchorEl"
+                    @select="setPageIcon"
+                    @remove="removePageIcon"
+                    @close="closeIconPicker" />
 
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue';
-import { initSync, closeSync, createRemotePage, deleteRemotePage, syncStatus, onlineDevices } from '../composables/useSync';
+import { initSync, closeSync, createRemotePage, deleteRemotePage, syncStatus, onlineDevices, retrySync } from '../composables/useSync';
 import { newBlockId, newPageId } from '../composables/ids';
 import { writePrevIds } from '../composables/useSync';
+import PageIconPicker from './PageIconPicker.vue';
 
 // === 数据结构 ===
 interface Task {
@@ -420,7 +486,7 @@ interface Task {
   payload?: any;
   prevId?: string | null;
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -654,8 +720,26 @@ const extendBlockSelection = (dir: -1 | 1) => {
 };
 const deleteSelectedBlocks = () => {
   if (!activePage.value || selectedTaskIds.value.size === 0) return;
-  activePage.value.tasks = activePage.value.tasks.filter((t: Task) => !selectedTaskIds.value.has(t.id));
+  const list = activePage.value.tasks;
+  // 记录第一个被删块的位置，删除后把光标交还给相邻的可编辑块
+  // （否则图片/看板这类非文本块删掉后光标悬空，用户无处继续打字）
+  const firstDeletedIdx = list.findIndex((t: Task) => selectedTaskIds.value.has(t.id));
+  const before = firstDeletedIdx > 0 ? list[firstDeletedIdx - 1] : null;
+  const after = firstDeletedIdx >= 0 ? list.slice(firstDeletedIdx + 1).find((t: Task) => !selectedTaskIds.value.has(t.id)) : null;
+
+  list.splice(0, list.length, ...list.filter((t: Task) => !selectedTaskIds.value.has(t.id)));
   clearBlockSelection();
+  selectedMediaId.value = null;
+
+  // 优先落在前一个块的末尾；没有可编辑的前块则落在后一个块的开头；都没有则新建
+  const target = (before && EDITABLE_TYPES.includes(before.type)) ? { id: before.id, pos: 'end' as const }
+    : (after && EDITABLE_TYPES.includes(after.type)) ? { id: after.id, pos: 'start' as const }
+    : null;
+  if (target) { setFocusConfig(target.id, target.pos); return; }
+
+  const newId = newBlockId();
+  list.push({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0, prevId: null });
+  setFocusConfig(newId, 'start');
 };
 const duplicateSelectedBlocks = () => {
   if (!activePage.value || selectedTaskIds.value.size === 0) return;
@@ -664,6 +748,13 @@ const duplicateSelectedBlocks = () => {
   const lastIdx = list.findIndex((t: Task) => t.id === picked[picked.length - 1].id);
   const copies = picked.map((t: Task) => ({ ...t, id: newBlockId() }));
   list.splice(lastIdx + 1, 0, ...copies);
+};
+
+// === 同步状态交互 ===
+// 后端离线时前端已停止自动重连（纯本地模式），这里提供手动重试入口
+const onSyncIndicatorClick = () => {
+  if (syncStatus.value === 'connecting') return; // 正在连接中不重复触发
+  void retrySync();
 };
 
 onMounted(async () => {
@@ -688,6 +779,8 @@ onMounted(async () => {
     // 点击工具栏自身时不关闭，否则按钮的 mousedown 还没执行选区就被清掉了
     if (!target.closest('.format-toolbar')) hideFormatToolbar();
     if (!target.closest('.task-item-container')) clearBlockSelection();
+    // 图标选择器自身处理外部点击，这里只兜底页面级关闭
+    if (!target.closest('.icon-picker-popup')) closeIconPicker();
   };
   document.addEventListener('mousedown', handleGlobalClick);
 
@@ -1062,6 +1155,32 @@ const redo = () => {
 // === 标题区 ⇄ 正文区 的光标流转（对齐 Notion） ===
 const titleInputRef = ref<HTMLInputElement | null>(null);
 
+// === 文档图标（Page Icon，对齐 Notion）===
+// 一套状态同时服务侧边栏与标题区两个入口；icon 存在 Page 上，三端同步自动继承
+const iconPicker = ref<{ pageId: string; anchorEl: HTMLElement | null } | null>(null);
+
+const openIconPicker = (pageId: string, e: MouseEvent) => {
+  e.stopPropagation();
+  if (iconPicker.value?.pageId === pageId) { iconPicker.value = null; return; }
+  iconPicker.value = { pageId, anchorEl: (e.currentTarget as HTMLElement) ?? null };
+};
+
+const setPageIcon = (emoji: string) => {
+  if (!iconPicker.value) return;
+  const p = pages.value.find((x: Page) => x.id === iconPicker.value!.pageId);
+  if (p) p.icon = emoji;
+  iconPicker.value = null;
+};
+
+const removePageIcon = () => {
+  if (!iconPicker.value) return;
+  const p = pages.value.find((x: Page) => x.id === iconPicker.value!.pageId);
+  if (p) p.icon = undefined;
+  iconPicker.value = null;
+};
+
+const closeIconPicker = () => { iconPicker.value = null; };
+
 const focusTitle = () => {
   nextTick(() => {
     const el = titleInputRef.value;
@@ -1338,6 +1457,32 @@ watch(focusConfig, (newVal) => {
 // === 高级交互逻辑 (Block CRUD & Nested & Multimedia) ===
 const updateTask = (id: string, updates: Partial<Task>) => { if (!activePage.value) return; const task = activePage.value.tasks.find((t: Task) => t.id === id); if (task) Object.assign(task, updates); };
 const deleteTask = (id: string) => { if (!activePage.value) return; activePage.value.tasks = activePage.value.tasks.filter((t: Task) => t.id !== id); };
+
+// 当前「激活」的多媒体块（图片等）：用于触屏无 hover 时仍能显示操作浮层
+const selectedMediaId = ref<string | null>(null);
+
+// 删除块后把光标交还给相邻的可编辑块。
+// 纯 deleteTask 会让光标悬空：图片/看板这类非文本块删掉后用户无处继续打字，
+// 删到最后一个块时页面直接空了——这是「删图片不方便」的核心。
+const deleteBlockAndFocus = (task: Task) => {
+  if (!activePage.value) return;
+  const list = activePage.value.tasks;
+  const idx = list.findIndex((t: Task) => t.id === task.id);
+  if (idx === -1) return;
+
+  list.splice(idx, 1);
+  selectedMediaId.value = null;
+
+  // 向前找最近的文本块；没有则向后找；都没有则新建一个，保证永远有可落点
+  const prevEditable = [...list.slice(0, idx)].reverse().find((t: Task) => EDITABLE_TYPES.includes(t.type));
+  if (prevEditable) { setFocusConfig(prevEditable.id, 'end'); return; }
+  const nextEditable = list.slice(idx).find((t: Task) => EDITABLE_TYPES.includes(t.type));
+  if (nextEditable) { setFocusConfig(nextEditable.id, 'start'); return; }
+
+  const newId = newBlockId();
+  list.push({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0, prevId: null });
+  setFocusConfig(newId, 'start');
+};
 const duplicateTask = (id: string) => {
   if (!activePage.value) return;
   const idx = activePage.value.tasks.findIndex((t: Task) => t.id === id);
@@ -1467,10 +1612,53 @@ const insertSoftBreak = () => {
   sel.removeAllRanges(); sel.addRange(range);
 };
 
+// 把图片文件插入为独立图片块（Base64 持久化），并在其后补一个空文本块供继续输入。
+// 粘贴与拖拽共用此函数，保证两条路径的块结构、prevId 链、焦点行为一致。
+const insertImageBlock = (file: File, afterIndex: number) => {
+  if (!activePage.value) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const list = activePage.value?.tasks;
+    if (!list) return;
+    const url = String(ev.target?.result ?? '');
+    if (!url) return;
+
+    const imgId = newBlockId();
+    const textId = newBlockId();
+    const prevId = afterIndex >= 0 && afterIndex < list.length ? list[afterIndex].id : (list.length > 0 ? list[list.length - 1].id : null);
+    const insertAt = Math.min(afterIndex + 1, list.length);
+
+    list.splice(insertAt, 0,
+      { id: imgId, type: 'image', content: '', completed: false, indentLevel: 0, prevId, payload: { url } },
+      { id: textId, type: 'text', content: '', completed: false, indentLevel: 0, prevId: imgId },
+    );
+    // 重写整条链，兜底修复历史数据里缺失/错乱的 prevId
+    list.splice(0, list.length, ...writePrevIds(list));
+    setFocusConfig(textId, 'start');
+  };
+  reader.readAsDataURL(file);
+};
+
 // 多行粘贴自动拆块（对齐 Notion：多行文本粘贴后按行拆成多个块）
 const handlePaste = (e: ClipboardEvent, task: Task, index: number) => {
   if (!activePage.value) return;
   index = realIndexOf(task);
+
+  // 图片粘贴：必须优先于文本分支处理。
+  // 否则浏览器默认行为会把图片以 <img src="blob:..."> 内联塞进文本块，导致两个后果：
+  //   1) 它不是图片块，没有删除浮层，用户很难删掉；
+  //   2) blob: URL 随文档卸载失效，重启后变成破图（用户反馈「重启后还是不行」的根因）。
+  // 这里转为 Base64 DataURL 并落成独立图片块，数据可持久化。
+  const files = e.clipboardData?.files;
+  if (files && files.length > 0) {
+    const imageFile = Array.from(files).find((f: File) => f.type.startsWith('image/'));
+    if (imageFile) {
+      e.preventDefault();
+      insertImageBlock(imageFile, index);
+      return;
+    }
+  }
+
   const raw = e.clipboardData?.getData('text/plain') ?? '';
   const normalized = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   if (normalized.indexOf('\n') === -1) return; // 单行交给浏览器默认行为，保留富文本
@@ -1810,16 +1998,7 @@ const handleGlobalDrop = (e: DragEvent) => {
     const file = e.dataTransfer.files[0];
     if (file.type.startsWith('image/')) {
       e.preventDefault();
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (activePage.value) {
-          activePage.value.tasks.push({
-             id: newBlockId(), type: 'image', content: '', completed: false, indentLevel: 0,
-             payload: { url: event.target?.result }
-          });
-        }
-      };
-      reader.readAsDataURL(file);
+      insertImageBlock(file, activePage.value ? activePage.value.tasks.length - 1 : -1);
     }
   }
 };
