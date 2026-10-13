@@ -350,6 +350,33 @@
       </div>
     </div>
 
+    <!-- 链接输入弹窗（替代原生 prompt：原生弹窗会抢焦点导致选区丢失，且观感突兀） -->
+    <div v-if="linkDialog.visible" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="closeLinkDialog">
+      <div class="w-[420px] bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-md overflow-hidden">
+        <div class="px-4 py-3 border-b border-[#1e2126]/60 flex items-center gap-2">
+          <svg class="w-4 h-4 text-[#00f0ff]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+          <span class="text-sm font-bold tracking-wide text-[#e5e7eb]">添加链接</span>
+        </div>
+        <div class="p-4 space-y-3">
+          <div>
+            <label class="block text-xs text-[#6b7280] mb-1.5 uppercase tracking-wider">地址</label>
+            <input ref="linkInputRef" v-model="linkDialog.url" type="text"
+                   placeholder="https://"
+                   @keydown.enter.prevent="confirmLink"
+                   @keydown.esc.prevent="closeLinkDialog"
+                   class="w-full bg-[#090a0c] border border-[#1e2126] focus:border-[#00f0ff] outline-none px-3 py-2 text-sm text-[#e5e7eb] rounded-sm transition-colors" />
+          </div>
+          <div v-if="linkDialog.selectedText" class="text-xs text-[#6b7280] truncate">
+            将链接应用到：<span class="text-[#00f0ff]">{{ linkDialog.selectedText }}</span>
+          </div>
+        </div>
+        <div class="px-4 py-3 border-t border-[#1e2126]/60 flex justify-end gap-2">
+          <button @click="closeLinkDialog" class="px-3 py-1.5 text-sm text-[#6b7280] hover:text-[#e5e7eb] transition-colors">取消</button>
+          <button @click="confirmLink" class="px-4 py-1.5 text-sm font-bold text-[#090a0c] bg-[#00f0ff] hover:bg-[#00d4e0] rounded-sm transition-colors">确认</button>
+        </div>
+      </div>
+    </div>
+
     <div v-if="actionMenuConfig.isOpen" class="action-menu-popup fixed z-50 w-52 bg-[#090a0c] border border-[#1e2126] shadow-2xl py-1 rounded-sm text-sm max-h-[70vh] overflow-y-auto custom-scrollbar" :style="{ top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }" @click.stop>
       <div class="px-3 py-1 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] mb-1 border-b border-[#1e2126]/50">转换区块为</div>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('text')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">T</span> 文本</button>
@@ -655,6 +682,8 @@ onMounted(async () => {
     const target = e.target as HTMLElement;
     // 点击菜单自身时不关闭（菜单上有 @click.stop / @mousedown.prevent）
     if (target.closest('.action-menu-popup')) return;
+    // 链接弹窗内的点击不触发任何关闭逻辑（否则恢复选区前选区就被清了）
+    if (target.closest('.fixed.inset-0.z-\\[60\\]')) return;
     actionMenuConfig.value.isOpen = false;
     // 点击工具栏自身时不关闭，否则按钮的 mousedown 还没执行选区就被清掉了
     if (!target.closest('.format-toolbar')) hideFormatToolbar();
@@ -664,7 +693,10 @@ onMounted(async () => {
 
   // Escape 键关闭浮窗
   const handleEscape = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') actionMenuConfig.value.isOpen = false;
+    if (e.key !== 'Escape') return;
+    // 链接弹窗优先：它内部输入框已自行处理 Esc，这里兜底非输入焦点触发的情况
+    if (linkDialog.value.visible) { closeLinkDialog(); return; }
+    actionMenuConfig.value.isOpen = false;
   };
   document.addEventListener('keydown', handleEscape);
 
@@ -845,6 +877,42 @@ const applyColor = (value: string) => {
   const el = ((n && n.nodeType === 3 ? n.parentElement : n as HTMLElement) ?? null)?.closest('.ce-block') as HTMLElement | null;
   if (el?.dataset.taskId) updateTask(el.dataset.taskId, { content: el.innerHTML });
 };
+// === 链接弹窗 ===
+// 为什么不用 window.prompt：
+// 1) 原生 prompt 会强制抢焦点，确认后选区已丢，createLink 找不到目标，链接创建失败或错位；
+// 2) 在 WebView（Capacitor / Tauri）中 prompt 表现不一致，部分环境直接不弹；
+// 3) 观感与整体工业风割裂。
+// 关键实现点：打开时把 Range 克隆保存，确认时先恢复选区再 execCommand。
+const linkInputRef = ref<HTMLInputElement | null>(null);
+const linkDialog = ref({ visible: false, url: '', selectedText: '' });
+let savedLinkRange: Range | null = null;
+
+const openLinkDialog = () => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  savedLinkRange = sel.getRangeAt(0).cloneRange();
+  linkDialog.value = { visible: true, url: '', selectedText: sel.toString().slice(0, 40) };
+  nextTick(() => linkInputRef.value?.focus());
+};
+const closeLinkDialog = () => { linkDialog.value.visible = false; savedLinkRange = null; hideFormatToolbar(); };
+const confirmLink = () => {
+  const url = linkDialog.value.url.trim();
+  if (!url || !savedLinkRange) { closeLinkDialog(); return; }
+  // 无协议时补 https://，避免生成相对链接
+  const href = /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || url.startsWith('/') || url.startsWith('#') ? url : `https://${url}`;
+
+  // 恢复弹窗前保存的选区，否则 createLink 作用在错误的位置
+  const sel = window.getSelection();
+  if (sel) { sel.removeAllRanges(); sel.addRange(savedLinkRange); }
+  document.execCommand('createLink', false, href);
+
+  // 同步回数据模型
+  const n = sel?.anchorNode;
+  const blockEl = ((n && n.nodeType === 3 ? n.parentElement : n as HTMLElement) ?? null)?.closest('.ce-block') as HTMLElement | null;
+  if (blockEl?.dataset.taskId) updateTask(blockEl.dataset.taskId, { content: blockEl.innerHTML });
+  closeLinkDialog();
+};
+
 const execFormat = (cmd: string) => {
   const blockFromSelection = () => {
     const sel = window.getSelection();
@@ -853,10 +921,8 @@ const execFormat = (cmd: string) => {
     return (start?.closest('.ce-block') as HTMLElement | null) ?? null;
   };
   if (cmd === 'code') wrapInlineCode();
-  else if (cmd === 'link') {
-    const url = window.prompt('输入链接地址', 'https://');
-    if (url) document.execCommand('createLink', false, url);
-  } else document.execCommand(cmd);
+  else if (cmd === 'link') { openLinkDialog(); return; } // 交给弹窗处理
+  else document.execCommand(cmd);
   const el = blockFromSelection();
   if (el?.dataset.taskId) updateTask(el.dataset.taskId, { content: el.innerHTML });
 };
@@ -1073,23 +1139,29 @@ const toBlockOffset = (block: HTMLElement, node: Node, offset: number): number =
 };
 
 // 逻辑偏移 → Range 边界（只在单一宿主内定位，避免跨宿主的不确定行为）
+// 注意 offset >= 全部文本长度时必须落到「块元素的子节点末尾」而不是「最后一个文本节点的末尾」：
+// 两者视觉位置相同，但 Range.cloneContents() 对后者会把夹在中间的 <a>/<b> 做部分克隆，
+// 产出 `<a href="..."></a>` 这样的空标签（曾表现为「Enter 拆块后多出一个空链接」）。
 const setBoundary = (range: Range, block: HTMLElement, offset: number, isStart: boolean) => {
   const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
-  let remaining = offset;
-  let node: Text | null = null;
-  while (walker.nextNode()) {
-    const t = walker.currentNode as Text;
-    if (remaining <= t.length) { node = t; break; }
-    remaining -= t.length;
-    node = t; // 兜底：指向最后一个文本节点
-  }
-  if (!node) {
-    // 无文本节点（空块）：边界落在块本身
-    if (isStart) range.setStart(block, 0); else range.setEnd(block, 0);
+  const texts: Text[] = [];
+  let total = 0;
+  while (walker.nextNode()) { const t = walker.currentNode as Text; texts.push(t); total += t.length; }
+
+  if (texts.length === 0 || offset >= total) {
+    // 空块，或光标在块尾：用元素级边界
+    const pos = block.childNodes.length;
+    if (isStart) range.setStart(block, pos); else range.setEnd(block, pos);
     return;
   }
-  if (isStart) range.setStart(node, Math.min(remaining, node.length));
-  else range.setEnd(node, Math.min(remaining, node.length));
+  let remaining = offset;
+  for (const t of texts) {
+    if (remaining <= t.length) {
+      if (isStart) range.setStart(t, remaining); else range.setEnd(t, remaining);
+      return;
+    }
+    remaining -= t.length;
+  }
 };
 
 // 由屏幕坐标解析出 { blockId, offset }
@@ -1163,6 +1235,29 @@ const getLogicalSelection = (): { a: SelPoint; f: SelPoint } | null => {
     a: { blockId: b1.dataset.taskId, offset: toBlockOffset(b1, r.startContainer, r.startOffset) },
     f: { blockId: b2.dataset.taskId, offset: toBlockOffset(b2, r.endContainer, r.endOffset) },
   };
+};
+
+// 在光标处把块拆成前后两段 HTML（保留 <a>/<b>/<code> 等行内标签）。
+// 注意：绝不能用 textContent 切片——那会丢掉所有行内格式。
+const splitBlockAtCaret = (el: HTMLElement, offset: number): { before: string; after: string } => {
+  const fragWrap = document.createElement('div');
+  const cursor = document.createRange();
+  setBoundary(cursor, el, offset, true);
+
+  const beforeRange = document.createRange();
+  beforeRange.selectNodeContents(el);
+  try { beforeRange.setEnd(cursor.startContainer, cursor.startOffset); } catch { /* ignore */ }
+  fragWrap.appendChild(beforeRange.cloneContents());
+
+  const afterRange = document.createRange();
+  afterRange.selectNodeContents(el);
+  try { afterRange.setStart(cursor.endContainer, cursor.endOffset); } catch { /* ignore */ }
+  const afterWrap = document.createElement('div');
+  afterWrap.appendChild(afterRange.cloneContents());
+
+  // 空片段的 innerHTML 可能是 '' 或 '<br>'，统一成 '' 便于后续判断
+  const clean = (html: string) => (html === '<br>' ? '' : html);
+  return { before: clean(fragWrap.innerHTML), after: clean(afterWrap.innerHTML) };
 };
 
 // 键盘扩展选区：锚点沿用已有选区的起点，没有则以当前光标为锚点。
@@ -1545,20 +1640,20 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
 
     const newType = ['bullet', 'todo', 'numbered'].includes(task.type) ? task.type : 'text';
     const newId = newBlockId();
-    
-    // 从 DOM 获取当前行的实际内容和光标位置
-    const actualText = target.textContent || '';
-    const beforeCursor = actualText.slice(0, currentPos);
-    const afterCursor = actualText.slice(currentPos);
-    
+
+    // 从 DOM 按光标位置拆分为前后两段 HTML。
+    // 必须用 Range 而不是 textContent 切片，否则 <a>/<b>/<code> 等行内标签会全部丢失
+    // （表现为「绑了链接的文本按 Enter 后链接消失」）。
+    const { before, after } = splitBlockAtCaret(target, currentPos);
+
     // 更新当前行内容为光标前的部分
-    updateTask(task.id, { content: beforeCursor });
-    
+    updateTask(task.id, { content: before });
+
     // 在当前行之后插入新行，内容为光标后的部分
     tasksList.splice(index + 1, 0, {
       id: newId,
       type: newType,
-      content: afterCursor,
+      content: after,
       completed: false,
       indentLevel: task.indentLevel,
       // prevId 链：新块的「前一个」是当前块，原后继块的「前一个」变成新块。
