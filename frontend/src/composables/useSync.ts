@@ -26,6 +26,7 @@ export interface Page {
   updatedAt?: number;   // 客户端生成的时间戳（ms），供后端 LWW 合并
   icon?: string;        // 文档图标（Notion 的 Page Icon），单个 emoji 字符
   cover?: string;       // 页眉封面（Notion 的 Cover）：图片 URL/DataURL，或 `gradient:<id>`
+  coverPos?: number;    // 封面垂直取景点，0=顶部 100=底部，默认 35（偏上，利于人像）。用于拖动重新构图
 }
 
 // === 顺序模型（CRDT 前置） ===

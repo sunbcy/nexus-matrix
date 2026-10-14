@@ -92,12 +92,19 @@
       <div class="w-full h-1 bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
-           桌面端 hover 浮出操作条；触屏无 hover，故点击封面后常驻显示 -->
-      <div v-if="activePage.cover" class="relative group/cover shrink-0 overflow-hidden" style="height: 240px;"
-           @mousedown="coverTouched = true" @touchstart.stop="coverTouched = true">
-        <div class="w-full h-full" :style="coverStyle(activePage.cover)"></div>
+           高度按图片自然比例自适应（clamp 200~420px），而非固定 240px ——
+           固定高度 + 宽横幅会让竖构图人像只剩头部（实测 1000×240 ≈ 4.2:1，宽屏 6~7:1）。
+           桌面端 hover 浮出操作条；触屏无 hover，故点击封面后常驻显示。
+           按住拖动可垂直重新取景（object-position-y），比任何自动裁切都可靠。 -->
+      <div v-if="activePage.cover" class="relative group/cover shrink-0 overflow-hidden select-none"
+           :style="{ height: `${coverHeight}px` }"
+           :class="coverDragging ? 'cursor-grabbing' : 'cursor-grab'"
+           @mousedown="coverTouched = true; startCoverDrag($event)"
+           @touchstart.stop="coverTouched = true; startCoverDrag($event.touches[0] as any)">
+        <div class="w-full h-full transition-[background-position] duration-100"
+             :style="coverStyle(activePage.cover)"></div>
         <div class="absolute top-3 right-4 flex items-center gap-1.5 transition-opacity z-10"
-             :class="coverTouched ? 'opacity-100' : 'opacity-0 group-hover/cover:opacity-100'">
+             :class="coverTouched || coverDragging ? 'opacity-100' : 'opacity-0 group-hover/cover:opacity-100'">
           <button @click.stop="openCoverPicker($event)"
                   class="px-2.5 py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#e5e7eb] hover:text-[#00f0ff] hover:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
             更换封面
@@ -106,6 +113,10 @@
                   class="px-2.5 py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#ff2a2a] hover:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
             移除
           </button>
+        </div>
+        <!-- 拖动取景提示：仅在 hover 时淡入，不干扰日常浏览 -->
+        <div class="absolute bottom-2 left-4 text-[10px] text-[#e5e7eb]/50 opacity-0 group-hover/cover:opacity-100 transition-opacity pointer-events-none">
+          拖动可重新取景
         </div>
         <!-- 摄影师署名（Unsplash 等图库的硬性合规要求） -->
         <div v-if="coverCredit" class="absolute bottom-2 right-4 text-[10px] text-[#e5e7eb]/70 backdrop-blur-sm bg-[#090a0c]/60 px-2 py-0.5 rounded-sm">
@@ -181,63 +192,89 @@
             <!-- 缩进引导线 (Guide Line) -->
             <div v-if="(task.indentLevel || 0) > 0" class="absolute -left-4 top-0 bottom-0 w-[2px] bg-[#1e2126] rounded-full group-hover:bg-[#00f0ff]/30 transition-colors"></div>
 
-            <!-- 悬浮控制手柄（+号 / 拖拽）：置于正文左边缘之外的负空间，保证文本与标题对齐。
-                 触屏设备无 hover，改为聚焦该块时常驻显示 -->
-            <div class="absolute -left-[72px] top-1 flex items-center gap-1 transition-opacity z-30"
-                 :class="focusedTaskId === task.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
-                 draggable="false">
-              <span class="inline-flex items-center justify-center w-7 h-7 cursor-pointer text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
-                    draggable="false"
-                    @mousedown.stop.prevent="onInsertMouseDown(task.id, $event)"
-                    @touchstart.stop.prevent="insertTask(task.id, 'below')"
-                    title="点击在下方插入（Alt+点击在上方插入）">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events: none;">
-                  <line x1="12" y1="5" x2="12" y2="19"></line>
-                  <line x1="5" y1="12" x2="19" y2="12"></line>
-                </svg>
-              </span>
-              <div class="cursor-grab active:cursor-grabbing text-[#6b7280] hover:text-[#e5e7eb] p-1 -m-1"
-                   @mousedown="draggableTaskId = task.id"
-                   @mouseup="draggableTaskId = null"
-                   @mouseleave="draggableTaskId = null"
-                   @click="(e) => openActionMenu(e, task.id)"
-                   @touchstart.stop="openActionMenuAtTouch(task.id, $event)"
-                   title="拖拽排序 / 点击操作菜单">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle>
-                  <circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle>
-                </svg>
+            <!-- 左槽（统一垂直对齐容器）：把「+号 / 拖拽点 / 块类型标记」收进同一个 flex 容器，
+                 使它们与右侧文字首行的水平中线严格对齐。
+
+                 为什么不再各自 absolute + 硬编码 top：
+                 文字行高随块类型变化（text 15px→24.4px，h2 20px→32.5px，h1 24px→39px），
+                 任何硬编码 top 都对不上，表现为控件整体偏高（即截图中的问题）。
+
+                 对齐原理（依赖两个值，改动时需同步）：
+                 - self-stretch 让槽位铺满内容区，items-start 让内部内容从顶部开始；
+                 - mt-[2px] 抵消 .ce-block 的 py-0.5，使内容盒顶边与文字行盒顶边齐平；
+                 - h-[1lh] 把内容盒高度限制为「首行行高」，再 items-center 即精确落在行内中线。
+                   lh 单位取元素自身的 line-height，故这里必须复用文字的 leading-relaxed
+                   与字号（getFontSizeClass），否则算出的行高与文字不一致。
+
+                 鲁棒性：多行文本或图片等超高块同样正确（容器被拉高，但内容仍锚定首行）；
+                 旧浏览器不支持 lh 单位时 height 退化为 auto，误差 < 0.5px，可接受。
+
+                 -ml-[84px] w-[84px]：把槽位整体拉到正文左边缘之外，不占流宽，
+                 从而保证各块类型的文字起点与标题左缘严格对齐。 -->
+            <div class="shrink-0 -ml-[84px] w-[84px] self-stretch flex items-start justify-end pr-1">
+              <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-relaxed" :class="getFontSizeClass(task)">
+                <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
+                     可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
+                <div class="row-handles flex items-center gap-1 transition-opacity z-30"
+                     :class="{ 'is-active': focusedTaskId === task.id }"
+                     draggable="false">
+                  <span class="inline-flex items-center justify-center w-7 h-7 cursor-pointer text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
+                        draggable="false"
+                        @mousedown.stop.prevent="onInsertMouseDown(task.id, $event)"
+                        @touchstart.stop.prevent="insertTask(task.id, 'below')"
+                        title="点击在下方插入（Alt+点击在上方插入）">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events: none;">
+                      <line x1="12" y1="5" x2="12" y2="19"></line>
+                      <line x1="5" y1="12" x2="19" y2="12"></line>
+                    </svg>
+                  </span>
+                  <div class="cursor-grab active:cursor-grabbing text-[#6b7280] hover:text-[#e5e7eb] p-1"
+                       @mousedown="draggableTaskId = task.id"
+                       @mouseup="draggableTaskId = null"
+                       @mouseleave="draggableTaskId = null"
+                       @click="(e) => openActionMenu(e, task.id)"
+                       @touchstart.stop="openActionMenuAtTouch(task.id, $event)"
+                       title="拖拽排序 / 点击操作菜单">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle>
+                      <circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle>
+                    </svg>
+                  </div>
+                </div>
+
+                <!-- 块类型标记：与手柄同容器，故同样对齐文字首行中线。
+                     w-5 固定宽度，保证各类型的文字起点严格一致 -->
+                <div v-if="task.type === 'todo'" class="relative w-5 h-5 flex items-center justify-center">
+                  <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
+                         class="peer appearance-none w-5 h-5 border-2 border-[#1e2126] bg-[#090a0c] checked:border-[#00f0ff] checked:bg-[#00f0ff]/20 cursor-pointer transition-all rounded-none outline-none"
+                         style="clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px)" />
+                  <svg class="absolute w-3.5 h-3.5 text-[#00f0ff] pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                    <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div v-else-if="task.type === 'bullet'" class="w-5 flex items-center justify-center">
+                  <div class="w-1.5 h-1.5 rounded-full bg-[#00f0ff]/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
+                </div>
+                <div v-else-if="task.type === 'numbered'" class="w-5 flex items-center justify-end">
+                  <span class="font-['JetBrains_Mono',monospace] text-[13px] text-[#00f0ff]/80 select-none">{{ getNumberedIndex(task) }}.</span>
+                </div>
+                <button v-else-if="isCollapsible(task)"
+                        @click="toggleCollapse(task)"
+                        class="w-5 h-5 flex items-center justify-center text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
+                        :class="task.payload?.collapsed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+                        :title="task.payload?.collapsed ? '展开' : '折叠'">
+                  <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+                <div v-else-if="task.type === 'callout'" class="w-5 flex items-start justify-center select-none text-[15px] leading-5">
+                  {{ task.payload?.icon || '💡' }}
+                </div>
               </div>
             </div>
 
-            <!-- 基础区块类型前缀：同样左突出到负空间，宽度统一，各类型文本起点严格一致 -->
-            <template v-if="EDITABLE_TYPES.includes(task.type)">
-              <div v-if="task.type === 'todo'" class="absolute -left-6 top-1.5 w-5 h-5 flex items-center justify-center">
-                <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })" 
-                       class="peer appearance-none w-5 h-5 border-2 border-[#1e2126] bg-[#090a0c] checked:border-[#00f0ff] checked:bg-[#00f0ff]/20 cursor-pointer transition-all rounded-none outline-none" 
-                       style="clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px)" />
-                <svg class="absolute w-3.5 h-3.5 text-[#00f0ff] pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                  <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-              <div v-else-if="task.type === 'bullet'" class="absolute -left-6 top-[0.6rem] w-5 flex items-center justify-center">
-                <div class="w-1.5 h-1.5 rounded-full bg-[#00f0ff]/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
-              </div>
-              <div v-else-if="task.type === 'numbered'" class="absolute -left-6 top-1.5 w-5 flex items-center justify-end">
-                <span class="font-['JetBrains_Mono',monospace] text-[13px] text-[#00f0ff]/80 select-none">{{ getNumberedIndex(task) }}.</span>
-              </div>
-              <button v-else-if="isCollapsible(task)"
-                      @click="toggleCollapse(task)"
-                      class="absolute -left-6 top-1 w-5 h-5 flex items-center justify-center text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
-                      :class="task.payload?.collapsed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
-                      :title="task.payload?.collapsed ? '展开' : '折叠'">
-                <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
-              </button>
-              <div v-else-if="task.type === 'callout'" class="absolute -left-6 top-1.5 w-5 flex items-start justify-center select-none text-[15px] leading-5">
-                {{ task.payload?.icon || '💡' }}
-              </div>
-              <div v-if="task.type === 'quote'" class="absolute -left-4 top-1 bottom-1 w-0.5 bg-[#ffb000] rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
+            <!-- 引用竖线：装饰元素，贴在文字左侧（quote 的 flex-1 有 pl-4 让出空间） -->
+            <div v-if="task.type === 'quote'" class="absolute -left-4 top-2 bottom-2 w-0.5 bg-[#ffb000] rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
 
+            <template v-if="EDITABLE_TYPES.includes(task.type)">
               <!-- ContentEditable 富文本 -->
               <div class="flex-1 relative">
                 <div :ref="(el) => setInputRef(el, task.id)" 
@@ -528,7 +565,7 @@ interface Task {
   payload?: any;
   prevId?: string | null;
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; coverPos?: number; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -1234,7 +1271,73 @@ const coverStyle = (cover: string) => {
     const g = COVER_GRADIENTS.find((x) => x.id === cover.slice('gradient:'.length));
     return { background: g ? g.css : '#1e2126' };
   }
-  return { backgroundImage: `url("${cover}")`, backgroundSize: 'cover', backgroundPosition: 'center' };
+  // object-position 的 y 由 coverPos 驱动（0=顶部 100=底部），x 固定居中。
+  // 默认 35 而非 50：竖构图人像的主体（脸部）通常位于画面上部，
+  // 居中裁切会把头顶切掉、下半身占比过大。35 是兼顾人像与风景的经验值。
+  const posY = activePage.value?.coverPos ?? 35;
+  return {
+    backgroundImage: `url("${cover}")`,
+    backgroundSize: 'cover',
+    backgroundPosition: `center ${posY}%`,
+  };
+};
+
+// 封面的自然宽高比。图片是 DataURL/远程 URL，无法从字段直接得知，
+// 故预加载一次读取 naturalWidth/naturalHeight（仅请求一次，浏览器有缓存）。
+const coverNatural = ref<{ w: number; h: number } | null>(null);
+watch(
+  () => activePage.value?.cover,
+  (cover) => {
+    coverNatural.value = null;
+    if (!cover || cover.startsWith('gradient:')) return;
+    const img = new Image();
+    img.onload = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) coverNatural.value = { w: img.naturalWidth, h: img.naturalHeight };
+    };
+    img.src = cover;
+  },
+  { immediate: true },
+);
+
+// 封面高度：按图片自然比例推算，clamp 在 200~420px。
+// 渐变无自然比例，用固定 240px。
+// 效果：横幅全景图 → 矮（不浪费纵向空间）；竖构图人像 → 高（能容纳更多身体，而非只露头）。
+const coverHeight = computed(() => {
+  const n = coverNatural.value;
+  if (!n) return 240;
+  // 内容列宽度未知（全出血），用窗口宽度近似；clamp 保证任何视口下都不失控
+  const approxW = Math.min(window.innerWidth, 1600);
+  const h = Math.round(approxW / (n.w / n.h));
+  return Math.max(200, Math.min(420, h));
+});
+
+// 拖动重新取景：把垂直拖拽距离映射到 coverPos（0~100）
+const coverDragging = ref(false);
+let coverDragStart: { y: number; pos: number } | null = null;
+const startCoverDrag = (e: { clientY: number }) => {
+  if (!activePage.value) return;
+  coverDragStart = { y: e.clientY, pos: activePage.value.coverPos ?? 35 };
+  coverDragging.value = true;
+  const onMove = (ev: MouseEvent | TouchEvent) => {
+    if (!coverDragStart) return;
+    const y = 'touches' in ev && ev.touches.length > 0 ? ev.touches[0].clientY : (ev as MouseEvent).clientY;
+    const dy = y - coverDragStart.y;
+    // 120px 拖拽 = 全范围，兼顾精细与效率
+    const next = Math.max(0, Math.min(100, coverDragStart.pos + (dy / 120) * 100));
+    if (activePage.value) activePage.value.coverPos = Math.round(next);
+  };
+  const onUp = () => {
+    coverDragging.value = false;
+    coverDragStart = null;
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onUp);
+  };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', onUp);
 };
 
 const openCoverPicker = (e: MouseEvent) => {
@@ -1243,14 +1346,18 @@ const openCoverPicker = (e: MouseEvent) => {
 };
 const closeCoverPicker = () => { coverAnchorEl.value = null; };
 const setCover = (cover: string, credit?: { author: string; authorUrl: string; source: string; sourceUrl: string }) => {
-  if (activePage.value) activePage.value.cover = cover;
+  if (activePage.value) {
+    activePage.value.cover = cover;
+    // 换图时重置取景点，避免沿用上一张图的构图偏移
+    activePage.value.coverPos = undefined;
+  }
   coverCredit.value = credit ?? null; // 渐变/本地上传无署名
   closeCoverPicker();
 };
 // 署名信息：图库选图时附带保存（Unsplash 的硬性合规要求）
 const coverCredit = ref<{ author: string; authorUrl: string; source: string; sourceUrl: string } | null>(null);
 const removeCover = () => {
-  if (activePage.value) activePage.value.cover = undefined;
+  if (activePage.value) { activePage.value.cover = undefined; activePage.value.coverPos = undefined; }
   coverTouched.value = false;
   closeCoverPicker();
 };
@@ -2170,6 +2277,17 @@ const getTextClass = (task: Task) => {
 };
 const getPlaceholder = (type: string) => { if (type === 'h1') return '标题 1'; if (type === 'h2') return '标题 2'; if (type === 'h3') return '标题 3'; if (type === 'callout') return '写点提示…'; if (type === 'text') return "输入 '/' 唤出命令菜单..."; return '...'; };
 
+// 左槽控件对齐用的字号类。必须与 .ce-block 的字号保持一致：
+// 左槽用 h-[1lh] 把控件盒限制在「首行行高」内，而 lh 单位取元素自身的
+// line-height × font-size。若字号不一致，算出的行高就与文字行盒不匹配，对齐失效。
+// 修改 getTextClass 的字号时，这里要同步。
+const getFontSizeClass = (task: Task) => {
+  if (task.type === 'h1') return 'text-2xl';
+  if (task.type === 'h2') return 'text-xl';
+  if (task.type === 'h3') return 'text-lg';
+  return 'text-[15px]';
+};
+
 // 供 App.vue 的备份工具栏调用
 defineExpose({ exportMarkdown });
 </script>
@@ -2179,6 +2297,22 @@ defineExpose({ exportMarkdown });
 .ce-block i, .ce-block em { font-style: italic; color: #ffb000; }
 .ce-block u { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(0, 240, 255, 0.6); }
 .ce-block strike, .ce-block del { text-decoration: line-through; color: #6b7280; opacity: 0.8; }
+/* 左槽控制手柄（+号 / 拖拽点）可见性。
+   用媒体查询区分设备能力，而非 JS 判断，好处是零运行时开销、且不依赖 UA 嗅探：
+   - 支持真实 hover 的设备（桌面）：只跟随鼠标所在行。光标停在哪一行完全不显示，
+     与 Notion 一致。此前用「hover 或聚焦」会导致光标停留行常驻手柄。
+   - 无 hover 能力的设备（触屏）：hover 不可用，退化为「聚焦该块时显示」（is-active）。
+     这是触屏唯一的可达路径，必须保留。
+   注意手柄是 .task-item-container 的绝对定位子元素（left:-72px 溢出到容器外），
+   CSS :hover 会覆盖溢出的后代，所以鼠标移到手柄上时手柄不会闪退。 */
+.row-handles { opacity: 0; }
+@media (hover: hover) and (pointer: fine) {
+  .task-item-container:hover .row-handles { opacity: 1; }
+}
+@media (hover: none) {
+  .row-handles.is-active { opacity: 1; }
+}
+
 /* 浮动格式工具栏 */
 .ft-btn { display: flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 2px; color: #e5e7eb; font-size: 13px; transition: all 0.15s; }
 .ft-btn:hover { background: #1e2126; color: #00f0ff; }
