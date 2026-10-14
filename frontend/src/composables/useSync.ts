@@ -1,6 +1,6 @@
 import { ref, watch, type Ref } from 'vue';
 import { getStore } from './storage';
-import { newBlockId } from './ids';
+import { newBlockId, newPageId } from './ids';
 
 // === 数据结构 ===
 export interface Task {
@@ -397,6 +397,83 @@ export const importBackup = async (file: File): Promise<{ ok: boolean; message: 
     return { ok: true, message: `已导入 ${pages.length} 个页面` };
   } catch (e) {
     return { ok: false, message: '解析失败：' + (e as Error).message };
+  }
+};
+
+// Markdown 导入（Notion 导出的 .md 是主要目标）。
+// 与 importBackup 的「覆盖」不同，这里是「追加新页面」：
+// 导入不该清空用户已有内容，故每次导入生成新的页面 id。
+export const importMarkdown = async (
+  file: File,
+): Promise<{ ok: boolean; message: string; detail?: string }> => {
+  try {
+    if (!currentPagesRef) return { ok: false, message: '同步尚未初始化' };
+    const text = await file.text();
+    const { parseMarkdown } = await import('./markdownImport');
+    const { blocks, downgraded } = parseMarkdown(text);
+    if (blocks.length === 0) {
+      return { ok: false, message: '未解析出任何内容块' };
+    }
+
+    // 标题取文件名（去掉 .md），比正文首行更可靠——
+    // Notion 导出的 .md 首行未必是标题
+    const title = file.name.replace(/\.md$/i, '').trim() || '导入的文档';
+
+    const tasks = blocks.map((b) => ({
+      id: newBlockId(),
+      type: b.type,
+      content: b.content,
+      completed: b.completed ?? false,
+      indentLevel: b.indentLevel ?? 0,
+      prevId: null as string | null,
+      payload: b.payload,
+    }));
+    // 重建 prevId 链，保证三端同步的顺序可确定性合并
+    tasks.forEach((t, i) => { t.prevId = i === 0 ? null : tasks[i - 1].id; });
+
+    const page: Page = {
+      id: newPageId(),
+      title,
+      tasks,
+      parentId: null,
+      isFavorite: false,
+      isExpanded: true,
+    };
+
+    currentPagesRef.value = [...currentPagesRef.value, page];
+    await pushAll(currentPagesRef.value);
+
+    const detail = `导入「${title}」：${blocks.length} 个块` + (downgraded > 0 ? `，${downgraded} 行降级为文本` : '');
+    return { ok: true, message: detail, detail };
+  } catch (e) {
+    return { ok: false, message: '导入失败：' + (e as Error).message };
+  }
+};
+
+// ZIP 导入（Notion 的 Markdown & CSV 导出）。
+// 与 importMarkdown 一样是追加语义，但一次可导入多个页面并重建层级。
+export const importNotionZip = async (
+  file: File,
+): Promise<{ ok: boolean; message: string }> => {
+  try {
+    if (!currentPagesRef) return { ok: false, message: '同步尚未初始化' };
+    const { importZip } = await import('./zipImport');
+    const result = await importZip(file);
+    if (!result || result.pages.length === 0) {
+      return { ok: false, message: 'ZIP 中未找到可导入的 Markdown 文件' };
+    }
+
+    currentPagesRef.value = [...currentPagesRef.value, ...result.pages];
+    await pushAll(currentPagesRef.value);
+
+    const totalBlocks = result.report.reduce((s, r) => s + r.blocks, 0);
+    const parts = [`导入 ${result.pages.length} 个页面、${totalBlocks} 个块`];
+    const downgraded = result.report.reduce((s, r) => s + r.downgraded, 0);
+    if (downgraded > 0) parts.push(`${downgraded} 处降级为文本`);
+    if (result.imageFailures > 0) parts.push(`${result.imageFailures} 张图片下载失败（已保留原链接）`);
+    return { ok: true, message: parts.join('，') };
+  } catch (e) {
+    return { ok: false, message: 'ZIP 导入失败：' + (e as Error).message };
   }
 };
 
