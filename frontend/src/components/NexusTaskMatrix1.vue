@@ -88,16 +88,49 @@
     </aside>
 
     <!-- 右侧主编辑区 -->
-    <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" v-if="activePage" @scroll="hideFormatToolbar">
+    <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
       <div class="w-full h-1 bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
+      <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
+           桌面端 hover 浮出操作条；触屏无 hover，故点击封面后常驻显示 -->
+      <div v-if="activePage.cover" class="relative group/cover shrink-0 overflow-hidden" style="height: 240px;"
+           @mousedown="coverTouched = true" @touchstart.stop="coverTouched = true">
+        <div class="w-full h-full" :style="coverStyle(activePage.cover)"></div>
+        <div class="absolute top-3 right-4 flex items-center gap-1.5 transition-opacity z-10"
+             :class="coverTouched ? 'opacity-100' : 'opacity-0 group-hover/cover:opacity-100'">
+          <button @click.stop="openCoverPicker($event)"
+                  class="px-2.5 py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#e5e7eb] hover:text-[#00f0ff] hover:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
+            更换封面
+          </button>
+          <button @click.stop="removeCover"
+                  class="px-2.5 py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#ff2a2a] hover:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
+            移除
+          </button>
+        </div>
+        <!-- 摄影师署名（Unsplash 等图库的硬性合规要求） -->
+        <div v-if="coverCredit" class="absolute bottom-2 right-4 text-[10px] text-[#e5e7eb]/70 backdrop-blur-sm bg-[#090a0c]/60 px-2 py-0.5 rounded-sm">
+          Photo by
+          <a :href="coverCredit.authorUrl" target="_blank" rel="noopener" class="text-[#00f0ff] hover:underline">{{ coverCredit.author }}</a>
+          on
+          <a :href="coverCredit.sourceUrl" target="_blank" rel="noopener" class="text-[#00f0ff] hover:underline">{{ coverCredit.source }}</a>
+        </div>
+      </div>
+
       <div class="max-w-4xl w-full mx-auto pt-12 pb-0 px-20 flex-1 flex flex-col">
-        <!-- 面包屑导航 -->
-        <div class="flex items-center gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] mb-8" v-if="activePageBreadcrumbs.length > 0">
-           <template v-for="(crumb, idx) in activePageBreadcrumbs" :key="crumb.id">
-              <span class="hover:text-[#e5e7eb] cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id"><span v-if="crumb.icon" class="mr-1">{{ crumb.icon }}</span>{{ crumb.title || '无标题' }}</span>
-              <span v-if="idx < activePageBreadcrumbs.length - 1" class="opacity-50">/</span>
-           </template>
+        <!-- 面包屑 + 添加入口（无封面时才显示，避免与封面操作条重复） -->
+        <div class="flex items-start justify-between gap-4 mb-8">
+          <div class="flex items-center gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] min-w-0" v-if="activePageBreadcrumbs.length > 0">
+             <template v-for="(crumb, idx) in activePageBreadcrumbs" :key="crumb.id">
+                <span class="hover:text-[#e5e7eb] cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id"><span v-if="crumb.icon" class="mr-1">{{ crumb.icon }}</span>{{ crumb.title || '无标题' }}</span>
+                <span v-if="idx < activePageBreadcrumbs.length - 1" class="opacity-50">/</span>
+             </template>
+          </div>
+          <button v-if="!activePage.cover" @click="openCoverPicker($event)"
+                  class="shrink-0 flex items-center gap-1.5 px-2 py-1 text-xs text-[#6b7280] hover:text-[#00f0ff] rounded-sm transition-colors"
+                  title="设置页眉封面">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+            添加封面
+          </button>
         </div>
 
         <!-- 文档图标（Notion 的 Page Icon）：位于标题上方的大图标。
@@ -466,6 +499,14 @@
                     @remove="removePageIcon"
                     @close="closeIconPicker" />
 
+    <!-- 页眉封面选择器 -->
+    <PageCoverPicker v-if="coverAnchorEl"
+                     :current="activePage?.cover"
+                     :anchor-el="coverAnchorEl"
+                     @select="setCover"
+                     @remove="removeCover"
+                     @close="closeCoverPicker" />
+
   </div>
 </template>
 
@@ -475,6 +516,7 @@ import { initSync, closeSync, createRemotePage, deleteRemotePage, syncStatus, on
 import { newBlockId, newPageId } from '../composables/ids';
 import { writePrevIds } from '../composables/useSync';
 import PageIconPicker from './PageIconPicker.vue';
+import PageCoverPicker, { COVER_GRADIENTS } from './PageCoverPicker.vue';
 
 // === 数据结构 ===
 interface Task {
@@ -486,7 +528,7 @@ interface Task {
   payload?: any;
   prevId?: string | null;
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -781,6 +823,7 @@ onMounted(async () => {
     if (!target.closest('.task-item-container')) clearBlockSelection();
     // 图标选择器自身处理外部点击，这里只兜底页面级关闭
     if (!target.closest('.icon-picker-popup')) closeIconPicker();
+    if (!target.closest('.cover-picker-popup')) closeCoverPicker();
   };
   document.addEventListener('mousedown', handleGlobalClick);
 
@@ -1180,6 +1223,37 @@ const removePageIcon = () => {
 };
 
 const closeIconPicker = () => { iconPicker.value = null; };
+
+// === 页眉封面（Page Cover，对齐 Notion）===
+// cover 存的是图片 URL/DataURL，或 `gradient:<id>` 标记（零存储成本的渐变色）
+const coverAnchorEl = ref<HTMLElement | null>(null);
+const coverTouched = ref(false); // 触屏：点击封面上浮操作条
+
+const coverStyle = (cover: string) => {
+  if (cover.startsWith('gradient:')) {
+    const g = COVER_GRADIENTS.find((x) => x.id === cover.slice('gradient:'.length));
+    return { background: g ? g.css : '#1e2126' };
+  }
+  return { backgroundImage: `url("${cover}")`, backgroundSize: 'cover', backgroundPosition: 'center' };
+};
+
+const openCoverPicker = (e: MouseEvent) => {
+  e.stopPropagation();
+  coverAnchorEl.value = (e.currentTarget as HTMLElement) ?? null;
+};
+const closeCoverPicker = () => { coverAnchorEl.value = null; };
+const setCover = (cover: string, credit?: { author: string; authorUrl: string; source: string; sourceUrl: string }) => {
+  if (activePage.value) activePage.value.cover = cover;
+  coverCredit.value = credit ?? null; // 渐变/本地上传无署名
+  closeCoverPicker();
+};
+// 署名信息：图库选图时附带保存（Unsplash 的硬性合规要求）
+const coverCredit = ref<{ author: string; authorUrl: string; source: string; sourceUrl: string } | null>(null);
+const removeCover = () => {
+  if (activePage.value) activePage.value.cover = undefined;
+  coverTouched.value = false;
+  closeCoverPicker();
+};
 
 const focusTitle = () => {
   nextTick(() => {
