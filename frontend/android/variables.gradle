@@ -1,0 +1,25 @@
+ext {
+    // 阶段 1 决策（2026-10-16）：最低 API 26（Android 8.0）。
+    // IndexedDB 在 WebView 的可靠起点；API 23-25 存储行为不稳。
+    minSdkVersion = 26
+    compileSdkVersion = 36
+    targetSdkVersion = 36
+    androidxActivityVersion = '1.11.0'
+    androidxAppCompatVersion = '1.7.1'
+    androidxCoordinatorLayoutVersion = '1.3.0'
+    androidxCoreVersion = '1.17.0'
+    androidxFragmentVersion = '1.8.9'
+    coreSplashScreenVersion = '1.2.0'
+    androidxWebkitVersion = '1.14.0'
+    junitVersion = '4.13.2'
+    androidxJunitVersion = '1.3.0'
+    androidxEspressoCoreVersion = '3.7.0'
+    cordovaAndroidVersion = '14.0.1'
+    // 原生壳（Compose）依赖。
+    // Kotlin 与 Compose 编译器插件同版本；Compose BOM 2026.06.01 = ui 1.11.4 / material3 1.4.0，
+    // 编译器必须不旧于 runtime。
+    // 注意（2026-10-16）：勿升到 BOM 2026.08.00/2026.09.00——其 ui 1.12.x 要求 AGP 9.1.0+
+    // 与 compileSdk 37，checkDebugAarMetadata 会失败（22 issues）。升级 AGP 9.x 前锁死此版本。
+    kotlinVersion = '2.4.21'
+    composeBomVersion = '2026.06.01'
+}

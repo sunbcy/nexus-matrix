@@ -3,7 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      viewport 移动端配置（ Capacitor WebView / Android 为主）：
+      - viewport-fit=cover：允许布局延伸到刘海/圆角区，配合 CSS env(safe-area-inset-*) 使用。
+        不配 cover 时 inset 恒为 0；配了但 WebView 未边到边时同样为 0，属于无害防御。
+      - interactive-widget=resizes-content：软键盘弹出时收缩「布局视口」而非只收视觉视口。
+        这是键盘顶部工具条（format toolbar 吸顶）能正常工作的前提；Chrome 108+ 支持，
+        iOS WebKit 不支持（忽略该值，退回默认行为）。桌面端无软键盘，无副作用。
+      - 不禁用缩放：WCAG 要求至少 2× 缩放；双击缩放改用 touch-action: manipulation 抑制。
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>frontend</title>
   </head>
   <body>

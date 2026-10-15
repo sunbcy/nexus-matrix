@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Nexus Matrix</string>
+    <string name="title_activity_main">Nexus Matrix</string>
+    <string name="package_name">com.nexusmatrix.app</string>
+    <string name="custom_url_scheme">com.nexusmatrix.app</string>
+</resources>

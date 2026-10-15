@@ -1,6 +1,7 @@
 import { ref, watch, type Ref } from 'vue';
 import { getStore } from './storage';
 import { newBlockId, newPageId } from './ids';
+import { getRuntimeConfig } from '../runtimeConfig';
 
 // === 数据结构 ===
 export interface Task {
@@ -140,8 +141,21 @@ export const sanitizeLoadedPages = (pages: Page[]): Page[] =>
 
 // === 配置 ===
 const LOCAL_STORAGE_KEY = 'nexus_matrix_pages_v3';
-// 走 Vite 代理（/api -> 后端），同源自相对路径，避免硬编码端口
-const API_BASE = '/api';
+
+// 服务器地址：默认走同源相对路径（由 Vite 代理 /api 与 /ws 转发到后端，见 vite.config.ts）。
+// 但**移动端 WebView 的 window.location.host 不是后端地址**（是本地 file:// 或 localhost），
+// 若不配置，打包进 App 后根本连不上服务器。因此提供 VITE_SYNC_SERVER 覆盖：
+//   桌面开发：不设置（走 Vite 代理）
+//   Capacitor/Tauri：VITE_SYNC_SERVER=http://192.168.1.10:8010
+//   Electron 打包：同上
+// 运行时注入（URL ?syncServer= 或 window.__NEXUS_CONFIG__）优先于构建期 env，
+// 便于同一份产物切换环境；注入逻辑见 runtimeConfig.ts
+const SYNC_SERVER = (getRuntimeConfig().syncServer || import.meta.env.VITE_SYNC_SERVER || '').replace(/\/+$/, '');
+const API_BASE = SYNC_SERVER ? `${SYNC_SERVER}/api` : '/api';
+// ws 与 http 的协议映射：https -> wss（混合内容会被浏览器拦截）
+const WS_ORIGIN = SYNC_SERVER
+  ? SYNC_SERVER.replace(/^http/, 'ws')
+  : '';
 const WS_PATH = '/ws/sync';
 
 // === 同步状态 ===
@@ -261,8 +275,13 @@ const sendWS = (payload: any) => {
 };
 
 const connectWS = (pagesRef: Ref<Page[]>) => {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  wsUrl = `${proto}//${window.location.host}${WS_PATH}`;
+  // 配置了独立服务器地址就用它，否则回退到同源（走 Vite 代理）
+  if (WS_ORIGIN) {
+    wsUrl = `${WS_ORIGIN}${WS_PATH}`;
+  } else {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    wsUrl = `${proto}//${window.location.host}${WS_PATH}`;
+  }
 
   try {
     socket = new WebSocket(wsUrl);

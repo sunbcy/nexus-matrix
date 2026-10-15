@@ -31,6 +31,37 @@
     background-color: rgba(0, 240, 255, 0.3);
     color: #ffffff;
   }
+
+  /* 移动端基础设置（阶段 1 移动适配）：
+     1. 禁止滚动链传导/橡皮筋：WebView 内没有系统下拉刷新，但滚动到边缘后继续拖拽
+        会把事件透给外层容器，导致抽屉/页面跟着抖。overscroll-behavior: none 一刀切。
+     2. 禁掉双击缩放与文本选择放大镜的误触：touch-action: manipulation 移除
+         300ms 点击延迟和双击缩放，同时保留捏合缩放（WCAG）。 */
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+
+  body {
+    touch-action: manipulation;
+  }
+}
+
+/* 视口高度工具类：100vh 先行（旧 WebView 不支持 dvh 时保底），dvh 覆盖
+   （软键盘弹出时 dvh 随布局视口收缩，vh 不缩 → 内容被键盘顶出屏幕）。
+   Chrome 108+/Android System WebView 现代版本支持 dvh。 */
+.h-viewport {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* 安全区工具类：WebView 未边到边时 env() 恒为 0，无害；
+   一旦原生壳走边到边（targetSdk 36 默认趋势），这些 padding 自动生效。 */
+.pt-safe {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* 扫光动画（TacticalButton 等控件可用） */

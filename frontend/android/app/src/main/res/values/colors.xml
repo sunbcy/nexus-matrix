@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 Web 端 src/style.css 的品牌变量对齐：
+         nexus-void / cyan-glow。 -->
+    <color name="nexusBackground">#090a0c</color>
+    <color name="colorPrimary">#00F0FF</color>
+    <color name="colorPrimaryDark">#00B8CC</color>
+    <color name="colorAccent">#00F0FF</color>
+</resources>

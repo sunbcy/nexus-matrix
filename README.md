@@ -179,6 +179,28 @@ yarn dev
 
 前端地址：http://localhost:5180（`vite.config.ts` 已配置 `/api`、`/ws` 代理到后端）
 
+### 方式三：Android App（原生壳 + WebView 编辑器）
+
+阶段 1 已完成原生壳（Kotlin + Jetpack Compose，Capacitor 8 容器，最低 Android 8.0 / API 26）。
+架构与 Notion 移动端同款：原生 Compose 外壳（底部 Tab：文档 / 收藏 / 设置）+ WebView 编辑器
+（加载本仓库 Vue 前端产物，`https://localhost` scheme 本地打包，离线可用）。
+
+```powershell
+cd frontend
+npm install                    # 首次（含 @capacitor/* 依赖）
+npm run android:build          # 构建 dist 并同步进 android 工程
+cd android
+.\gradlew.bat assembleDebug    # 产出 app-debug.apk
+```
+
+- 需要 JDK 21 + Android SDK 36（Android Studio Ladybug+ 自带 JBR 21）。
+- **全新克隆后必须先跑 `npm run android:build`**：`capacitor-cordova-android-plugins/` 与
+  Web 产物目录均被 gitignore，不跑 sync 直接 assemble 会报工程缺失。
+- 后端地址不写死在产物里：App「设置」Tab 输入 `http://<局域网IP>:8010` 即注入 WebView
+  （URL query `?syncServer=`，优先级高于构建期 env）；留空 = 纯本地模式。
+- 真机验收清单见 `ANDROID_VERIFICATION.md`（冷启动 / 存储持久化 / 离线恢复 / cleartext / 软键盘）。
+- 方案与阶段规划见 `STAGE1_ANDROID_PLAN.md`、`NATIVE_ANDROID_INTEGRATION.md`。
+
 ---
 
 ## 说明与后续方向

@@ -1,8 +1,12 @@
 <template>
-  <div class="flex h-screen w-full bg-[#090a0c] text-[#e5e7eb] font-sans overflow-hidden" @drop="handleGlobalDrop" @dragover.prevent>
-    
-    <!-- 左侧边栏 (Sidebar - Tree & Routing) -->
-    <aside class="w-[280px] bg-[#14161a] border-r border-[#1e2126] flex flex-col shrink-0 transition-all z-10">
+  <div class="flex h-viewport w-full bg-[#090a0c] text-[#e5e7eb] font-sans overflow-hidden" @drop="handleGlobalDrop" @dragover.prevent>
+
+    <!-- 左侧边栏 (Sidebar - Tree & Routing)
+         移动端（<768px）变为浮层抽屉：默认移出屏幕，汉堡按钮/遮罩控制开合。
+         桌面端保持常驻（md: 断点恢复 static 定位与 translate-x-0）。
+         注意：抽屉内所有导航点击都要顺手关抽屉（见 selectPage 系列调用）。 -->
+    <aside class="fixed inset-y-0 left-0 z-40 w-[min(280px,85vw)] bg-[#14161a] border-r border-[#1e2126] flex flex-col shrink-0 transition-transform duration-200 md:relative md:inset-auto md:z-10 md:w-[280px] md:translate-x-0"
+           :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'">
       <div class="h-14 px-4 flex items-center justify-between border-b border-[#1e2126] shadow-sm shrink-0">
         <div class="flex items-center gap-2">
           <span class="w-2 h-2 bg-[#00f0ff] rounded-sm shadow-[0_0_8px_rgba(0,240,255,0.6)] animate-pulse"></span>
@@ -20,13 +24,41 @@
         </button>
       </div>
 
+      <!-- 全局搜索：匹配页面标题与正文，点击结果直接跳转 -->
+      <div class="px-2 pb-2 shrink-0 border-b border-[#1e2126]">
+        <div class="relative">
+          <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7280] pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <input v-model="searchQuery" type="text" placeholder="搜索标题或正文…  (Ctrl+Shift+F)"
+                 class="w-full bg-[#090a0c] border border-[#1e2126] focus:border-[#00f0ff] outline-none pl-7 pr-2 py-1.5 text-sm text-[#e5e7eb] rounded-sm transition-colors placeholder:text-[#6b7280]/60" />
+          <button v-if="searchQuery" @click="searchQuery = ''" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-[#6b7280] hover:text-[#e5e7eb] transition-colors" title="清空">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+        <!-- 搜索结果 -->
+        <div v-if="searchQuery.trim()" class="mt-2 max-h-[280px] overflow-y-auto custom-scrollbar space-y-0.5">
+          <div v-if="searchResults.length === 0" class="text-xs text-[#6b7280] py-3 text-center">无匹配结果</div>
+          <div v-for="r in searchResults" :key="'sr-'+r.page.id"
+               @click="selectPage(r.page.id); searchQuery = ''"
+               class="px-2 py-1.5 rounded-sm cursor-pointer transition-colors hover:bg-[#1e2126]/60 group">
+            <div class="flex items-center gap-1.5 text-sm text-[#e5e7eb] truncate">
+              <span v-if="r.page.icon" class="shrink-0">{{ r.page.icon }}</span>
+              <svg v-else class="w-3.5 h-3.5 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <!-- 标题命中时 snippet 就是带高亮的标题，直接渲染，不再重复显示纯文本标题 -->
+              <span v-if="r.isTitleHit" class="truncate" v-html="r.snippet"></span>
+              <span v-else class="truncate">{{ r.page.title || '无标题' }}</span>
+            </div>
+            <div v-if="!r.isTitleHit && r.snippet" class="text-xs text-[#6b7280] truncate pl-5 mt-0.5" v-html="r.snippet"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="flex-1 overflow-y-auto py-4 space-y-6 custom-scrollbar">
         <!-- 收藏的子程序 -->
         <div v-if="favoritePages.length > 0">
           <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">收藏的子程序</div>
           <div class="space-y-0.5 px-2">
             <div v-for="page in favoritePages" :key="'fav-'+page.id"
-                 @click="activePageId = page.id"
+                 @click="selectPage(page.id)"
                  class="group flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer transition-colors"
                  :class="activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50'">
               <div class="flex items-center gap-2 truncate">
@@ -41,20 +73,21 @@
         <div>
           <div class="flex items-center justify-between text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold group">
             <span>私人空间网络</span>
-            <button @click="createPage(null)" class="opacity-0 group-hover:opacity-100 hover:text-[#00f0ff] transition-all" title="新建根页面">
+            <!-- 新建根页面：桌面端 hover 才浮出；触屏无 hover，必须常驻可见 -->
+            <button @click="createPage(null)" class="opacity-100 md:opacity-0 md:group-hover:opacity-100 active:text-[#00f0ff] transition-all p-2 md:p-0 -mr-2 md:mr-0" title="新建根页面" aria-label="新建根页面">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             </button>
           </div>
           
           <div class="space-y-0.5 px-2">
             <div v-for="page in visiblePages" :key="page.id"
-                 @click="activePageId = page.id"
+                 @click="selectPage(page.id)"
                  :style="{ paddingLeft: `${page.depth * 0.75 + 0.25}rem` }"
                  class="group relative flex items-center justify-between py-1.5 pr-2 rounded-md cursor-pointer transition-colors"
                  :class="activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50'">
               
               <div class="flex items-center gap-1.5 truncate">
-                <button @click.stop="toggleExpand(page.id)" class="w-5 h-5 flex items-center justify-center shrink-0 hover:bg-[#1e2126] rounded text-[#6b7280] hover:text-[#e5e7eb] transition-colors">
+                <button @click.stop="toggleExpand(page.id)" class="w-8 h-8 md:w-5 md:h-5 flex items-center justify-center shrink-0 active:bg-[#1e2126] rounded text-[#6b7280] transition-colors" aria-label="展开或折叠子页面">
                   <svg v-if="page.hasChildren" class="w-3 h-3 transition-transform duration-200" :class="{'rotate-90': page.isExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
                   <div v-else class="w-3 h-3"></div> 
                 </button>
@@ -70,15 +103,17 @@
                 <span class="text-sm truncate font-medium">{{ page.title || '无标题' }}</span>
               </div>
               
-              <div class="flex items-center opacity-0 group-hover:opacity-100 transition-opacity gap-0.5 shrink-0 bg-[#1e2126] rounded px-1 shadow-sm" :class="activePageId === page.id ? 'opacity-100' : ''">
-                <button @click.stop="toggleFavorite(page.id)" class="p-1 text-[#6b7280] hover:text-[#ffb000] transition-colors" title="收藏">
-                  <svg class="w-3.5 h-3.5" :fill="page.isFavorite ? 'currentColor' : 'none'" :class="page.isFavorite ? 'text-[#ffb000]' : ''" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+              <!-- 行内操作组：桌面端 hover 浮出；触屏无 hover，常驻可见（Notion 移动端同理：
+                   hover 收纳的控件在触屏一律常驻）。桌面端仅激活页常驻的行为不变 -->
+              <div class="flex items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity gap-0.5 shrink-0 bg-[#1e2126] rounded px-1 shadow-sm" :class="activePageId === page.id ? 'md:opacity-100' : ''">
+                <button @click.stop="toggleFavorite(page.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#ffb000] transition-colors" title="收藏" aria-label="收藏">
+                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" :fill="page.isFavorite ? 'currentColor' : 'none'" :class="page.isFavorite ? 'text-[#ffb000]' : ''" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
                 </button>
-                <button @click.stop="createPage(page.id)" class="p-1 text-[#6b7280] hover:text-[#00f0ff] transition-colors" title="新建子页面">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                <button @click.stop="createPage(page.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#00f0ff] transition-colors" title="新建子页面" aria-label="新建子页面">
+                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 </button>
-                <button @click.stop="deletePage(page.id)" class="p-1 text-[#6b7280] hover:text-[#ff2a2a] transition-colors" v-if="pages.length > 1" title="删除">
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                <button @click.stop="deletePage(page.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#ff2a2a] transition-colors" v-if="pages.length > 1" title="删除" aria-label="删除页面">
+                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                 </button>
               </div>
             </div>
@@ -86,6 +121,9 @@
         </div>
       </div>
     </aside>
+
+    <!-- 抽屉遮罩（仅移动端）：点击关闭。放在 main 之下、抽屉之上 -->
+    <div v-if="sidebarOpen" class="fixed inset-0 z-30 bg-black/60 md:hidden" @click="sidebarOpen = false"></div>
 
     <!-- 右侧主编辑区 -->
     <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
@@ -106,11 +144,11 @@
         <div class="absolute top-3 right-4 flex items-center gap-1.5 transition-opacity z-10"
              :class="coverTouched || coverDragging ? 'opacity-100' : 'opacity-0 group-hover/cover:opacity-100'">
           <button @click.stop="openCoverPicker($event)"
-                  class="px-2.5 py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#e5e7eb] hover:text-[#00f0ff] hover:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
+                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#e5e7eb] active:text-[#00f0ff] active:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
             更换封面
           </button>
           <button @click.stop="removeCover"
-                  class="px-2.5 py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#ff2a2a] hover:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
+                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] active:text-[#ff2a2a] active:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
             移除
           </button>
         </div>
@@ -127,17 +165,25 @@
         </div>
       </div>
 
-      <div class="max-w-4xl w-full mx-auto pt-12 pb-0 px-20 flex-1 flex flex-col">
-        <!-- 面包屑 + 添加入口（无封面时才显示，避免与封面操作条重复） -->
-        <div class="flex items-start justify-between gap-4 mb-8">
-          <div class="flex items-center gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] min-w-0" v-if="activePageBreadcrumbs.length > 0">
+      <div class="max-w-4xl w-full mx-auto pt-6 md:pt-12 pb-0 px-5 md:px-20 flex-1 flex flex-col">
+        <!-- 面包屑 + 添加入口（无封面时才显示，避免与封面操作条重复）。
+             移动端左侧放汉堡按钮唤出抽屉（桌面端隐藏，侧边栏常驻） -->
+        <div class="flex items-start justify-between gap-4 mb-6 md:mb-8">
+          <div class="flex items-center gap-1 md:gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] min-w-0">
+            <!-- 汉堡按钮：44px 触摸目标；only 移动端显示 -->
+            <button class="md:hidden shrink-0 -ml-2 w-11 h-11 flex items-center justify-center rounded-sm text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] transition-colors"
+                    @click="sidebarOpen = true" title="打开页面列表" aria-label="打开页面列表">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+            </button>
+            <template v-if="activePageBreadcrumbs.length > 0">
              <template v-for="(crumb, idx) in activePageBreadcrumbs" :key="crumb.id">
-                <span class="hover:text-[#e5e7eb] cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id"><span v-if="crumb.icon" class="mr-1">{{ crumb.icon }}</span>{{ crumb.title || '无标题' }}</span>
+                <span class="hover:text-[#e5e7eb] active:text-[#e5e7eb] cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id"><span v-if="crumb.icon" class="mr-1">{{ crumb.icon }}</span>{{ crumb.title || '无标题' }}</span>
                 <span v-if="idx < activePageBreadcrumbs.length - 1" class="opacity-50">/</span>
              </template>
+            </template>
           </div>
           <button v-if="!activePage.cover" @click="openCoverPicker($event)"
-                  class="shrink-0 flex items-center gap-1.5 px-2 py-1 text-xs text-[#6b7280] hover:text-[#00f0ff] rounded-sm transition-colors"
+                  class="shrink-0 flex items-center gap-1.5 px-3 py-2 md:px-2 md:py-1 text-xs text-[#6b7280] active:text-[#00f0ff] rounded-sm transition-colors"
                   title="设置页眉封面">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
             添加封面
@@ -218,7 +264,7 @@
                 <div class="row-handles flex items-center gap-1 transition-opacity z-30"
                      :class="{ 'is-active': focusedTaskId === task.id }"
                      draggable="false">
-                  <span class="inline-flex items-center justify-center w-7 h-7 cursor-pointer text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
+                  <span class="inline-flex items-center justify-center w-9 h-9 md:w-7 md:h-7 cursor-pointer text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] rounded transition-colors"
                         draggable="false"
                         @mousedown.stop.prevent="onInsertMouseDown(task.id, $event)"
                         @touchstart.stop.prevent="insertTask(task.id, 'below')"
@@ -228,7 +274,7 @@
                       <line x1="5" y1="12" x2="19" y2="12"></line>
                     </svg>
                   </span>
-                  <div class="cursor-grab active:cursor-grabbing text-[#6b7280] hover:text-[#e5e7eb] p-1"
+                  <div class="cursor-grab active:cursor-grabbing text-[#6b7280] active:text-[#e5e7eb] p-2.5 md:p-1"
                        @mousedown="draggableTaskId = task.id"
                        @mouseup="draggableTaskId = null"
                        @mouseleave="draggableTaskId = null"
@@ -260,8 +306,8 @@
                 </div>
                 <button v-else-if="isCollapsible(task)"
                         @click="toggleCollapse(task)"
-                        class="w-5 h-5 flex items-center justify-center text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] rounded transition-colors"
-                        :class="task.payload?.collapsed ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+                        class="relative w-5 h-5 flex items-center justify-center text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] rounded transition-colors before:absolute before:-inset-2 before:content-['']"
+                        :class="task.payload?.collapsed ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100'"
                         :title="task.payload?.collapsed ? '展开' : '折叠'">
                   <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </button>
@@ -326,7 +372,7 @@
                  @keydown.enter.prevent="insertTask(task.id, 'below')"
                  @keydown.backspace.prevent="deleteBlockAndFocus(task)"
                  @keydown.delete.prevent="deleteBlockAndFocus(task)">
-              <img v-if="task.payload?.url" :src="task.payload.url"
+              <img v-if="task.payload?.url" :src="resolveAssetUrl(task.payload.url)"
                    class="max-w-full rounded-md border border-[#1e2126] shadow-sm object-contain max-h-[500px] block" />
               <!-- 图片操作浮层：替换 / 删除。
                    desktop 靠 hover，触屏无 hover 故点击后（selectedMediaId）常驻显示 -->
@@ -548,10 +594,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick, watch, computed } from 'vue';
+import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue';
 import { initSync, closeSync, createRemotePage, deleteRemotePage, syncStatus, onlineDevices, retrySync } from '../composables/useSync';
+import { installNativeBridge } from '../composables/nativeBridge';
 import { newBlockId, newPageId } from '../composables/ids';
 import { writePrevIds } from '../composables/useSync';
+import { resolveAsset, saveImageAsset, isAssetRef, warmAssets, deleteAsset } from '../composables/assets';
 import PageIconPicker from './PageIconPicker.vue';
 import PageCoverPicker, { COVER_GRADIENTS } from './PageCoverPicker.vue';
 
@@ -587,6 +635,68 @@ const pages = ref<Page[]>([
 
 const activePageId = ref<string>('default-page');
 const activePage = computed(() => pages.value.find(p => p.id === activePageId.value));
+
+// 移动端抽屉开合（桌面端侧边栏常驻，此状态无效——CSS md: 断点忽略 translate）
+const sidebarOpen = ref(false);
+// 抽屉内导航的统一出口：切页即关抽屉，避免遮层留在屏幕上
+const selectPage = (id: string) => {
+  activePageId.value = id;
+  sidebarOpen.value = false;
+};
+
+// === 全局搜索 ===
+// 匹配范围：页面标题 + 所有块的正文（转纯文本后匹配）。
+// 命中正文时给出上下文片段，并用 <mark> 高亮关键词。
+const searchQuery = ref('');
+const plainText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
+
+interface SearchHit { page: Page; snippet: string; isTitleHit: boolean }
+const searchResults = computed<SearchHit[]>(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return [];
+  const hits: SearchHit[] = [];
+  for (const page of pages.value) {
+    const title = page.title || '无标题';
+    if (title.toLowerCase().includes(q)) {
+      // 标题命中也要高亮，否则用户看不出这条为何被匹配
+      const idx = title.toLowerCase().indexOf(q);
+      hits.push({
+        page,
+        isTitleHit: true,
+        snippet: `${escapeHtml(title.slice(0, idx))}<mark style="background-color:#ffb000;color:#090a0c;padding:0 1px;border-radius:2px;">${escapeHtml(title.slice(idx, idx + q.length))}</mark>${escapeHtml(title.slice(idx + q.length))}`,
+      });
+      continue;
+    }
+    // 标题未命中则找正文首个匹配块，取关键词前后各 30 字作为上下文
+    for (const t of page.tasks ?? []) {
+      const text = plainText(t.content || '');
+      const idx = text.toLowerCase().indexOf(q);
+      if (idx === -1) continue;
+      const from = Math.max(0, idx - 30);
+      const to = Math.min(text.length, idx + q.length + 30);
+      const before = escapeHtml(text.slice(from, idx));
+      const hit = escapeHtml(text.slice(idx, idx + q.length));
+      const after = escapeHtml(text.slice(idx + q.length, to));
+      hits.push({
+        page,
+        isTitleHit: false,
+        snippet: `${from > 0 ? '…' : ''}${before}<mark style="background-color:#ffb000;color:#090a0c;padding:0 1px;border-radius:2px;">${hit}</mark>${after}${to < text.length ? '…' : ''}`,
+      });
+      break; // 每个页面只取第一个匹配块，避免结果冗长
+    }
+  }
+  return hits.slice(0, 30); // 上限避免侧边栏过长
+});
+
+// Ctrl+Shift+F 唤起搜索（与主流编辑器一致）
+const handleSearchHotkey = (e: KeyboardEvent) => {
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
+    e.preventDefault();
+    const input = document.querySelector('input[placeholder*="搜索标题"]') as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
+  }
+};
 
 // 标题层级：用于「可折叠标题」（Notion 的 toggle heading）
 const HEADING_LEVEL: Record<string, number> = { h1: 1, h2: 2, h3: 3 };
@@ -740,7 +850,15 @@ const exportMarkdown = () => {
         case 'toggle': lines.push(`${indent}<details><summary>${text}</summary>`, '', `${indent}</details>`, ''); break;
         case 'divider': lines.push('', '---', ''); break;
         case 'codeblock': lines.push('```' + (t.payload?.language || ''), t.payload?.code || '', '```', ''); break;
-        case 'image': lines.push(t.payload?.url ? `![](${String(t.payload.url).slice(0, 60)}…)` : '<!-- 未上传图片 -->', ''); break;
+        case 'image': {
+          const u = String(t.payload?.url ?? '');
+          // asset: 引用是本地存储指针，导出无意义，标为占位说明；
+          // data:/http: 才可能有实际内容
+          if (!u) lines.push('<!-- 未上传图片 -->', '');
+          else if (u.startsWith('asset:')) lines.push('<!-- 图片：本地资产，未随文档导出 -->', '');
+          else lines.push(`![](${u.slice(0, 80)})`, '');
+          break;
+        }
         case 'kanban': {
           lines.push('<!-- 看板 -->');
           for (const col of t.payload?.columns ?? []) {
@@ -839,6 +957,24 @@ const onSyncIndicatorClick = () => {
 onMounted(async () => {
   // LocalFirst: 读本地 -> 远端握手对齐 -> 建立 WebSocket -> 变更自动持久化+广播
   await initSync(pages as any);
+  // 原生壳（Android Compose）只读桥：查询页面/同步状态、反向打开页面
+  installNativeBridge(pages as any, activePageId);
+  // 存储迁移与持久化申请放在 initSync 之后异步进行，不阻塞首屏：
+  // initSync 已用默认存储（localStorage）读出数据并完成内存填充，
+  // 之后 initSync 内部的 watch 会把数据写回——此时若已切换到 IndexedDB，
+  // 新写入会走新存储；这里再把 localStorage 的历史数据补迁过去。
+  void (async () => {
+    try {
+      const { idbStore, migrateFromLocalStorage, requestPersistence } = await import('../composables/idbStore');
+      const { setStore } = await import('../composables/storage');
+      await migrateFromLocalStorage(['nexus_matrix_pages_v3', 'nexus_image_provider_keys']);
+      setStore(idbStore);
+      await requestPersistence();
+    } catch (e) {
+      // 迁移失败不影响使用：仍留在 localStorage
+      console.warn('[NEXUS] IndexedDB 迁移失败，继续使用 localStorage', e);
+    }
+  })();
   const hash = window.location.hash.slice(1);
   if (hash && pages.value.find(p => p.id === hash)) activePageId.value = hash;
   else if (pages.value.length > 0) { activePageId.value = pages.value[0].id; window.history.replaceState(null, '', `#${activePageId.value}`); }
@@ -867,11 +1003,14 @@ onMounted(async () => {
   // Escape 键关闭浮窗
   const handleEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return;
+    // 抽屉优先：外接键盘/桌面窄窗口下 Esc 关抽屉是直觉操作
+    if (sidebarOpen.value) { sidebarOpen.value = false; return; }
     // 链接弹窗优先：它内部输入框已自行处理 Esc，这里兜底非输入焦点触发的情况
     if (linkDialog.value.visible) { closeLinkDialog(); return; }
     actionMenuConfig.value.isOpen = false;
   };
   document.addEventListener('keydown', handleEscape);
+  document.addEventListener('keydown', handleSearchHotkey);
 
   // 撤销栈基线：初始矩阵入栈，保证第一次 Ctrl+Z 有可回退的状态
   commitHistory();
@@ -1235,6 +1374,35 @@ const redo = () => {
 // === 标题区 ⇄ 正文区 的光标流转（对齐 Notion） ===
 const titleInputRef = ref<HTMLInputElement | null>(null);
 
+// 图片资产解析：payload.url 可能是 asset:<id>（新数据）或 data:...（旧数据）或外链。
+// 同步命中缓存立即返回；未命中时异步解析并写入缓存，触发模板重渲染。
+const assetUrlCache = reactive<Record<string, string>>({});
+const resolveAssetUrl = (url: string | undefined): string => {
+  if (!url) return '';
+  if (!isAssetRef(url)) return url; // 旧 data: 或外链，直接用
+  const hit = assetUrlCache[url];
+  if (hit) return hit;
+  void resolveAsset(url).then((resolved) => {
+    if (resolved) assetUrlCache[url] = resolved;
+  });
+  return '';
+};
+
+// 当前页所有图片引用预热，确保首屏就有 src
+watch(
+  () => activePage.value?.tasks,
+  (tasks) => {
+    if (!tasks) return;
+    const refs = tasks
+      .filter((t: Task) => t.type === 'image' && isAssetRef(t.payload?.url))
+      .map((t: Task) => t.payload!.url as string);
+    const cover = activePage.value?.cover;
+    if (cover && isAssetRef(cover)) refs.push(cover);
+    if (refs.length > 0) void warmAssets(refs);
+  },
+  { immediate: true, deep: false },
+);
+
 // === 文档图标（Page Icon，对齐 Notion）===
 // 一套状态同时服务侧边栏与标题区两个入口；icon 存在 Page 上，三端同步自动继承
 const iconPicker = ref<{ pageId: string; anchorEl: HTMLElement | null } | null>(null);
@@ -1275,8 +1443,11 @@ const coverStyle = (cover: string) => {
   // 默认 35 而非 50：竖构图人像的主体（脸部）通常位于画面上部，
   // 居中裁切会把头顶切掉、下半身占比过大。35 是兼顾人像与风景的经验值。
   const posY = activePage.value?.coverPos ?? 35;
+  // asset: 引用需先解析成 blob: URL；未命中缓存时返回空串，
+  // 由 warmAssets 异步解析后触发重渲染（模板依赖 assetUrlCache 的响应性）
+  const src = isAssetRef(cover) ? resolveAssetUrl(cover) : cover;
   return {
-    backgroundImage: `url("${cover}")`,
+    backgroundImage: src ? `url("${src}")` : undefined,
     backgroundSize: 'cover',
     backgroundPosition: `center ${posY}%`,
   };
@@ -1654,6 +1825,11 @@ const deleteBlockAndFocus = (task: Task) => {
   list.splice(idx, 1);
   selectedMediaId.value = null;
 
+  // 删除图片块时同步清掉资产，否则 IndexedDB 会无限堆积孤儿图片
+  if (task.type === 'image' && isAssetRef(task.payload?.url)) {
+    void deleteAsset(task.payload.url);
+  }
+
   // 向前找最近的文本块；没有则向后找；都没有则新建一个，保证永远有可落点
   const prevEditable = [...list.slice(0, idx)].reverse().find((t: Task) => EDITABLE_TYPES.includes(t.type));
   if (prevEditable) { setFocusConfig(prevEditable.id, 'end'); return; }
@@ -1793,16 +1969,14 @@ const insertSoftBreak = () => {
   sel.removeAllRanges(); sel.addRange(range);
 };
 
-// 把图片文件插入为独立图片块（Base64 持久化），并在其后补一个空文本块供继续输入。
+// 把图片文件插入为独立图片块（存为独立资产，页面只留 asset: 引用），
+// 并在其后补一个空文本块供继续输入。
 // 粘贴与拖拽共用此函数，保证两条路径的块结构、prevId 链、焦点行为一致。
 const insertImageBlock = (file: File, afterIndex: number) => {
   if (!activePage.value) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
+  void saveImageAsset(file).then((url) => {
     const list = activePage.value?.tasks;
-    if (!list) return;
-    const url = String(ev.target?.result ?? '');
-    if (!url) return;
+    if (!list || !url) return;
 
     const imgId = newBlockId();
     const textId = newBlockId();
@@ -1816,8 +1990,8 @@ const insertImageBlock = (file: File, afterIndex: number) => {
     // 重写整条链，兜底修复历史数据里缺失/错乱的 prevId
     list.splice(0, list.length, ...writePrevIds(list));
     setFocusConfig(textId, 'start');
-  };
-  reader.readAsDataURL(file);
+    void resolveAsset(url).then((u) => { if (u) assetUrlCache[url] = u; });
+  });
 };
 
 // 多行粘贴自动拆块（对齐 Notion：多行文本粘贴后按行拆成多个块）
@@ -2168,9 +2342,12 @@ const triggerImageUpload = (taskId: string) => { document.getElementById('img-up
 const handleImageUpload = (e: Event, taskId: string) => {
   const file = (e.target as HTMLInputElement).files?.[0];
   if (file && file.type.startsWith('image/')) {
-    const reader = new FileReader();
-    reader.onload = (event) => { updateTask(taskId, { payload: { url: event.target?.result } }); };
-    reader.readAsDataURL(file);
+    // 存为独立资产，页面里只留 asset: 引用——
+    // Base64 会让整页广播 payload、撤销快照、localStorage 全部暴涨
+    void saveImageAsset(file).then((ref) => {
+      updateTask(taskId, { payload: { url: ref } });
+      void resolveAsset(ref).then((u) => { if (u) assetUrlCache[ref] = u; });
+    });
   }
 };
 // 全局拖拽拦截解析图片
@@ -2258,6 +2435,19 @@ const openActionMenuAtTouch = (taskId: string, e: TouchEvent) => {
   const t = e.touches[0];
   if (!t) return;
   actionMenuConfig.value = { isOpen: true, x: Math.round(t.clientX), y: Math.round(t.clientY), taskId };
+  // 触屏防越界：菜单是 fixed 定位，点击位置靠近屏幕边缘（尤其底部）时会画出可视区。
+  // 先用触摸点定位，下一帧量到真实宽高后再夹取到视口内（桌面端鼠标触发同样受益）。
+  nextTick(() => {
+    const el = document.querySelector('.action-menu-popup') as HTMLElement | null;
+    if (!el || !actionMenuConfig.value.isOpen) return;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const maxX = window.innerWidth - w - 8, maxY = window.innerHeight - h - 8;
+    actionMenuConfig.value = {
+      ...actionMenuConfig.value,
+      x: Math.max(8, Math.min(actionMenuConfig.value.x, maxX)),
+      y: Math.max(8, Math.min(actionMenuConfig.value.y, maxY)),
+    };
+  });
 };
 const actionMenuTask = computed(() => activePage.value?.tasks.find((t: Task) => t.id === actionMenuConfig.value.taskId) ?? null);
 const handleActionCommand = (type: string) => {

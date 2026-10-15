@@ -7,6 +7,7 @@
 // 因此这里限制到 1600x600 以内、JPEG q0.82，实测可把体积压到 100KB 量级。
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue';
 import { PROVIDERS, getProvider } from '../composables/providerRegistry';
+import { saveImageAsset } from '../composables/assets';
 import { getProviderKey, setProviderKey } from '../composables/providerKeys';
 import type { CoverPhoto, ImageProvider } from '../composables/imageProviders';
 
@@ -31,42 +32,8 @@ const COVER_GRADIENTS = [
   { id: 'graphite', css: 'linear-gradient(135deg, #1e2126 0%, #090a0c 100%)' },
 ] as const;
 
-const MAX_W = 1600;
-// 竖构图人像需要更高的上限才能保留可用的展示比例。
-// 早期 600 会把竖图压成 2.67:1，与封面横幅叠加后只剩头部。
-const MAX_H = 1200;
-const SMALL_ENOUGH = 400_000; // 小于此长度的 DataURL 直接采用，省一次解码
-
-// 读取文件并降采样为 JPEG DataURL
-const processImage = (file: File): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error);
-    reader.onload = () => {
-      const src = String(reader.result ?? '');
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(MAX_W / img.width, MAX_H / img.height, 1);
-        // 已经够小就不折腾，保留原图（PNG 的清晰度比 JPEG 好）
-        if (scale >= 1 && src.length < SMALL_ENOUGH) { resolve(src); return; }
-        const w = Math.max(1, Math.round(img.width * scale));
-        const h = Math.max(1, Math.round(img.height * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) { resolve(src); return; }
-        // PNG 透明区转 JPEG 会变黑，必须先铺白底
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.82));
-      };
-      img.onerror = () => resolve(src); // 解码失败就退回原图，至少不丢功能
-      img.src = src;
-    };
-    reader.readAsDataURL(file);
-  });
+// 图片压缩已移至 composables/assets.ts 的 compressImage，
+// 图片块与封面共用同一套降采样参数（1600×1200 / JPEG q0.82）。
 
 const fileRef = ref<HTMLInputElement | null>(null);
 const urlInput = ref('');
@@ -77,7 +44,10 @@ const onFile = async (e: Event) => {
   if (!f) return;
   busy.value = true;
   try {
-    emit('select', await processImage(f));
+    // 封面存为独立资产，页面 JSON 里只留 asset: 引用（理由同图片块：
+    // Base64 会撑爆整页广播 payload、撤销快照与存储配额）
+    const ref = await saveImageAsset(f);
+    emit('select', ref);
   } finally {
     busy.value = false;
     (e.target as HTMLInputElement).value = '';
@@ -151,7 +121,9 @@ const pickFromGallery = async (photo: CoverPhoto) => {
     const res = await fetch(photo.fullUrl);
     if (!res.ok) throw new Error(`下载失败：HTTP ${res.status}`);
     const blob = await res.blob();
-    const dataUrl = await processImage(new File([blob], 'cover.jpg', { type: blob.type || 'image/jpeg' }));
+    // 封面存为独立资产，页面 JSON 里只留 asset: 引用（理由同图片块）
+    const ref = await saveImageAsset(new File([blob], 'cover.jpg', { type: blob.type || 'image/jpeg' }));
+    const dataUrl = ref;
     // 合规要求：选用时通知图库（Unsplash 的 download 计数端点）
     activeProvider.value?.onSelected?.(photo, apiKey.value.trim());
     emit('select', dataUrl, {

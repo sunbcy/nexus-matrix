@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      阶段 1 开发期配置：放行明文 HTTP（本地/内网后端 http://192.168.x.x:8010）。
+      ⚠️ 上生产前必须收紧为只信任你的域名 + HTTPS，否则是明确的安全漏洞。
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <!-- 明确放行常见内网段，避免 base-config 之外的遗漏 -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>   <!-- 模拟器访问宿主机 -->
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">192.168.0.0</domain>
+    </domain-config>
+</network-security-config>

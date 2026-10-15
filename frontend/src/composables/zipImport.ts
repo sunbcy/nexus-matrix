@@ -12,6 +12,7 @@
 
 import type { Page } from './useSync';
 import { newBlockId, newPageId } from './ids';
+import { saveImageAsset } from './assets';
 
 export interface ZipImportResult {
   pages: Page[];
@@ -41,28 +42,12 @@ const mimeOf = (name: string): string => {
 
 const isImageName = (name: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name);
 
-const bytesToDataUrl = (bytes: Uint8Array, mime: string): string => {
-  let binary = '';
-  // 分块拼串，避免超大图触发参数数量上限
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return `data:${mime};base64,${btoa(binary)}`;
-};
-
-// 远程图片下载（S3 预签名等）。失败返回 null，由调用方降级保留原 URL。
-const fetchAsDataUrl = async (url: string): Promise<string | null> => {
+// 远程图片下载为 Blob（S3 预签名等）。失败返回 null，由调用方降级保留原 URL。
+const fetchAsBlob = async (url: string): Promise<Blob | null> => {
   try {
     const res = await fetch(url);
     if (!res.ok) return null;
-    const blob = await res.blob();
-    return await new Promise<string | null>((resolve) => {
-      const fr = new FileReader();
-      fr.onload = () => resolve(String(fr.result ?? ''));
-      fr.onerror = () => resolve(null);
-      fr.readAsDataURL(blob);
-    });
+    return await res.blob();
   } catch {
     return null;
   }
@@ -139,35 +124,37 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
     const { parseMarkdown } = await import('./markdownImport');
     const { blocks, downgraded } = parseMarkdown(md);
 
-    // 图片处理：包内相对路径 -> Base64；远程 URL -> 下载转 BaseURL
+    // 图片处理：包内相对路径与远程 URL 都转为**独立资产**，页面只留 asset: 引用。
+    // （此前是转 Base64 内联进 payload.url，会让整页广播与存储配额暴涨。）
     let images = 0;
     for (const b of blocks) {
       if (b.type !== 'image') continue;
       const url = String(b.payload?.url ?? '').trim();
-      if (!url || /^(data:|blob:)/.test(url)) { images++; continue; }
+      if (!url || /^(data:|blob:|asset:)/.test(url)) { images++; continue; }
 
-      let dataUrl: string | null = null;
+      let blob: Blob | null = null;
       if (/^https?:\/\//i.test(url)) {
-        dataUrl = await fetchAsDataUrl(url);
+        blob = await fetchAsBlob(url);
       } else {
         // 相对路径：按 md 所在目录解析（支持 ./ 与 ../）
         const clean = url.split(/[?#]/)[0];
         const abs = resolveRelative(entry.dir, clean);
         const hit = fileMap.get(abs);
         if (hit) {
-          dataUrl = bytesToDataUrl(hit, mimeOf(abs));
+          blob = new Blob([new Uint8Array(hit)], { type: mimeOf(abs) });
         } else {
           // 文件名兜底：有些导出不带目录前缀，直接按 basename 找
           const base = clean.slice(clean.lastIndexOf('/') + 1);
           const byBase = entries.find((p) => p.slice(p.lastIndexOf('/') + 1) === base && isImageName(p));
-          if (byBase) dataUrl = bytesToDataUrl(fileMap.get(byBase)!, mimeOf(byBase));
+          if (byBase) blob = new Blob([new Uint8Array(fileMap.get(byBase)!)], { type: mimeOf(byBase) });
         }
       }
 
-      if (dataUrl) {
+      if (blob) {
+        const ref = await saveImageAsset(blob);
         // 必须显式清掉 pendingDownload：parseMarkdown 会预置该标记，
         // 只覆盖 url 会让它残留为 true，导致编辑器仍把它当作待下载的外链
-        b.payload = { ...b.payload, url: dataUrl, alt: b.payload?.alt ?? '', pendingDownload: false };
+        b.payload = { ...b.payload, url: ref, alt: b.payload?.alt ?? '', pendingDownload: false };
         images++;
       } else {
         // 下载/查找失败：保留原 URL 并标记，至少内容不丢
