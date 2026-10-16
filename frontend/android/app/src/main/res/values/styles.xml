@@ -1,22 +1,39 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <!-- Base application theme. -->
-    <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
+    <!-- 应用主题：本应用没有任何原生 ActionBar 需求（全部 UI 是 Compose + WebView），
+         主题链每一环都必须是 NoActionBar。 -->
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="colorAccent">@color/colorAccent</item>
     </style>
 
+    <!-- 启动即最终主题（AndroidManifest 中 activity 的主题，MainActivity 也会首行 setTheme 兜底）。
+         必须是 Theme.AppCompat 后代：PhoneWindow 生成 decor 时读的是「平台属性」
+         android:windowActionBar / android:windowNoTitle。曾用 Theme.SplashScreen
+         做启动主题，但它在深色模式 + API 31+ 的父链是
+         android:Theme.DeviceDefault.DayNight（自带 ActionBar），且 values-v31 变体
+         跳过了设置 android:windowActionBar=false 的 Theme.SplashScreen.Common——
+         enableEdgeToEdge() 首次访问 window.decorView 时平台 ActionBar 被冻结进
+         PhoneWindow decor（显示 Activity label "Nexus Matrix"），之后的 setTheme
+         无法移除。这就是 2026-10-16 截图里顶部白栏的根因。
+         启动画面属性直接挂在本主题：API 31+ 由系统读取 windowSplashScreen*；
+         API 26-30 由 core-splashscreen 的 installSplashScreen() 兼容层读取。 -->
     <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <!-- AppCompat 属性（AppCompatDelegateImpl.createSubDecor 读这对） -->
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
-        <item name="android:background">@null</item>
-    </style>
-
-    <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <!-- 平台属性（PhoneWindow.generateLayout 读这对） -->
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <!-- 深色窗口背景：避免冷启动 Compose 绘制前的白屏闪烁 -->
+        <item name="android:windowBackground">@color/nexusBackground</item>
+        <!-- 启动画面（深色底 + 应用图标） -->
         <item name="windowSplashScreenBackground">@color/nexusBackground</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
         <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
     </style>
 </resources>

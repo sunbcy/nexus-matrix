@@ -7,7 +7,9 @@
          注意：抽屉内所有导航点击都要顺手关抽屉（见 selectPage 系列调用）。 -->
     <aside class="fixed inset-y-0 left-0 z-40 w-[min(280px,85vw)] bg-[#14161a] border-r border-[#1e2126] flex flex-col shrink-0 transition-transform duration-200 md:relative md:inset-auto md:z-10 md:w-[280px] md:translate-x-0"
            :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'">
-      <div class="h-14 px-4 flex items-center justify-between border-b border-[#1e2126] shadow-sm shrink-0">
+      <!-- pt-safe：原生壳边到边时抽屉从状态栏底下开始，头部避开状态栏；
+           非边到边时 env() 恒为 0，无副作用。h-14 改 min-h-14 防止 padding 撑破固定高 -->
+      <div class="min-h-14 pt-safe px-4 flex items-center justify-between border-b border-[#1e2126] shadow-sm shrink-0">
         <div class="flex items-center gap-2">
           <span class="w-2 h-2 bg-[#00f0ff] rounded-sm shadow-[0_0_8px_rgba(0,240,255,0.6)] animate-pulse"></span>
           <span class="font-['Rajdhani',sans-serif] font-bold tracking-widest text-[#e5e7eb] text-sm">NEXUS MATRIX</span>
@@ -125,8 +127,9 @@
     <!-- 抽屉遮罩（仅移动端）：点击关闭。放在 main 之下、抽屉之上 -->
     <div v-if="sidebarOpen" class="fixed inset-0 z-30 bg-black/60 md:hidden" @click="sidebarOpen = false"></div>
 
-    <!-- 右侧主编辑区 -->
-    <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
+    <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
+    <Transition name="page-fade" mode="out-in">
+    <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" :key="activePage ? activePage.id : 'none'" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
       <div class="w-full h-1 bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
@@ -141,7 +144,8 @@
            @touchstart.stop="coverTouched = true; startCoverDrag($event.touches[0] as any)">
         <div class="w-full h-full transition-[background-position] duration-100"
              :style="coverStyle(activePage.cover)"></div>
-        <div class="absolute top-3 right-4 flex items-center gap-1.5 transition-opacity z-10"
+        <!-- pt-safe：封面全出血延伸到状态栏下时，操作条避开状态栏 -->
+        <div class="absolute top-3 right-4 pt-safe flex items-center gap-1.5 transition-opacity z-10"
              :class="coverTouched || coverDragging ? 'opacity-100' : 'opacity-0 group-hover/cover:opacity-100'">
           <button @click.stop="openCoverPicker($event)"
                   class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#e5e7eb] active:text-[#00f0ff] active:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
@@ -165,13 +169,20 @@
         </div>
       </div>
 
-      <div class="max-w-4xl w-full mx-auto pt-6 md:pt-12 pb-0 px-5 md:px-20 flex-1 flex flex-col">
+      <!-- 顶部 padding：有封面时封面已全出血占据状态栏区域，内容按常规 pt-6/md:pt-12；
+           无封面时内容列直接顶到屏幕最上（边到边），用 0.5rem + 安全区避开状态栏。
+           左右 padding：移动端 pl-6（24px，2026-10-17 从 pl-16(64px) 收紧后微调——
+           16px 时嵌套块的缩进引导线和折叠箭头挤在屏幕沿；24px 兼顾满幅与可读性）/
+           pr-5（留 4px 自定义滚动条余量）；桌面端 md:px-20 不变。 -->
+      <div class="max-w-4xl w-full mx-auto pb-0 pl-6 pr-5 md:px-20 flex-1 flex flex-col"
+           :class="activePage.cover ? 'pt-6 md:pt-12' : 'pt-safe-plus'">
         <!-- 面包屑 + 添加入口（无封面时才显示，避免与封面操作条重复）。
              移动端左侧放汉堡按钮唤出抽屉（桌面端隐藏，侧边栏常驻） -->
         <div class="flex items-start justify-between gap-4 mb-6 md:mb-8">
           <div class="flex items-center gap-1 md:gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] min-w-0">
-            <!-- 汉堡按钮：44px 触摸目标；only 移动端显示 -->
-            <button class="md:hidden shrink-0 -ml-2 w-11 h-11 flex items-center justify-center rounded-sm text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] transition-colors"
+            <!-- 汉堡按钮：44px 触摸目标；only 移动端显示。
+                 -ml-2 已移除：旧 pl-16(64px) 边距下的光学补偿，现 pl-4(16px) 满幅布局不需要 -->
+            <button class="md:hidden shrink-0 w-11 h-11 flex items-center justify-center rounded-sm text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] transition-colors"
                     @click="sidebarOpen = true" title="打开页面列表" aria-label="打开页面列表">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
             </button>
@@ -257,14 +268,17 @@
 
                  -ml-[84px] w-[84px]：把槽位整体拉到正文左边缘之外，不占流宽，
                  从而保证各块类型的文字起点与标题左缘严格对齐。 -->
-            <div class="shrink-0 -ml-[84px] w-[84px] self-stretch flex items-start justify-end pr-1">
+            <!-- 移动端外槽收窄到 60px 并配合 pl-16：否则 -84px 的外槽在窄屏上整个跑到屏幕外，
+                 块手柄完全点不到（实测 412px 屏上左边缘为 -84px）。桌面端维持 84px 不变。 -->
+            <div class="shrink-0 -ml-[60px] w-[60px] md:-ml-[84px] md:w-[84px] self-stretch flex items-start justify-end pr-1">
               <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-relaxed" :class="getFontSizeClass(task)">
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
                 <div class="row-handles flex items-center gap-1 transition-opacity z-30"
                      :class="{ 'is-active': focusedTaskId === task.id }"
                      draggable="false">
-                  <span class="inline-flex items-center justify-center w-9 h-9 md:w-7 md:h-7 cursor-pointer text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] rounded transition-colors"
+                  <!-- 「+」插入按钮在移动端隐藏：外槽放不下，插入块用回车即可（Notion 移动端同样没有该按钮） -->
+                  <span class="hidden md:inline-flex items-center justify-center w-9 h-9 md:w-7 md:h-7 cursor-pointer text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] rounded transition-colors"
                         draggable="false"
                         @mousedown.stop.prevent="onInsertMouseDown(task.id, $event)"
                         @touchstart.stop.prevent="insertTask(task.id, 'below')"
@@ -274,13 +288,16 @@
                       <line x1="5" y1="12" x2="19" y2="12"></line>
                     </svg>
                   </span>
-                  <div class="cursor-grab active:cursor-grabbing text-[#6b7280] active:text-[#e5e7eb] p-2.5 md:p-1"
-                       @mousedown="draggableTaskId = task.id"
+                  <!-- 桌面：拖拽排序手柄 + 点击操作菜单；触屏：仅作操作菜单入口（拖拽排序为桌面专属，
+                       触屏下显式降级，避免制造无法触达的桌面交互，与 Notion 移动端一致） -->
+                  <div :class="isCoarsePointer ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'"
+                       class="text-[#6b7280] active:text-[#e5e7eb] p-2.5 md:p-1"
+                       @mousedown="!isCoarsePointer && (draggableTaskId = task.id)"
                        @mouseup="draggableTaskId = null"
                        @mouseleave="draggableTaskId = null"
                        @click="(e) => openActionMenu(e, task.id)"
                        @touchstart.stop="openActionMenuAtTouch(task.id, $event)"
-                       title="拖拽排序 / 点击操作菜单">
+                       :title="isCoarsePointer ? '点击打开操作菜单' : '拖拽排序 / 点击操作菜单'">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle>
                       <circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle>
@@ -369,6 +386,7 @@
                  tabindex="0"
                  @mousedown="selectedMediaId = task.id"
                  @touchstart.stop="selectedMediaId = task.id"
+                 @dblclick="task.payload?.url && openImagePreview(task.payload.url)"
                  @keydown.enter.prevent="insertTask(task.id, 'below')"
                  @keydown.backspace.prevent="deleteBlockAndFocus(task)"
                  @keydown.delete.prevent="deleteBlockAndFocus(task)">
@@ -382,13 +400,13 @@
                 <button @mousedown.stop.prevent="triggerImageUpload(task.id)"
                         @touchstart.stop.prevent="triggerImageUpload(task.id)"
                         title="替换图片"
-                        class="w-7 h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#00f0ff] hover:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
+                        class="w-9 h-9 md:w-7 md:h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#00f0ff] hover:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9c-9 9-9 0 0-9 9-9 9 0 0-9z"></path><path d="M21 3v6h-6"></path><path d="M3 21v-6h6"></path></svg>
                 </button>
                 <button @mousedown.stop.prevent="deleteBlockAndFocus(task)"
                         @touchstart.stop.prevent="deleteBlockAndFocus(task)"
                         title="删除图片"
-                        class="w-7 h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#ff2a2a] hover:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
+                        class="w-9 h-9 md:w-7 md:h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#ff2a2a] hover:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
@@ -418,10 +436,13 @@
               <textarea v-model="task.payload.code" @keydown.tab.prevent="insertTabInCode($event, task)" class="w-full bg-transparent text-[#00f0ff] p-4 text-sm outline-none resize-y min-h-[120px] custom-scrollbar leading-relaxed" placeholder="// TYPE YOUR DIRECTIVES HERE..."></textarea>
             </div>
 
-            <!-- 可视化看板 (Kanban / Database) -->
-            <div v-else-if="task.type === 'kanban'" class="flex-1 mt-1 overflow-x-auto custom-scrollbar pb-4 pt-2">
-               <div class="flex gap-4 min-w-max px-1">
-                   <div v-for="col in task.payload.columns" :key="col.id" class="w-64 bg-[#14161a] border border-[#1e2126] rounded-md flex flex-col p-3 shrink-0 shadow-lg">
+            <!-- 可视化看板 (Kanban / Database)。
+                 移动端单栏折叠：<640px 时取消横向滚动与 min-w-max，改为纵向堆叠，
+                 每列从固定 256px 宽变为整宽（与 Notion 移动端「分栏折叠为单栏」一致）。
+                 桌面端维持横排三列 + 横向滚动。 -->
+            <div v-else-if="task.type === 'kanban'" class="flex-1 mt-1 overflow-x-auto custom-scrollbar pb-4 pt-2 md:overflow-x-auto">
+               <div class="flex flex-col gap-4 px-1 md:flex-row md:gap-4 md:min-w-max md:px-1">
+                   <div v-for="col in task.payload.columns" :key="col.id" class="w-full md:w-64 bg-[#14161a] border border-[#1e2126] rounded-md flex flex-col p-3 shrink-0 shadow-lg">
                        <div class="flex items-center justify-between mb-3 px-1">
                           <div class="text-sm font-bold font-['Rajdhani',sans-serif] text-[#e5e7eb] tracking-wide">{{col.title}}</div>
                           <div class="text-xs bg-[#1e2126] text-[#6b7280] px-2 rounded-full">{{ col.cards.length }}</div>
@@ -492,13 +513,21 @@
         </div>
       </div>
     </main>
+    </Transition>
+
+    <!-- 图片全屏预览（触屏双击放大查看，桌面双击同样可用；点遮罩或图片外区域关闭） -->
+    <div v-if="previewImageUrl" class="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4 md:p-8"
+         @click="closeImagePreview()" @touchstart.stop="closeImagePreview()">
+      <img :src="resolveAssetUrl(previewImageUrl)" class="max-w-full max-h-full object-contain rounded-sm" @click.stop @touchstart.stop />
+    </div>
 
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
     <!-- 选中文本后的浮动格式工具栏（对齐 Notion 的 selection toolbar） -->
     <div v-if="formatToolbar.visible"
          class="format-toolbar fixed z-50 flex items-center gap-0.5 px-1 py-1 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm"
-         :style="{ top: `${formatToolbar.y}px`, left: `${formatToolbar.x}px` }">
+         :class="isCoarsePointer ? 'format-toolbar--touch' : ''"
+         :style="formatToolbarStyle">
       <button @mousedown.prevent="execFormat('bold')" title="加粗 (Ctrl/Cmd+B)" class="ft-btn font-bold">B</button>
       <button @mousedown.prevent="execFormat('italic')" title="斜体 (Ctrl/Cmd+I)" class="ft-btn italic">I</button>
       <button @mousedown.prevent="execFormat('underline')" title="下划线 (Ctrl/Cmd+U)" class="ft-btn underline">U</button>
@@ -513,13 +542,15 @@
       <button @mousedown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
         <span class="px-1 bg-[#ffb000]/30 text-[#ffb000] rounded-sm">H</span>
       </button>
-      <!-- 颜色面板 -->
-      <div v-if="colorPanel" class="absolute top-full mt-1 left-0 flex gap-1 px-2 py-1.5 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm">
+      <!-- 颜色面板：触屏时工具条吸底，面板必须向上展开，否则画到键盘底下 -->
+      <div v-if="colorPanel"
+           class="absolute left-0 flex gap-1 px-2 py-1.5 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm"
+           :class="isCoarsePointer ? 'bottom-full mb-1' : 'top-full mt-1'">
         <button v-for="c in colorPalette" :key="c.value"
                 @mousedown.prevent="applyColor(c.value)"
-                class="w-5 h-5 rounded-sm border border-[#1e2126] hover:scale-110 transition-transform"
+                class="color-swatch w-5 h-5 rounded-sm border border-[#1e2126] hover:scale-110 transition-transform"
                 :style="{ background: c.value }" :title="c.label"></button>
-        <button @mousedown.prevent="applyColor('transparent')" class="w-5 h-5 rounded-sm border border-[#6b7280] text-[10px] text-[#6b7280] flex items-center justify-center" title="清除">/</button>
+        <button @mousedown.prevent="applyColor('transparent')" class="color-swatch w-5 h-5 rounded-sm border border-[#6b7280] text-[10px] text-[#6b7280] flex items-center justify-center" title="清除">/</button>
       </div>
     </div>
 
@@ -550,7 +581,23 @@
       </div>
     </div>
 
-    <div v-if="actionMenuConfig.isOpen" class="action-menu-popup fixed z-50 w-52 bg-[#090a0c] border border-[#1e2126] shadow-2xl py-1 rounded-sm text-sm max-h-[70vh] overflow-y-auto custom-scrollbar" :style="{ top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }" @click.stop>
+    <!-- 底部面板遮罩（仅触屏）：低于面板(z-50)但高于内容，点击即关闭 -->
+    <div v-if="actionMenuConfig.isOpen && isCoarsePointer"
+         class="fixed inset-0 z-40 bg-black/60"
+         @click="actionMenuConfig.isOpen = false"></div>
+
+    <!-- 块操作菜单：触屏 = 底部面板（bottom sheet，Notion 移动端形态）；
+         桌面 = 定点 popover，行为不变。两者共用同一份菜单项，只切容器样式。
+         注意 .action-menu-popup 同时是桌面端「视口夹取」测量用的选择器（见 openActionMenuAtTouch）。 -->
+    <div v-if="actionMenuConfig.isOpen"
+         class="fixed z-50 bg-[#090a0c] text-sm overflow-y-auto custom-scrollbar"
+         :class="isCoarsePointer
+            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-[#1e2126] shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
+            : 'action-menu-popup w-52 border border-[#1e2126] shadow-2xl py-1 rounded-sm max-h-[70vh]'"
+         :style="isCoarsePointer ? undefined : { top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }"
+         @click.stop>
+      <!-- 底部面板的抓取条（仅触屏） -->
+      <div v-if="isCoarsePointer" class="w-10 h-1 bg-[#6b7280]/60 rounded-full mx-auto my-2"></div>
       <div class="px-3 py-1 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] mb-1 border-b border-[#1e2126]/50">转换区块为</div>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('text')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">T</span> 文本</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors text-[#00f0ff]/80 font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h1')"><span class="font-['JetBrains_Mono',monospace] text-[#00f0ff]/40 font-normal">H1</span> 标题 1</button>
@@ -597,6 +644,7 @@
 import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue';
 import { initSync, closeSync, createRemotePage, deleteRemotePage, syncStatus, onlineDevices, retrySync } from '../composables/useSync';
 import { installNativeBridge } from '../composables/nativeBridge';
+import { useMobileInput } from '../composables/useMobileInput';
 import { newBlockId, newPageId } from '../composables/ids';
 import { writePrevIds } from '../composables/useSync';
 import { resolveAsset, saveImageAsset, isAssetRef, warmAssets, deleteAsset } from '../composables/assets';
@@ -987,7 +1035,7 @@ onMounted(async () => {
   const handleGlobalClick = (e: MouseEvent) => {
     const target = e.target as HTMLElement;
     // 点击菜单自身时不关闭（菜单上有 @click.stop / @mousedown.prevent）
-    if (target.closest('.action-menu-popup')) return;
+    if (target.closest('.action-menu-popup, .action-menu-sheet')) return;
     // 链接弹窗内的点击不触发任何关闭逻辑（否则恢复选区前选区就被清了）
     if (target.closest('.fixed.inset-0.z-\\[60\\]')) return;
     actionMenuConfig.value.isOpen = false;
@@ -1172,6 +1220,29 @@ const onBlockBlur = () => { activeSlashTaskId.value = null; focusedTaskId.value 
 // 选中文本后的浮动格式工具栏
 const formatToolbar = ref({ visible: false, x: 0, y: 0 });
 const hideFormatToolbar = () => { formatToolbar.value.visible = false; colorPanel.value = null; };
+
+// 移动端输入环境（第二期）：软键盘遮挡高度 + 是否触屏
+const { keyboardInset, isCoarsePointer } = useMobileInput();
+
+/**
+ * 格式工具栏定位：
+ * - 触屏：吸底（贴在键盘/屏幕底部之上居中）。跟随选区浮动的方案在手机上必然被键盘吞掉，
+ *   Notion 移动端同样是键盘上方工具条。
+ * - 桌面：维持原「浮在选区上方/下方」的行为，一像素不变。
+ */
+const formatToolbarStyle = computed(() => {
+  if (isCoarsePointer.value) {
+    return {
+      bottom: `calc(${keyboardInset.value}px + env(safe-area-inset-bottom, 0px) + 8px)`,
+      left: '0px',
+      right: '0px',
+      marginLeft: 'auto',
+      marginRight: 'auto',
+      width: 'fit-content',
+    };
+  }
+  return { top: `${formatToolbar.value.y}px`, left: `${formatToolbar.value.x}px` };
+});
 // 文本颜色 / 背景高亮（对齐 Notion 的 /color 与 /blue background）
 const colorPanel = ref<'text' | 'bg' | null>(null);
 const colorPalette = [
@@ -1812,6 +1883,12 @@ const deleteTask = (id: string) => { if (!activePage.value) return; activePage.v
 
 // 当前「激活」的多媒体块（图片等）：用于触屏无 hover 时仍能显示操作浮层
 const selectedMediaId = ref<string | null>(null);
+
+// 图片全屏预览（触屏双击放大查看）
+const previewImageUrl = ref<string | null>(null);
+const openImagePreview = (url: string) => { previewImageUrl.value = url; };
+const closeImagePreview = () => { previewImageUrl.value = null; };
+
 
 // 删除块后把光标交还给相邻的可编辑块。
 // 纯 deleteTask 会让光标悬空：图片/看板这类非文本块删掉后用户无处继续打字，
@@ -2506,6 +2583,11 @@ defineExpose({ exportMarkdown });
 /* 浮动格式工具栏 */
 .ft-btn { display: flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 2px; color: #e5e7eb; font-size: 13px; transition: all 0.15s; }
 .ft-btn:hover { background: #1e2126; color: #00f0ff; }
+/* 触屏：格式工具条吸底后按钮扩到 44px 触摸目标（Material 48dp / Apple 44pt 量级） */
+.format-toolbar--touch .ft-btn { min-width: 44px; height: 44px; font-size: 15px; }
+.format-toolbar--touch .color-swatch { width: 36px; height: 36px; }
+/* 触屏：块操作菜单走底部面板，菜单项同样放大触摸目标 */
+.action-menu-sheet > button { padding-top: 12px; padding-bottom: 12px; font-size: 15px; }
 .ce-block a { color: #00f0ff; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; transition: all 0.2s; }
 .ce-block a:hover { text-shadow: 0 0 8px rgba(0, 240, 255, 0.6); }
 .ce-block code { background: rgba(0, 240, 255, 0.08); color: #00f0ff; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; border: 1px solid rgba(0, 240, 255, 0.15); }

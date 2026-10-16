@@ -64,6 +64,19 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* 无封面页的内容列：基础 0.5rem 叠加安全区；md 断点对齐 1rem。
+   用于 NexusTaskMatrix1 主编辑区无封面时的顶栏避让（边到边原生壳）。
+   2026-10-17：基础值从 1.5rem 收紧到 0.5rem——安全区之外不再附加额外空白，
+   文档头部（面包屑→图标→标题）尽量贴近安全区下沿，首屏露出更多内容。 */
+.pt-safe-plus {
+  padding-top: calc(0.5rem + env(safe-area-inset-top, 0px));
+}
+@media (min-width: 768px) {
+  .pt-safe-plus {
+    padding-top: calc(1rem + env(safe-area-inset-top, 0px));
+  }
+}
+
 /* 扫光动画（TacticalButton 等控件可用） */
 @keyframes shimmer {
   100% {
@@ -169,4 +182,22 @@
   font-size: 0.85em;
   color: var(--text-display);
   font-family: 'JetBrains Mono', monospace;
+}
+
+/* -------------------------------------------------------------
+   页面切换微动画（阶段 3-#13）：与原生底部 Tab 节奏一致的
+   淡入 + 轻微上移（150ms）。out-in 模式保证旧页先退场再进新页，
+   避免主区域内容瞬跳造成视觉割裂。
+   ------------------------------------------------------------- */
+.page-fade-enter-active,
+.page-fade-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.page-fade-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.page-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }

@@ -5,10 +5,10 @@
 > 结论先行：**架构不用动**（原生壳 + WebView 编辑器与 Notion 同构），
 > 要动的是 Web 编辑器内部的布局与可达性——目前它是「桌面界面缩在小屏上」，不是「移动界面」。
 
-> **执行状态（2026-10-16 更新）**：第一期「可用性」5 项已全部实现并通过真渲染验证
-> （Playwright Pixel 7 视口实测，截图存 `test_samples/mobile_ux/`），
-> 新产物已 `cap sync` 进 Android 工程。第二、三期未开始。
-> 实现要点记录在文末「第一期落地记录」。
+> **执行状态（2026-10-16 更新）**：第一期「可用性」与第二期「输入体验」均已实现并通过
+> 真渲染验证（Playwright Pixel 7 触屏模拟实测，截图存 `test_samples/mobile_ux/`），
+> 新产物已 `cap sync` 进 Android 工程。第三期未开始。
+> 实现要点分别记录在文末「第一期落地记录」「第二期落地记录」。
 
 ---
 
@@ -93,14 +93,18 @@ Notion 移动端把分栏折叠为单栏。我们的 kanban 块（横排三列 +
 | 9 | 图标/封面/链接弹窗小屏 bottom sheet 化；`max-h` 改 `dvh` | 三个 Picker + `:509` | 弹窗不被键盘/裁切 |
 | 10 | 行首手柄触屏常驻聚焦行 + 命中区放大 | `:2457-2463` | 点 `+` 插入、点拖拽点出菜单，手感接近原生 |
 
-### 第三期：细节（约 2 天）
+### 第三期：细节（已落地，2026-10-16）
 
-| # | 改动 | 位置 |
-| --- | --- | --- |
-| 11 | kanban 单栏折叠（`<640px` 纵向堆叠） | kanban 块模板 |
-| 12 | 图片块触屏手势：单击选中、双击全屏预览；上传入口放大 | image 块 `:352-371` |
-| 13 | 页面切换微动画（与原生壳的 Tab 切换节奏一致，150–200ms） | 主区域 transition |
-| 14 | 桌面专属交互显式降级：块选择模式（Esc）与拖拽排序在触屏隐藏入口，引导至操作菜单 | `Esc` 选择态、`draggableTaskId` |
+实现位置：`frontend/src/components/NexusTaskMatrix1.vue` + `frontend/src/style.css`。
+
+| # | 改动 | 位置 | 验收 |
+| --- | --- | --- | --- |
+| 11 | kanban 单栏折叠：行容器 `flex-col gap-4`（`<640px`），列 `w-full`；`md:` 恢复横排三列 + 横向滚动 | kanban 块模板 | Pixel 7（412px）下列 `flex-direction:column`、列宽 100% 全宽堆叠 |
+| 12 | 图片块触屏手势：双击全屏预览遮罩（`fixed inset-0 z-[60]`），点遮罩/外区关闭；替换/删除浮层按钮触摸目标 `w-9 h-9 md:w-7 md:h-7`；单击仍是选中块（沿用 `@touchstart.stop`） | image 块 `:352-371` + script | 双击图片块→预览遮罩出现；桌面双击同样可用 |
+| 13 | 页面切换微动画：`<main :key="activePage.id">` 包裹 `<Transition name="page-fade" mode="out-in">`；`style.css` 定义 150ms 淡入 + 6px 上移 / 淡出 + 6px 上移 | 主区域 + `style.css` | `page-fade` CSS 已注入、`<main>` 随 `key` 重建 |
+| 14 | 桌面专属交互显式降级：拖拽手柄在触屏下移除 `cursor-grab` 与 `mousedown` 拖拽，改为 `cursor-pointer` + title「点击打开操作菜单」；Esc 块多选态本就依赖键盘，触屏不可达属符合预期 | 块手柄模板 | 手柄 `hasGrab:false / hasPointer:true / title=点击打开操作菜单` |
+
+验证：Playwright MCP（Pixel 7 触屏模拟）逐项验证 #11/#12/#14 通过；#13 的过渡 CSS 已注入、`<main>` 随 `key` 重建确认；前端 `npm run build` 通过、`vitest` 38 项通过；`cap sync android` 已同步进原生工程（需重新 `gradlew assembleDebug` 装包生效）。预览遮罩 `z-[60]` 高于抽屉（`z-30/40`）与底部面板（`z-50`），确保覆盖全部 UI。
 
 ---
 
@@ -161,3 +165,43 @@ Notion 移动端把分栏折叠为单栏。我们的 kanban 块（横排三列 +
 - 块操作菜单仍是 popover，Notion 移动端是底部面板 → 第二期 bottom sheet 化
 - 看板卡片删除按钮仍 hover-only → 第三期
 - 侧滑抽屉手势（从左缘滑开）未做，汉堡唤出已够用
+
+---
+
+## 八、第二期落地记录（2026-10-16 实现）
+
+### 改了什么
+
+| # | 项 | 实现 | 关键文件 |
+| --- | --- | --- | --- |
+| 1 | 格式工具栏吸键盘 | 新增 `useMobileInput.ts`：`visualViewport` 算 `keyboardInset` + 触屏判定；触屏时工具条 `bottom: calc(inset + safe-area + 8px)` 水平居中吸底，按钮 44px，颜色面板改向上展开；桌面端维持跟随选区 | `useMobileInput.ts`、`NexusTaskMatrix1.vue` |
+| 2 | 块菜单 bottom sheet | 单容器双形态：触屏 `inset-x-0 bottom-0` + 圆角顶 + 抓取条 + 遮罩(z-40) + 菜单项 44px；桌面仍是 `w-52` popover。全局点击关闭逻辑同步识别 `.action-menu-sheet` | `NexusTaskMatrix1.vue` |
+| 3 | 工具栏折叠 | App.vue 移动端收成一个 44px 圆钮，展开才显示五个导入/导出按钮（桌面 `md:flex` 常驻） | `App.vue` |
+| 附 | 块手柄可达性（实测发现的阻断问题） | 手柄外槽原为 `-ml-[84px] w-[84px]`，412px 屏上实测左边缘 **-84px 完全在屏外**，手机上根本点不到块菜单。改为移动端 `-ml-[60px] w-[60px]` + 内容 `pl-16 pr-5`，并隐藏「+」插入按钮（插入用回车） | `NexusTaskMatrix1.vue` |
+
+### 关键设计决策
+
+- **触屏判定取双信号或**：`(pointer: coarse)` OR (`maxTouchPoints > 0` AND 宽度 < 768)。
+  前者语义最准但无头浏览器/部分 WebView 不上报；后者保证可变宽度窗口与 Surface 这类
+  「有触摸屏但有鼠标」的混合设备仍走桌面形态。
+- **inset 公式对两种 WebView 都成立**：`innerHeight - visualViewport.height - offsetTop`。
+  支持 `interactive-widget=resizes-content` 的 Chromium 两者相等（inset=0，此时
+  `fixed bottom:0` 天然在键盘之上）；不支持的（iOS WebKit/旧 WebView）inset 即键盘真实高度。
+
+### 验证（Playwright，Pixel 7 412×839 触屏模拟）
+
+- 格式工具栏：`format-toolbar--touch` 生效，bottom 距屏底 8px、水平居中、按钮 44×44
+- 块菜单：`action-menu-sheet`，宽 412=全宽、bottom=839 贴底、遮罩存在、菜单项 44px
+- 块手柄：左边缘 0（原 -84）、36×36，待办勾选框 left=40 均在屏内
+- 桌面 1280×720 回归：内容 padding 80px、「+」可见、工具条 left=421 仍跟随选区、按钮 26px、
+  `format-toolbar--touch` 未生效
+- 构建 `vue-tsc + vite build` 通过；vitest 42/42 通过；截图 `test_samples/mobile_ux/`
+  新增 `mobile_toolbar_docked.png`、`mobile_block_sheet.png`
+- 已 `cap sync`：真机重装 APK 即生效
+
+### 已知遗留（第三期）
+
+- 看板卡片删除按钮仍 hover-only
+- 块拖拽排序在触屏不可用（HTML5 drag 事件不响应触摸），目前靠菜单里的上移/下移
+- 键盘上方的「块类型转换」快捷入口未做（Notion 移动端键盘工具栏有）；当前靠六点手柄唤出底部面板
+- 真机软键盘下 `keyboardInset` 的实际表现需在真机确认（模拟器无法复现软键盘）

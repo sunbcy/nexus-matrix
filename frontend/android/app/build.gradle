@@ -55,6 +55,10 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
 
+    // 下拉刷新（Notion 移动端交互）：WebView 不参与 Compose 嵌套滚动，
+    // 必须用 View 层的 SwipeRefreshLayout（见 AndroidWebView.kt 注释）。
+    implementation "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0"
+
     // === 原生壳（Compose）===
     implementation "androidx.activity:activity-compose:$androidxActivityVersion"
     implementation platform("androidx.compose:compose-bom:$composeBomVersion")

@@ -9,6 +9,8 @@ const mdInput = ref<HTMLInputElement | null>(null)
 const zipInput = ref<HTMLInputElement | null>(null)
 const importMsg = ref('')
 const editorRef = ref<{ exportMarkdown?: () => void } | null>(null)
+// 移动端工具栏折叠状态（桌面端忽略，CSS md: 断点始终展开）
+const toolsOpen = ref(false)
 
 function onExport() {
   exportBackup()
@@ -71,11 +73,21 @@ async function onZipImport(e: Event) {
          移动端适配：底部留出安全区（WebView 边到边时避开手势条）；按钮放大到 44px 触摸目标；
          z-index 降到 20——必须低于抽屉遮罩(30)与抽屉(40)，否则开抽屉时工具栏浮在遮罩上方很违和。
          格式工具栏/弹窗仍是 z-50，不受影响。 -->
-    <div class="fixed right-4 z-20 flex items-center gap-2 bottom-[calc(1rem+env(safe-area-inset-bottom,0px))]">
+    <div class="fixed right-4 z-20 flex flex-col items-end gap-2 bottom-[calc(1rem+env(safe-area-inset-bottom,0px))]">
+      <!-- 移动端折叠开关：五个按钮平铺会占掉半屏宽并压在拇指热区上，
+           收起成一个 44px 圆钮，需要时再展开（桌面端隐藏，始终展开）。 -->
+      <button class="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-[#14161a] border border-[#1e2126] text-[#6b7280] active:text-[#00f0ff] active:border-[#00f0ff] transition-colors shadow-lg"
+              :title="toolsOpen ? '收起工具' : '展开工具'"
+              :aria-label="toolsOpen ? '收起工具' : '展开工具'"
+              @click="toolsOpen = !toolsOpen">
+        <svg v-if="!toolsOpen" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="5" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="12" cy="19" r="1.5"></circle></svg>
+        <svg v-else width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
       <span v-if="importMsg"
             class="text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace] bg-[#090a0c] border border-[#1e2126] px-2 py-1 rounded shadow-lg">
         {{ importMsg }}
       </span>
+      <div class="flex items-center gap-2" :class="toolsOpen ? 'flex' : 'hidden md:flex'">
       <button @click="onExportMarkdown" title="导出 Markdown"
               class="w-11 h-11 md:w-9 md:h-9 flex items-center justify-center rounded bg-[#14161a] border border-[#1e2126] text-[#6b7280] active:text-[#00f0ff] active:border-[#00f0ff] transition-colors shadow-lg">
         <span class="text-[11px] font-['JetBrains_Mono',monospace] font-bold">MD</span>
@@ -122,6 +134,7 @@ async function onZipImport(e: Event) {
         </svg>
       </button>
       <input ref="fileInput" type="file" accept="application/json,.json" class="hidden" @change="onImport" />
+      </div>
     </div>
   </div>
 </template>

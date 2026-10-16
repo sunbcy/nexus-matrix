@@ -2,6 +2,7 @@ package com.nexusmatrix.app.ui
 
 import android.webkit.WebView
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.List
@@ -51,7 +52,11 @@ fun NexusApp(webView: WebView) {
                     )
                 }
             }
-        }
+        },
+        // 内容区不再统一让出系统栏 inset：文档 Tab 的 WebView 边到边
+        // （状态栏区域由 Web 侧 safe-area CSS 处理，Notion 移动端同款）。
+        // 收藏/设置的 TopAppBar 自带状态栏 inset，NavigationBar 自带手势栏 inset。
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
     ) { padding ->
         Box(Modifier.padding(padding)) {
             when (tab) {
