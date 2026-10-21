@@ -14,3 +14,7 @@ frontend/dist/
 frontend/vitest*.log
 frontend/*.log
 /test_samples/
+
+# 后端 SQLite 运行时数据库（含用户数据/敏感信息，绝不入库）
+backend/nexus.db
+*.db

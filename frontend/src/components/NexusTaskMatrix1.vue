@@ -84,6 +84,28 @@
           </div>
         </div>
 
+        <!-- 模板区（isTemplate 页从私人空间树隐藏，收在这里；点 + 用模板新建页面） -->
+        <div v-if="templatePages.length > 0">
+          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">模板</div>
+          <div class="space-y-0.5 px-2">
+            <div v-for="tpl in templatePages" :key="'tpl-'+tpl.id" class="group flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-[#1e2126]/50">
+              <div class="flex items-center gap-2 truncate cursor-pointer" @click="createFromTemplate(tpl.id)">
+                <span v-if="tpl.icon" class="shrink-0">{{ tpl.icon }}</span>
+                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span class="text-sm truncate font-medium text-[#9ca3af]">{{ tpl.title || '无标题' }}</span>
+              </div>
+              <div class="flex items-center gap-0.5 shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                <button @click.stop="createFromTemplate(tpl.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#00f0ff] transition-colors" title="使用模板新建页面">
+                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                </button>
+                <button @click.stop="unmakeTemplate(tpl.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#e5e7eb] transition-colors" title="取消模板（恢复为普通页面）">
+                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 私人空间树状视图 -->
         <div>
           <div class="flex items-center justify-between text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold group">
@@ -95,11 +117,24 @@
           </div>
           
           <div class="space-y-0.5 px-2">
-            <div v-for="page in visiblePages" :key="page.id"
-                 @click="selectPage(page.id)"
+            <div v-for="page in visiblePages" :key="page.id" :data-page-node="page.id"
+                 @click="isCoarsePointer ? undefined : selectPage(page.id)"
                  :style="{ paddingLeft: `${page.depth * 0.75 + 0.25}rem` }"
                  class="group relative flex items-center justify-between py-1.5 pr-2 rounded-md cursor-pointer transition-colors"
-                 :class="activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50'">
+                 :class="[
+                   activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50',
+                   draggedPageId === page.id ? 'opacity-40' : '',
+                   dragOverPageId === page.id && pageDropPosition === 'top' ? 'shadow-[inset_0_2px_0_0_#00f0ff] bg-[#1e2126]/60' : '',
+                   dragOverPageId === page.id && pageDropPosition === 'bottom' ? 'shadow-[inset_0_-2px_0_0_#00f0ff] bg-[#1e2126]/60' : '',
+                   dragOverPageId === page.id && pageDropPosition === 'child' ? 'ring-1 ring-[#00f0ff]/70 bg-[#00f0ff]/10' : '',
+                 ]"
+                 :draggable="!isCoarsePointer"
+                 @dragstart="onPageDragStart($event, page)"
+                 @dragover.prevent="onPageDragOver($event, page)"
+                 @dragleave="onPageDragLeave(page)"
+                 @drop.prevent="onPageDrop($event, page)"
+                 @dragend="resetPageDrag"
+                 @touchstart.stop="onPageHandleTouchStart(page, $event)">
               
               <div class="flex items-center gap-1.5 truncate">
                 <button @click.stop="toggleExpand(page.id)" class="w-8 h-8 md:w-5 md:h-5 flex items-center justify-center shrink-0 active:bg-[#1e2126] rounded text-[#6b7280] transition-colors" aria-label="展开或折叠子页面">
@@ -135,6 +170,17 @@
           </div>
         </div>
       </div>
+
+      <!-- 回收站入口（aside 底部固定）：已删除页面可在此恢复或彻底删除 -->
+      <button @click="openTrash"
+              class="shrink-0 mx-2 mb-2 px-3 py-2 flex items-center justify-between rounded-md text-[#6b7280] hover:bg-[#1e2126] hover:text-[#e5e7eb] transition-colors border-t border-[#1e2126]"
+              title="回收站">
+        <span class="flex items-center gap-2 text-sm">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+          回收站
+        </span>
+        <span v-if="trashedPages.length" class="text-[10px] font-['JetBrains_Mono',monospace] text-[#6b7280]">{{ trashedPages.length }}</span>
+      </button>
     </aside>
 
     <!-- 抽屉遮罩（仅移动端）：点击关闭。放在 main 之下、抽屉之上 -->
@@ -211,6 +257,11 @@
                   title="设置页眉封面">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
             添加封面
+          </button>
+          <!-- 页面级「···」菜单入口（对齐 Notion：页面操作收敛到内容页右上角） -->
+          <button class="shrink-0 w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] active:text-[#00f0ff] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors"
+                  @click="openPageMenu($event)" title="页面操作" aria-label="页面操作">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg>
           </button>
         </div>
 
@@ -543,7 +594,7 @@
     </div>
 
     <!-- 设置面板：入口在侧边栏右上角齿轮（原生底部 Tab 已移除） -->
-    <SettingsPanel :visible="settingsOpen" @close="settingsOpen = false" />
+    <SettingsPanel :visible="settingsOpen" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" />
 
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
@@ -647,6 +698,204 @@
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a]" @click="deleteBlockAndFocus(actionMenuTask!); actionMenuConfig.isOpen = false">删除</button>
     </div>
 
+    <!-- 页面「···」菜单：触屏 bottom sheet / 桌面 popover（复用块菜单双形态范式）。
+         收拢页面级操作——导出 / 收藏 / 新建子页 / 重命名 / 删除。 -->
+    <div v-if="pageMenuConfig.isOpen" class="fixed inset-0 z-40" :class="isCoarsePointer ? 'bg-black/60' : 'bg-transparent'" @click="closePageMenu"></div>
+    <div v-if="pageMenuConfig.isOpen"
+         class="fixed z-50 bg-[#090a0c] text-sm overflow-y-auto custom-scrollbar"
+         :class="isCoarsePointer
+            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-[#1e2126] shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
+            : 'action-menu-popup w-52 border border-[#1e2126] shadow-2xl py-1 rounded-sm max-h-[70vh]'"
+         :style="isCoarsePointer ? undefined : { top: `${pageMenuConfig.y}px`, left: `${pageMenuConfig.x}px` }"
+         @click.stop>
+      <div v-if="isCoarsePointer" class="w-10 h-1 bg-[#6b7280]/60 rounded-full mx-auto my-2"></div>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="exportMarkdown(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↓</span> 导出为 Markdown
+      </button>
+      <button v-if="!activePage.isTemplate" class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="saveAsTemplate(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">⛶</span> 存为模板
+      </button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="toggleFavorite(activePage.id); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">★</span> {{ activePage.isFavorite ? '取消收藏' : '收藏' }}
+      </button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="createPage(activePage.id); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">+</span> 新建子页面
+      </button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="focusTitle(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">✎</span> 重命名
+      </button>
+      <button v-if="pages.length > 1" class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a] flex items-center gap-2" @click="deletePage(activePage.id); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#ff2a2a]">✕</span> 删除页面
+      </button>
+      <button v-if="backlinks.length" class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="openBacklinks(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↩</span> 反向链接 ({{ backlinks.length }})
+      </button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="openPageHistory(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">⏱</span> 历史版本
+      </button>
+    </div>
+
+    <!-- Notion 导入向导：解析预览页面树 → 勾选 → 导入。复用 bottom sheet / 弹窗双形态。
+         解决「选完 ZIP 静默新建一堆页面、用户毫无掌控」的问题。 -->
+    <div v-if="importWizardOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
+      <div class="absolute inset-0 bg-black/70" @click="closeNotionImportWizard"></div>
+      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+           :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[85vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[80vh]'">
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">从 Notion 导入</span>
+          <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closeNotionImportWizard" title="关闭">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+        <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
+          <!-- 未选择文件 -->
+          <div v-if="!importPreview && !importLoading" class="space-y-3">
+            <p class="text-[#9ca3af] leading-snug">选择 Notion 的「Markdown &amp; CSV」导出 <code class="text-[#00f0ff] font-['JetBrains_Mono',monospace]">.zip</code>（<span class="text-[#00f0ff]">可一次多选多个</span>，按文件分组预览），解析后会列出将创建的页面，确认再导入（不会改动你已有的内容）。<span class="text-[#ffb000]">同名页面默认不勾选（含多个文件间的同名，仅保留第一份），需要创建副本时手动勾选即可。</span></p>
+            <button @click="importFileInput?.click()" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">选择 ZIP 文件（可多选）</button>
+          </div>
+          <!-- 解析中 -->
+          <div v-else-if="importLoading && !importPreview" class="py-10 text-center text-[#6b7280] font-['JetBrains_Mono',monospace]">正在解析 ZIP…</div>
+          <!-- 预览页面树（多文件按来源分组） -->
+          <div v-else-if="importPreview" class="space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs text-[#6b7280]">将导入 {{ importSelected.size }} / {{ importPreview.pages.length }} 个页面<template v-if="importPreview.sources.filter(s => s.count > 0).length > 1">（来自 {{ importPreview.sources.filter(s => s.count > 0).length }} 个文件）</template><template v-if="importPreview.imageFailures">，{{ importPreview.imageFailures }} 张图片待后台下载</template></span>
+              <button @click="toggleImportSelectAll" class="text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace]">{{ importSelected.size === importPreview.pages.length ? '全不选' : '全选' }}</button>
+            </div>
+            <div class="space-y-3">
+              <div v-for="g in importGroups" :key="g.file">
+                <!-- 多文件或该文件解析出错时显示来源标题；单文件成功则保持简洁不显示 -->
+                <div v-if="importGroups.length > 1 || g.error" class="flex items-center justify-between px-1 mb-1 gap-2">
+                  <span class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] truncate">{{ g.file }}</span>
+                  <span v-if="g.error" class="text-[10px] text-[#ff2a2a] font-['JetBrains_Mono',monospace] shrink-0">{{ g.error }}</span>
+                  <span v-else class="text-[10px] text-[#6b7280] font-['JetBrains_Mono',monospace] shrink-0">{{ g.pages.length }} 页</span>
+                </div>
+                <div class="space-y-0.5">
+                  <div v-for="p in g.pages" :key="p.id" @click="toggleImportSelect(p.id)"
+                       class="flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer transition-colors"
+                       :class="importSelected.has(p.id) ? 'bg-[#1e2126]/60' : 'hover:bg-[#1e2126]/30'"
+                       :style="{ paddingLeft: `${importDepth(p) * 0.75 + 0.5}rem` }">
+                    <span class="w-4 h-4 shrink-0 flex items-center justify-center border rounded-sm"
+                          :class="importSelected.has(p.id) ? 'bg-[#00f0ff] border-[#00f0ff]' : 'border-[#6b7280]'">
+                      <svg v-if="importSelected.has(p.id)" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#090a0c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    </span>
+                    <span class="text-sm text-[#e5e7eb] truncate">{{ p.title || '无标题' }}</span>
+                    <span v-if="importConflictIds.has(p.id)" class="text-[10px] text-[#ffb000] font-['JetBrains_Mono',monospace] shrink-0">已存在</span>
+                    <span class="text-[10px] text-[#6b7280] font-['JetBrains_Mono',monospace] shrink-0">{{ (p.tasks?.length ?? 0) }} 块</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p v-if="importWizardMsg" class="mt-3 text-xs font-['JetBrains_Mono',monospace]" :class="importLoading ? 'text-[#6b7280]' : 'text-[#ffb000]'">{{ importWizardMsg }}</p>
+          <input ref="importFileInput" type="file" accept=".zip,application/zip" multiple class="hidden" @change="onImportFilePicked" />
+        </div>
+        <div v-if="importPreview" class="flex items-center gap-2 px-4 py-3 border-t border-[#1e2126] shrink-0">
+          <button @click="confirmNotionImport" :disabled="importLoading || importSelected.size === 0"
+                  class="flex-1 h-11 md:h-9 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#00f0ff] text-[#00f0ff] hover:bg-[#1e2126] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace] disabled:opacity-40">
+            导入所选 ({{ importSelected.size }})
+          </button>
+          <button @click="closeNotionImportWizard" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#6b7280] hover:text-[#e5e7eb] transition-colors text-xs font-['JetBrains_Mono',monospace]">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 回收站面板：恢复 / 彻底删除已删除页面。复用 bottom sheet / 弹窗双形态 -->
+    <div v-if="trashOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
+      <div class="absolute inset-0 bg-black/70" @click="closeTrash"></div>
+      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+           :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[80vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[75vh]'">
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">回收站</span>
+          <div class="flex items-center gap-2">
+            <button v-if="trashedPages.length" @click="emptyTrash" class="text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">清空</button>
+            <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closeTrash" title="关闭">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
+          <div v-if="trashedPages.length === 0" class="py-10 text-center text-[#6b7280]">回收站为空</div>
+          <div v-else class="space-y-1">
+            <div v-for="p in trashedPages" :key="p.id" class="flex items-center justify-between gap-2 px-2 py-2 rounded-sm hover:bg-[#1e2126]/40">
+              <div class="flex items-center gap-2 min-w-0">
+                <span v-if="p.icon" class="shrink-0">{{ p.icon }}</span>
+                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span class="text-sm text-[#e5e7eb] truncate">{{ p.title || '无标题' }}</span>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <button @click="restorePage(p.id)" class="px-2 py-1 text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace] hover:underline">恢复</button>
+                <button @click="purgePage(p.id)" class="px-2 py-1 text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">彻底删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 反向链接面板：哪些页面引用了当前页（复用 backlinks computed）。bottom sheet / 弹窗双形态 -->
+    <div v-if="backlinksOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
+      <div class="absolute inset-0 bg-black/70" @click="closeBacklinks"></div>
+      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+           :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[80vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[75vh]'">
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">反向链接</span>
+          <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closeBacklinks" title="关闭">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+        <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
+          <div v-if="backlinks.length === 0" class="py-10 text-center text-[#6b7280]">没有被其它页面链接到</div>
+          <div v-else class="space-y-1">
+            <div v-for="b in backlinks" :key="b.page.id" @click="selectPage(b.page.id); closeBacklinks()"
+                 class="px-2 py-2 rounded-sm cursor-pointer hover:bg-[#1e2126]/50 transition-colors">
+              <div class="flex items-center gap-2">
+                <span v-if="b.page.icon" class="shrink-0">{{ b.page.icon }}</span>
+                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span class="text-sm text-[#e5e7eb] truncate">{{ b.page.title || '无标题' }}</span>
+              </div>
+              <div class="text-xs text-[#6b7280] truncate pl-6 mt-0.5">{{ b.excerpt }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 页面历史版本面板：本地快照，可恢复 / 删除。bottom sheet / 弹窗双形态 -->
+    <div v-if="historyOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
+      <div class="absolute inset-0 bg-black/70" @click="closePageHistory"></div>
+      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+           :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[80vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[75vh]'">
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">历史版本</span>
+          <div class="flex items-center gap-2">
+            <button v-if="pageVersions.length" @click="clearHistory" class="text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">清空</button>
+            <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closePageHistory" title="关闭">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
+          <div v-if="pageVersions.length === 0" class="py-10 text-center text-[#6b7280]">暂无历史版本<br><span class="text-xs">编辑页面后会自动定时存档</span></div>
+          <div v-else class="space-y-1">
+            <div v-for="(v, i) in [...pageVersions].reverse()" :key="v.ts" class="flex items-center justify-between gap-2 px-2 py-2 rounded-sm hover:bg-[#1e2126]/40">
+              <div class="min-w-0">
+                <div class="text-sm text-[#e5e7eb] truncate">{{ v.title || '无标题' }}</div>
+                <div class="text-xs text-[#6b7280] font-['JetBrains_Mono',monospace]">{{ formatVersionTime(v.ts) }} · {{ v.tasks?.length ?? 0 }} 块<template v-if="i === 0"> · 最新</template></div>
+              </div>
+              <div class="flex items-center gap-1 shrink-0">
+                <button @click="restoreVersion(v)" class="px-2 py-1 text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace] hover:underline">恢复</button>
+                <button @click="deleteVersion(v.ts)" class="px-2 py-1 text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">删除</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 文档图标选择器（侧边栏与标题区共用） -->
     <PageIconPicker v-if="iconPicker"
                     :current="pages.find(p => p.id === iconPicker!.pageId)?.icon"
@@ -669,15 +918,22 @@
 <script setup lang="ts">
 import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue';
 import {
+  clearPageHistory,
   closeSync,
+  commitImportPages,
   createRemotePage,
+  deletePageVersion,
   flushPendingSave,
+  getPageHistory,
   initSync,
   onlineDevices,
+  type PageVersion,
+  previewNotionZip,
   retrySync,
   setStorageWarning,
   syncStatus,
-  writePrevIds
+  writePrevIds,
+  writePagePrevIds,
 } from '../composables/useSync';
 import {installNativeBridge} from '../composables/nativeBridge';
 import {useMobileInput} from '../composables/useMobileInput';
@@ -698,7 +954,7 @@ interface Task {
   payload?: any;
   prevId?: string | null;
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; coverPos?: number; deletedAt?: number; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; coverPos?: number; deletedAt?: number; isTemplate?: boolean; prevId?: string | null; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -860,7 +1116,7 @@ const backlinks = computed(() => {
   if (!current) return [];
   const result: Array<{ page: Page; excerpt: string }> = [];
   for (const p of pages.value) {
-    if (p.id === current.id) continue;
+    if (p.id === current.id || p.deletedAt) continue;
     const linked = getLinkedPageIds(p).includes(current.id);
     if (!linked) continue;
     const hit = p.tasks.find((t: Task) => t.content?.includes(`data-page-id="${current.id}"`));
@@ -1251,10 +1507,14 @@ onUnmounted(() => { closeSync(); });
 // 墓碑页（deletedAt 非空）从侧边栏隐藏：用户删除后在 UI 上立即消失，
 // 但墓碑仍保留在 pages 数组里随同步上推，待其它端消化后再从本地彻底移除。
 const favoritePages = computed(() => pages.value.filter(p => p.isFavorite && !p.deletedAt));
+// 回收站：已打墓碑的页面，按删除时间倒序（最新删除在上）
+const trashedPages = computed(() => pages.value.filter(p => p.deletedAt).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0)));
+// 模板页：从侧边栏树隐藏，收进「模板」区
+const templatePages = computed(() => pages.value.filter(p => p.isTemplate && !p.deletedAt));
 // 后端页的 parentId 可能是显式 null 或干脆缺省字段（前端解析为 undefined），
 // 两者都代表「根页面」。用宽松的假值判断，避免 undefined 的根页被侧边栏遗漏。
 const getChildren = (parentId: string | null) =>
-  pages.value.filter(p => (parentId ? p.parentId === parentId : !p.parentId) && !p.deletedAt);
+  pages.value.filter(p => (parentId ? p.parentId === parentId : !p.parentId) && !p.deletedAt && !p.isTemplate);
 const hasChildren = (id: string) => pages.value.some(p => p.parentId === id && !p.deletedAt);
 const buildTree = (parentId: string | null, depth: number): any[] => {
   let result: any[] = [];
@@ -1276,6 +1536,8 @@ const createPage = (parentId: string | null = null) => {
   // 新建页面默认给一个随机图标：移动端改图标要弹选择器（会被软键盘打断），
   // 默认随机可让绝大多数情况下「根本不用去改图标」。用户仍可随时自定义。
   pages.value.push({ id: newId, title: '', icon: randomEmoji(), tasks: [{ id: newBlockId(), type: 'text', content: '', completed: false, indentLevel: 0 }], parentId, isFavorite: false, isExpanded: true });
+  // 维护页面顺序链：新页加入后重写同父级 prevId 链（与块级 writePrevIds 同思路）
+  pages.value.splice(0, pages.value.length, ...writePagePrevIds(pages.value));
   if (parentId) { const parent = pages.value.find(p => p.id === parentId); if (parent) parent.isExpanded = true; }
   activePageId.value = newId;
   // 同步到后端（失败不影响本地编辑）
@@ -1306,6 +1568,74 @@ const deletePage = (id: string) => {
    const alive = pages.value.filter((p) => !p.deletedAt);
    if (!alive.find(p => p.id === activePageId.value)) activePageId.value = alive[0]?.id || '';
    // 变更经 watch -> stampUpdated + persistPages 上推（携带 deletedAt），无需单独调 REST DELETE
+};
+
+// === 回收站（配合墓碑删除：可恢复 / 彻底删除） ===
+const trashOpen = ref(false);
+const openTrash = () => { trashOpen.value = true; };
+const closeTrash = () => { trashOpen.value = false; };
+
+// 恢复：清墓碑戳（stampUpdated 已把 deletedAt 纳入指纹，会自动上推给其它端）。
+// 若其父页仍在回收站里，则提到根，避免恢复后父不存在。
+const restorePage = (id: string) => {
+  const p = pages.value.find((x) => x.id === id);
+  if (!p) return;
+  if (p.parentId) {
+    const parent = pages.value.find((x) => x.id === p.parentId);
+    if (!parent || parent.deletedAt) p.parentId = null;
+  }
+  delete p.deletedAt;
+};
+
+// 递归收集某页及其所有子孙页 id
+const collectSubtree = (id: string): string[] => {
+  const out = [id];
+  for (const p of pages.value) if (p.parentId === id) out.push(...collectSubtree(p.id));
+  return out;
+};
+
+// 彻底删除：从本地数组真删（墓碑此前已上推，其它端会各自消化）
+const purgePages = (ids: string[]) => {
+  const toDelete = new Set<string>();
+  for (const id of ids) for (const x of collectSubtree(id)) toDelete.add(x);
+  pages.value = pages.value.filter((p) => !toDelete.has(p.id));
+  if (toDelete.has(activePageId.value)) {
+    const alive = pages.value.find((p) => !p.deletedAt) || pages.value[0];
+    activePageId.value = alive?.id || '';
+  }
+};
+const purgePage = (id: string) => purgePages([id]);
+const emptyTrash = () => purgePages(trashedPages.value.map((p) => p.id));
+
+// === 模板 ===
+// 把当前页存为模板（从侧边栏树隐藏，进「模板」区；isTemplate 已纳入 pageFingerprint，会自动上推）
+const saveAsTemplate = () => {
+  if (activePage.value) activePage.value.isTemplate = true;
+};
+const unmakeTemplate = (id: string) => {
+  const p = pages.value.find((x) => x.id === id);
+  if (p) p.isTemplate = false;
+};
+// 用模板新建一个副本页面（深拷贝内容、生成新 id、重建 prevId 链），并跳转过去
+const createFromTemplate = (tplId: string) => {
+  const tpl = pages.value.find((x) => x.id === tplId);
+  if (!tpl) return;
+  const newTasks = (tpl.tasks ?? []).map((t) => ({ ...t, id: newBlockId(), prevId: null as string | null }));
+  newTasks.forEach((t, i) => { t.prevId = i === 0 ? null : newTasks[i - 1].id; });
+  const newId = newPageId();
+  pages.value.push({
+    id: newId,
+    title: tpl.title || '无标题',
+    tasks: newTasks,
+    parentId: null,
+    isFavorite: false,
+    isExpanded: true,
+    icon: tpl.icon,
+    cover: tpl.cover,
+    coverPos: tpl.coverPos,
+    isTemplate: false,
+  });
+  selectPage(newId);
 };
 
 // === 核心状态与 Refs ===
@@ -1501,6 +1831,127 @@ const handleDrop = (e: DragEvent, task: Task) => {
 const handleDragEnd = () => resetDragState();
 const resetDragState = () => { draggedTaskId.value = null; dragOverTaskId.value = null; draggableTaskId.value = null; };
 
+// === 侧边栏页面拖拽（桌面 HTML5 DnD：重排 + 拖改层级，对齐 Notion） ===
+const draggedPageId = ref<string | null>(null);
+const dragOverPageId = ref<string | null>(null);
+const pageDropPosition = ref<'top' | 'bottom' | 'child'>('bottom');
+
+const onPageDragStart = (e: DragEvent, page: Page) => {
+  if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', page.id); }
+  draggedPageId.value = page.id;
+};
+const onPageDragOver = (e: DragEvent, page: Page) => {
+  if (!draggedPageId.value || draggedPageId.value === page.id) return;
+  if (collectSubtree(draggedPageId.value).includes(page.id)) return;  // 不能拖进自己的子孙（成环）
+  dragOverPageId.value = page.id;
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const ratio = (e.clientY - rect.top) / rect.height;
+  // 上 30% → 插到目标前；下 30% → 插到目标后；中间 40% → 成为目标子页（缩进）
+  pageDropPosition.value = ratio < 0.3 ? 'top' : ratio > 0.7 ? 'bottom' : 'child';
+};
+const onPageDragLeave = (page: Page) => { if (dragOverPageId.value === page.id) dragOverPageId.value = null; };
+const onPageDrop = (e: DragEvent, page: Page) => {
+  const draggedId = e.dataTransfer?.getData('text/plain') || draggedPageId.value;
+  const pos = pageDropPosition.value;
+  resetPageDrag();
+  if (!draggedId || draggedId === page.id) return;
+  movePageTo(draggedId, page.id, pos);
+};
+const resetPageDrag = () => { draggedPageId.value = null; dragOverPageId.value = null; };
+
+// 触屏：按手指 Y 命中目标页面节点，更新蓝线/子级高亮（复用 top/bottom/child 判定）
+const updatePageDropTarget = (clientY: number, dragId: string) => {
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>('[data-page-node]'));
+  for (const el of nodes) {
+    const r = el.getBoundingClientRect();
+    if (clientY >= r.top && clientY <= r.bottom) {
+      const id = el.dataset.pageNode!;
+      if (id === dragId || collectSubtree(dragId).includes(id)) { dragOverPageId.value = null; return; }
+      dragOverPageId.value = id;
+      const ratio = (clientY - r.top) / r.height;
+      pageDropPosition.value = ratio < 0.3 ? 'top' : ratio > 0.7 ? 'bottom' : 'child';
+      return;
+    }
+  }
+  dragOverPageId.value = null;
+};
+
+// 触屏长按拖拽页面（对齐 Notion 移动端）：长按 ~400ms 进入拖拽，轻点仍是选择
+const onPageHandleTouchStart = (page: Page, e: TouchEvent) => {
+  if (!isCoarsePointer.value) return;
+  if ((e.target as HTMLElement).closest('button')) return;  // 行内按钮（收藏/新建/删除）不触发拖拽
+  const t0 = e.touches[0];
+  if (!t0) return;
+  const startY = t0.clientY;
+  let fired = false;
+  const restore = () => { document.body.style.userSelect = ''; (document.body.style as any).webkitUserSelect = ''; };
+  const cleanup = () => {
+    window.clearTimeout(timer);
+    window.removeEventListener('touchmove', onMove, TOUCH_MOVE_OPTS);
+    window.removeEventListener('touchend', onEnd);
+    window.removeEventListener('touchcancel', onCancel);
+  };
+  const timer = window.setTimeout(() => {
+    if (fired) return;
+    fired = true;
+    draggedPageId.value = page.id;
+    document.body.style.userSelect = 'none';
+    (document.body.style as any).webkitUserSelect = 'none';
+    (navigator as any).vibrate?.(15);
+    updatePageDropTarget(startY, page.id);
+  }, 400);
+  const onMove = (ev: TouchEvent) => {
+    const ct = ev.touches[0];
+    if (!ct) return;
+    if (!fired) {
+      if (Math.abs(ct.clientY - startY) > 10) cleanup();  // 滚动意图，取消长按（侧边栏本身可滚动）
+      return;
+    }
+    if (ev.cancelable) ev.preventDefault();  // 拖拽中阻止侧边栏滚动
+    updatePageDropTarget(ct.clientY, page.id);
+  };
+  const onEnd = () => {
+    const wasFired = fired;
+    cleanup();
+    if (wasFired) {
+      if (dragOverPageId.value && dragOverPageId.value !== page.id) {
+        movePageTo(page.id, dragOverPageId.value, pageDropPosition.value);
+      }
+      resetPageDrag();
+      restore();
+    } else {
+      selectPage(page.id);  // 轻点 → 选择
+    }
+  };
+  const onCancel = () => { cleanup(); if (fired) { resetPageDrag(); restore(); } };
+  window.addEventListener('touchmove', onMove, TOUCH_MOVE_OPTS);
+  window.addEventListener('touchend', onEnd);
+  window.addEventListener('touchcancel', onCancel);
+};
+
+// 把 draggedId 移到 targetId 的前/后（同级重排）或其下（改 parentId 成为子页）
+const movePageTo = (draggedId: string, targetId: string, pos: 'top' | 'bottom' | 'child') => {
+  const list = pages.value;
+  const dragged = list.find((p) => p.id === draggedId);
+  const target = list.find((p) => p.id === targetId);
+  if (!dragged || !target) return;
+  if (collectSubtree(draggedId).includes(targetId)) return;  // 成环保护
+  const from = list.findIndex((p) => p.id === draggedId);
+  if (from < 0) return;
+  list.splice(from, 1);
+  if (pos === 'child') {
+    dragged.parentId = targetId;                 // 成为目标的子页
+    const ti = list.findIndex((p) => p.id === targetId);
+    list.splice(ti + 1, 0, dragged);             // 紧跟目标 → 其第一个子页
+  } else {
+    dragged.parentId = target.parentId ?? null;  // 与目标同级（重排）
+    const ti = list.findIndex((p) => p.id === targetId);
+    list.splice(pos === 'top' ? ti : ti + 1, 0, dragged);
+  }
+  // 顺序已变：重写整条页面 prevId 链，保证跨端合并时顺序可确定性还原（与块级一致）
+  list.splice(0, list.length, ...writePagePrevIds(list));
+};
+
 // === 触屏长按拖拽引擎（移动端块排序，对齐 Notion 移动端） ===
 // 桌面用原生 HTML5 DnD（见 handleDragStart 等）；触屏无 DnD，改为：
 // 手柄长按 ~400ms 进入拖拽 → 手指移动实时高亮目标块（复用桌面蓝线视觉）
@@ -1687,6 +2138,168 @@ const iconPicker = ref<{ pageId: string; anchorEl: HTMLElement | null } | null>(
 // 设置面板（原生底部 Tab 已移除，设置入口在侧边栏右上角齿轮）
 const settingsOpen = ref(false);
 const openSettings = (_e?: MouseEvent) => { settingsOpen.value = true; };
+
+// === 页面级「···」菜单（对齐 Notion：页面操作收敛到内容页右上角） ===
+const pageMenuConfig = ref<{ isOpen: boolean; x: number; y: number }>({ isOpen: false, x: 0, y: 0 });
+const openPageMenu = (e: MouseEvent) => {
+  e.stopPropagation();
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  pageMenuConfig.value = { isOpen: true, x: rect.left, y: rect.bottom + 4 };
+};
+const closePageMenu = () => { pageMenuConfig.value.isOpen = false; };
+
+// 反向链接面板（复用已有 backlinks computed：引用了当前页的其它页面）
+const backlinksOpen = ref(false);
+const openBacklinks = () => { backlinksOpen.value = true; };
+const closeBacklinks = () => { backlinksOpen.value = false; };
+
+// === 页面历史版本面板（本地快照，可恢复 / 删除） ===
+const historyOpen = ref(false);
+const historyPageId = ref<string | null>(null);
+const pageVersions = ref<PageVersion[]>([]);
+const openPageHistory = async () => {
+  if (!activePage.value) return;
+  historyPageId.value = activePage.value.id;
+  pageVersions.value = await getPageHistory(activePage.value.id);
+  historyOpen.value = true;
+};
+const closePageHistory = () => { historyOpen.value = false; };
+// 用历史快照覆盖当前页（深拷贝，触发 watch -> stampUpdated -> 上推同步）
+const restoreVersion = (v: PageVersion) => {
+  if (!activePage.value) return;
+  activePage.value.title = v.title;
+  activePage.value.tasks = JSON.parse(JSON.stringify(v.tasks));
+  historyOpen.value = false;
+};
+const deleteVersion = async (ts: number) => {
+  if (!historyPageId.value) return;
+  pageVersions.value = await deletePageVersion(historyPageId.value, ts);
+};
+const clearHistory = async () => {
+  if (!historyPageId.value) return;
+  await clearPageHistory(historyPageId.value);
+  pageVersions.value = [];
+};
+const formatVersionTime = (ts: number): string => {
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+// === Notion 导入向导（预览式：先解析展示页面树，勾选确认后再导入） ===
+const importWizardOpen = ref(false);
+const importFileInput = ref<HTMLInputElement | null>(null);
+const importPreview = ref<{ pages: Page[]; report: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures: number; sources: Array<{ file: string; count: number; error?: string }> } | null>(null);
+const importGroups = ref<Array<{ file: string; pages: Page[]; error?: string }>>([]);  // 多文件按来源分组预览
+const importLoading = ref(false);
+const importWizardMsg = ref('');
+const importSelected = ref<Set<string>>(new Set());
+const importConflictIds = ref<Set<string>>(new Set());  // 与现有存活页同名的待导入页（默认不勾选，避免盲目创建重复）
+
+const openNotionImportWizard = () => {
+  settingsOpen.value = false;   // 先关设置面板，避免其盖在导入向导之上
+  importWizardOpen.value = true;
+  importPreview.value = null;
+  importGroups.value = [];
+  importSelected.value = new Set();
+  importConflictIds.value = new Set();
+  importWizardMsg.value = '';
+};
+const closeNotionImportWizard = () => {
+  importWizardOpen.value = false;
+  importPreview.value = null;
+  importLoading.value = false;
+  importWizardMsg.value = '';
+};
+const onImportFilePicked = async (e: Event) => {
+  const input = e.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (files.length === 0) return;
+  importLoading.value = true;
+  importWizardMsg.value = files.length > 1 ? `正在解析 ${files.length} 个 ZIP…` : '正在解析 ZIP…';
+  // 逐个解析（支持一次多选多个 Notion 导出 zip），按来源分组；单个失败不影响其余
+  const groups: Array<{ file: string; pages: Page[]; error?: string }> = [];
+  let imageFailures = 0;
+  for (const file of files) {
+    const res = await previewNotionZip(file);
+    if (res.ok && res.pages && res.pages.length > 0) {
+      groups.push({ file: file.name, pages: res.pages });
+      imageFailures += res.imageFailures ?? 0;
+    } else {
+      groups.push({ file: file.name, pages: [], error: res.message || '未找到可导入内容' });
+    }
+  }
+  const allPages = groups.flatMap((g) => g.pages);
+  importLoading.value = false;
+  if (allPages.length === 0) {
+    importPreview.value = null;
+    importGroups.value = groups;
+    importWizardMsg.value = '未从所选 ZIP 解析出可导入的页面';
+    return;
+  }
+  importPreview.value = {
+    pages: allPages,
+    report: [],
+    imageFailures,
+    sources: groups.map((g) => ({ file: g.file, count: g.pages.length, error: g.error })),
+  };
+  importGroups.value = groups;
+  // 同名去重：标题在「现有存活页 ∪ 已出现的待导入页」中重复的，默认不勾选并标「已存在」，
+  // 每个标题只保留第一份（跨文件也生效）；空标题不参与去重。用户仍可手动勾选建副本。
+  const seenTitles = new Set(pages.value.filter((p) => !p.deletedAt).map((p) => (p.title || '').trim()));
+  const conflict = new Set<string>();
+  for (const p of allPages) {
+    const t = (p.title || '').trim();
+    if (!t) continue;                 // 空标题不参与去重（都允许导入）
+    if (seenTitles.has(t)) conflict.add(p.id);
+    else seenTitles.add(t);
+  }
+  importConflictIds.value = conflict;
+  importSelected.value = new Set(allPages.map((p) => p.id).filter((id) => !conflict.has(id)));
+  importWizardMsg.value = '';
+};
+// 依据 parentId 计算某页在预览树里的深度（带环保护）
+const importDepth = (p: Page): number => {
+  if (!importPreview.value) return 0;
+  const byId = new Map(importPreview.value.pages.map((x) => [x.id, x]));
+  let d = 0;
+  let cur: Page | undefined = p;
+  const guard = new Set<string>();
+  while (cur?.parentId && byId.has(cur.parentId) && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    d++;
+    cur = byId.get(cur.parentId);
+  }
+  return d;
+};
+const toggleImportSelect = (id: string) => {
+  const s = new Set(importSelected.value);
+  if (s.has(id)) s.delete(id); else s.add(id);
+  importSelected.value = s;
+};
+const toggleImportSelectAll = () => {
+  if (!importPreview.value) return;
+  importSelected.value = importSelected.value.size === importPreview.value.pages.length
+    ? new Set()
+    : new Set(importPreview.value.pages.map((p) => p.id));
+};
+const confirmNotionImport = async () => {
+  if (!importPreview.value) return;
+  const chosen = importPreview.value.pages.filter((p) => importSelected.value.has(p.id));
+  if (chosen.length === 0) { importWizardMsg.value = '请先勾选要导入的页面'; return; }
+  importLoading.value = true;
+  const res = await commitImportPages(chosen);
+  importLoading.value = false;
+  if (res.ok) {
+    closeNotionImportWizard();
+    // 跳到导入结果的根页面（其父不在所选集合里的第一个）
+    const root = chosen.find((p) => !chosen.some((q) => q.id === p.parentId)) ?? chosen[0];
+    if (root) selectPage(root.id);
+  } else {
+    importWizardMsg.value = res.message;
+  }
+};
 
 const openIconPicker = (pageId: string, e: MouseEvent) => {
   e.stopPropagation();

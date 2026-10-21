@@ -293,25 +293,28 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
         logger.info(f"设备断开连接。在线设备总数: {len(self.active_connections)}")
 
+    async def _send_or_drop(self, connection: WebSocket, message: str) -> None:
+        """向单个连接发送；失败即判定为死连接并移除（静默，不刷 error）。
+        同步场景下连接频繁建立/断开，向已断开连接 send 失败是常态，
+        只需清理掉以保持在线数准确，不应以 error 刷屏。"""
+        try:
+            await connection.send_text(message)
+        except Exception:
+            if connection in self.active_connections:
+                self.active_connections.remove(connection)
+
     async def broadcast_device_count(self):
-        # 向所有设备推送当前在线设备数
+        # 向所有设备推送当前在线设备数（死连接由 _send_or_drop 顺手清理）
+        msg = json.dumps({"type": "DEVICE_COUNT", "data": len(self.active_connections)})
         for connection in list(self.active_connections):
-            try:
-                await connection.send_text(json.dumps({
-                    "type": "DEVICE_COUNT",
-                    "data": len(self.active_connections)
-                }))
-            except Exception as e:
-                logger.error(f"推送设备数失败: {e}")
+            await self._send_or_drop(connection, msg)
 
     async def broadcast(self, message: str, sender: WebSocket):
-        # 广播数据给其他连接的客户端设备，排除发送者自身（防止回环反射）
-        for connection in self.active_connections:
+        # 广播数据给其他连接的客户端设备，排除发送者自身（防止回环反射）。
+        # 用副本遍历 + _send_or_drop：避免遍历中移除导致跳过元素，并静默清理死连接。
+        for connection in list(self.active_connections):
             if connection != sender:
-                try:
-                    await connection.send_text(message)
-                except Exception as e:
-                    logger.error(f"向设备广播数据包失败: {e}")
+                await self._send_or_drop(connection, message)
 
 manager = ConnectionManager()
 
@@ -341,10 +344,7 @@ def _schedule_broadcast() -> None:
 
     async def _broadcast() -> None:
         for connection in list(manager.active_connections):
-            try:
-                await connection.send_text(message)
-            except Exception as e:
-                logger.error(f"REST 写后广播失败: {e}")
+            await manager._send_or_drop(connection, message)
 
     try:
         asyncio.run_coroutine_threadsafe(_broadcast(), loop)
@@ -581,10 +581,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 }), sender=websocket)
                 
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
-        await manager.broadcast_device_count()
+        pass
     except Exception as e:
         logger.error(f"连接中转异常: {e}")
+    finally:
+        # 无论正常断开还是异常，都确保移除连接并刷新在线数，防止计数只增不减
         manager.disconnect(websocket)
         await manager.broadcast_device_count()
 

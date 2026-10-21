@@ -61,6 +61,12 @@ export const EMOJI_CATEGORIES: EmojiCategory[] = [
     emojis:
       '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 💟 ☮️ ✝️ ☪️ 🕉️ ☸️ ✡️ 🔯 🕎 ☯️ ☦️ 🛐 ⛎ ♈ ♉ ♊ ♋ ♌ ♍ ♎ ♏ ♐ ♑ ♒ ♓ 🆔 ⚛️ 🉑 ☢️ ☣️ 📴 📳 🈶 🈚 🈸 🈺 ✴️ 🆚 💮 🉐 ㊙️ ㊗️ 🈴 🈵 🈹 🈲 🅰️ 🅱️ 🆎 🆑 🅾️ 🆘 ❌ ⭕ 🛑 ⛔ 📛 🚫 💯 💢 ♨️ 🚷 🚯 🚳 🚱 🔞 📵 🚭 ❗ ❕ ❓ ❔ ‼️ ⁉️ 🔅 🔆 〽️ ⚠️ 🚸 🔱 ⚜️ 🔰 ♻️ ✅ 🈯 💹 ❇️ ✳️ ❎ 🌐 💠 Ⓜ️ 🌀 💤 🏧 🚾 ♿ 🅿️ 🈳 🈂️ 🛂 🛃 🛄 🛅 🚹 🚺 🚼 🚻 🚮 🎦 📶 🔣 ℹ️ 🔤 🔡 🔠 🆖 🆗 🆙 🆒 🆕 🆓 0️⃣ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 6️⃣ 7️⃣ 8️⃣ 9️⃣ 🔟 🔢 #️⃣ *️⃣ ⏏️ ▶️ ⏸️ ⏯️ ⏹️ ⏺️ ⏭️ ⏮️ ⏩ ⏪ ⏫ ⏬ ◀️ 🔼 🔽 ➡️ ⬅️ ⬆️ ⬇️ ↗️ ↘️ ↙️ ↖️ ↕️ ↔️ ↪️ ↩️ ⤴️ ⤵️ 🔀 🔁 🔂 🔄 🔃 🎵 🎶 ➕ ➖ ➗ ✖️ ♾️ 💲 💱 ™️ ©️ ®️ 〰️ ➰ ➿ 🔚 🔙 🔛 🔝 🔜 ✔️ ☑️ 🔘 🔴 🟠 🟡 🟢 🔵 🟣 ⚫ ⚪ 🟤 🔺 🔻 🔸 🔹 🔶 🔷 🔳 🔲 ▪️ ▫️ ◼️ ◻️ ◾ ◽ 🟥 🟧 🟨 🟩 🟦 🟪 ⬛ ⬜ 🟫',
   },
+  {
+    name: '旗帜',
+    icon: '🏁',
+    emojis:
+      '🏁 🚩 🎌 🏴 🏳️ 🏳️‍🌈 🏴‍☠️ 🇨🇳 🇭🇰 🇲🇴 🇹🇼 🇯🇵 🇰🇷 🇸🇬 🇺🇸 🇬🇧 🇫🇷 🇩🇪 🇮🇹 🇪🇸 🇵🇹 🇳🇱 🇨🇭 🇸🇪 🇳🇴 🇩🇰 🇫🇮 🇵🇱 🇦🇹 🇧🇪 🇬🇷 🇮🇪 🇷🇺 🇺🇦 🇨🇦 🇲🇽 🇧🇷 🇦🇷 🇨🇱 🇨🇴 🇵🇪 🇦🇺 🇳🇿 🇮🇳 🇹🇭 🇻🇳 🇲🇾 🇮🇩 🇵🇭 🇦🇪 🇸🇦 🇮🇱 🇹🇷 🇪🇬 🇿🇦 🇳🇬 🇰🇪 🇺🇳 🇪🇺',
+  },
 ];
 
 // 扁平化的全量表情列表
@@ -152,6 +158,10 @@ export const EMOJI_KEYWORDS: Record<string, string> = {
   '🦄': '独角兽 unicorn',
   '🐳': '鲸鱼 whale',
   '🦋': '蝴蝶 butterfly',
+  '🏁': '旗帜 终点 flag',
+  '🚩': '旗子 flag',
+  '🎌': '旗帜 flag',
+  '🏴‍☠️': '海盗 pirate',
 };
 
 // 按关键词过滤表情（匹配中文 / 拼音 / 表情本身）
@@ -170,3 +180,25 @@ export const searchEmojis = (query: string): string[] => {
 
 // 随机取一个表情（Notion 的 Random 按钮）
 export const randomEmoji = (): string => ALL_EMOJIS[Math.floor(Math.random() * ALL_EMOJIS.length)];
+
+// === 最近使用（Notion 的 Recents）：记住用户选过的图标，选择器里置顶显示 ===
+const RECENTS_KEY = 'nexus_emoji_recents';
+const RECENTS_MAX = 28;
+export const getRecentEmojis = (): string[] => {
+  try {
+    const raw = localStorage.getItem(RECENTS_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+};
+export const rememberEmoji = (emoji: string): string[] => {
+  const next = [emoji, ...getRecentEmojis().filter((e) => e !== emoji)].slice(0, RECENTS_MAX);
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+  } catch {
+    /* 存储不可用时不阻塞选择 */
+  }
+  return next;
+};

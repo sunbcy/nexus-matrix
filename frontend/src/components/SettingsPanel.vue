@@ -7,15 +7,29 @@
   入口放在侧边栏右上角齿轮（见 NexusTaskMatrix1.vue 侧边栏头部）。
 
   形态与项目其它浮层一致：触屏 bottom sheet / 桌面居中弹窗（单容器双形态）。
+
+  数据与备份（2026-10-22）：导入 / 导出原先是一组常驻在每个页面右下角的浮动按钮，
+  既违背上面「全局操作在侧边栏 / 设置」的原则，也让「Notion ZIP 导入 = 批量新建页面」
+  这种工作区级动作显得语义错位。现收敛到本面板的「数据与备份」分区。
+  其中「导入 Notion ZIP」改为唤起预览式导入向导（见 NexusTaskMatrix1.vue），
+  避免选完 ZIP 静默新建一堆页面。
 -->
 <script setup lang="ts">
 import {computed, onMounted, ref} from 'vue';
 import {useMobileInput} from '../composables/useMobileInput';
-import {onlineDevices, retrySync, storageError, syncStatus} from '../composables/useSync';
+import {
+  exportBackup,
+  importBackup,
+  importMarkdown,
+  onlineDevices,
+  retrySync,
+  storageError,
+  syncStatus
+} from '../composables/useSync';
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
 
 const props = defineProps<{ visible: boolean }>();
-const emit = defineEmits<{ (e: 'close'): void }>();
+const emit = defineEmits<{ (e: 'close'): void; (e: 'export-md'): void; (e: 'open-notion-import'): void }>();
 
 const { isCoarsePointer } = useMobileInput();
 
@@ -91,6 +105,28 @@ const saveServer = () => {
 };
 
 const onRetry = () => { void retrySync(); };
+
+// === 数据与备份（导入 / 导出） ===
+// Notion ZIP 走预览式导入向导（emit 给父组件打开），不在此处直接解析。
+const jsonInput = ref<HTMLInputElement | null>(null);
+const mdInput = ref<HTMLInputElement | null>(null);
+const dataMsg = ref('');
+
+const flashDataMsg = (m: string, ms = 5000) => { dataMsg.value = m; setTimeout(() => (dataMsg.value = ''), ms); };
+const onExportJson = () => { exportBackup(); flashDataMsg('已导出 JSON 备份'); };
+const triggerJsonImport = () => jsonInput.value?.click();
+const triggerMdImport = () => mdInput.value?.click();
+
+async function onJsonImport(e: Event) {
+  const input = e.target as HTMLInputElement; const file = input.files?.[0];
+  if (!file) return;
+  const res = await importBackup(file); flashDataMsg(res.message, 4000); input.value = '';
+}
+async function onMdImport(e: Event) {
+  const input = e.target as HTMLInputElement; const file = input.files?.[0];
+  if (!file) return;
+  const res = await importMarkdown(file); flashDataMsg(res.message, 5000); input.value = '';
+}
 </script>
 
 <template>
@@ -118,7 +154,7 @@ const onRetry = () => { void retrySync(); };
       <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 space-y-5 text-sm">
         <!-- 存储状态：数据到底存没存住，用户自己能看见 -->
         <section>
-          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] uppercase tracking-wider mb-2">本地存储</div>
+          <div class="text-[11px] font-['Rajdhani',sans-serif] text-[#6b7280] uppercase tracking-wider mb-2">本地存储</div>
           <div class="space-y-1.5 text-[#9ca3af]">
             <div class="flex items-center justify-between gap-3">
               <span>数据库（IndexedDB）</span>
@@ -148,7 +184,7 @@ const onRetry = () => { void retrySync(); };
 
         <!-- 同步服务器 -->
         <section>
-          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] uppercase tracking-wider mb-2">同步</div>
+          <div class="text-[11px] font-['Rajdhani',sans-serif] text-[#6b7280] uppercase tracking-wider mb-2">同步</div>
           <div class="flex items-center justify-between gap-3 mb-2">
             <span class="text-[#9ca3af]">状态</span>
             <span class="font-['JetBrains_Mono',monospace] text-xs text-[#9ca3af]">{{ syncLabel }}</span>
@@ -170,6 +206,39 @@ const onRetry = () => { void retrySync(); };
             </button>
           </div>
           <p v-if="savedMsg" class="mt-2 text-xs text-[#00f0ff]">{{ savedMsg }}</p>
+        </section>
+
+        <!-- 数据与备份：导入 / 导出。工作区级操作，对齐 Notion「在设置里做 Import/Export」 -->
+        <section>
+          <div class="text-[11px] font-['Rajdhani',sans-serif] text-[#6b7280] uppercase tracking-wider mb-2">数据与备份</div>
+          <div class="flex flex-wrap gap-2">
+            <button @click="onExportJson"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              导出 JSON 备份
+            </button>
+            <button @click="emit('export-md')"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              导出当前页 MD
+            </button>
+          </div>
+          <div class="flex flex-wrap gap-2 mt-2">
+            <button @click="triggerJsonImport"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              导入 JSON
+            </button>
+            <button @click="triggerMdImport"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              导入 Markdown
+            </button>
+            <button @click="emit('open-notion-import')"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#ffb000] hover:border-[#ffb000] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              导入 Notion ZIP
+            </button>
+          </div>
+          <p class="text-xs text-[#6b7280] mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。</p>
+          <p v-if="dataMsg" class="mt-2 text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
+          <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />
+          <input ref="mdInput" type="file" accept=".md,.markdown,text/markdown" class="hidden" @change="onMdImport" />
         </section>
 
         <p v-if="storageError" class="text-xs text-[#ffb0b0] leading-snug">{{ storageError }}</p>

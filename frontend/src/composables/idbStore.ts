@@ -31,12 +31,14 @@ const DB_NAME = 'nexus-matrix';
 //   3 = 修复上一条 bug 留下的**存量坏库**——那些库版本号已是 2 但只建了 assets、
 //       没有 kv。因为版本相同不会再触发 upgrade，只能靠递增到 3 强制补齐 kv，
 //       否则存量用户会永久卡在「有 assets 无 kv、页面数据存不进去」的状态。
-const DB_VERSION = 3;
+//   4 = 新增 pageHistory（页面历史版本快照，独立 store）
+const DB_VERSION = 4;
 
 /** 所有 object store 名称的唯一来源，assets.ts 也从此取，避免两处各写一份 */
 export const STORE_NAMES = {
   kv: 'kv',
   assets: 'assets',
+  pageHistory: 'page_history',
 } as const;
 
 const STORE = STORE_NAMES.kv;
@@ -91,13 +93,14 @@ export const openNexusDB = (): Promise<IDBDatabase> => {
 };
 
 const tx = async <T>(
+  storeName: string,
   mode: IDBTransactionMode,
   fn: (store: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> => {
   const db = await openNexusDB();
   return new Promise<T>((resolve, reject) => {
-    const t = db.transaction(STORE, mode);
-    const req = fn(t.objectStore(STORE));
+    const t = db.transaction(storeName, mode);
+    const req = fn(t.objectStore(storeName));
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('IndexedDB 操作失败'));
   });
@@ -106,18 +109,34 @@ const tx = async <T>(
 export const idbStore: KeyValueStore = {
   async get(key) {
     try {
-      const v = await tx<unknown>('readonly', (s) => s.get(key));
+      const v = await tx<unknown>(STORE, 'readonly', (s) => s.get(key));
       return v === undefined ? null : String(v);
     } catch {
       return null;
     }
   },
   async set(key, value) {
-    await tx('readwrite', (s) => s.put(value, key));
+    await tx(STORE, 'readwrite', (s) => s.put(value, key));
   },
   async remove(key) {
-    await tx('readwrite', (s) => s.delete(key));
+    await tx(STORE, 'readwrite', (s) => s.delete(key));
   },
+};
+
+// === 页面历史版本（独立 store，避免版本快照把主 kv 存储撑大后影响页面读写） ===
+// 直接存结构化对象（IndexedDB 支持结构化克隆），不做字符串化。
+export const pageHistoryGet = async (pageId: string): Promise<unknown> => {
+  try {
+    return await tx<unknown>(STORE_NAMES.pageHistory, 'readonly', (s) => s.get(pageId));
+  } catch {
+    return null;
+  }
+};
+export const pageHistorySet = async (pageId: string, value: unknown): Promise<void> => {
+  await tx(STORE_NAMES.pageHistory, 'readwrite', (s) => s.put(value, pageId));
+};
+export const pageHistoryRemove = async (pageId: string): Promise<void> => {
+  await tx(STORE_NAMES.pageHistory, 'readwrite', (s) => s.delete(pageId));
 };
 
 // 申请持久化存储：避免浏览器在存储压力下驱逐本 origin 的数据。

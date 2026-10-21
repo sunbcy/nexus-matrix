@@ -7,7 +7,7 @@
 // - 底部固定「随机 / 移除」两个动作（Notion 同款）
 // - 打开时自动聚焦搜索框，Esc 关闭，回车选第一个
 import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
-import {EMOJI_CATEGORIES, randomEmoji, searchEmojis} from '../composables/emoji';
+import {EMOJI_CATEGORIES, randomEmoji, searchEmojis, getRecentEmojis, rememberEmoji} from '../composables/emoji';
 import {useMobileInput} from '../composables/useMobileInput';
 
 // 触屏判定（与编辑器同一套双信号逻辑）：决定弹窗是底部 sheet 还是定点 popover，
@@ -29,15 +29,23 @@ const emit = defineEmits<{
 const query = ref('');
 const activeCategory = ref(0);
 const searchRef = ref<HTMLInputElement | null>(null);
+// 最近使用（Notion 的 Recents）：有记录时作为置顶分类
+const recents = ref<string[]>(getRecentEmojis());
+
+const categories = computed(() =>
+  recents.value.length
+    ? [{ name: '最近', icon: '🕘', emojis: recents.value.join(' ') }, ...EMOJI_CATEGORIES]
+    : EMOJI_CATEGORIES,
+);
 
 const results = computed(() => (query.value.trim() ? searchEmojis(query.value) : []));
 const gridEmojis = computed(() => {
   if (query.value.trim()) return results.value;
-  return EMOJI_CATEGORIES[activeCategory.value]?.emojis.split(/\s+/).filter(Boolean) ?? [];
+  return categories.value[activeCategory.value]?.emojis.split(/\s+/).filter(Boolean) ?? [];
 });
 
-const pick = (emoji: string) => emit('select', emoji);
-const randomize = () => emit('select', randomEmoji());
+const pick = (emoji: string) => { recents.value = rememberEmoji(emoji); emit('select', emoji); };
+const randomize = () => { const e = randomEmoji(); recents.value = rememberEmoji(e); emit('select', e); };
 const remove = () => emit('remove');
 
 const onKeyDown = (e: KeyboardEvent) => {
@@ -126,7 +134,7 @@ onUnmounted(() => {
 
     <!-- 分类页签（搜索时隐藏） -->
     <div v-if="!query.trim()" class="flex items-center gap-0.5 px-2 py-1.5 border-b border-[#1e2126]/60 shrink-0 overflow-x-auto custom-scrollbar">
-      <button v-for="(cat, idx) in EMOJI_CATEGORIES" :key="cat.name"
+      <button v-for="(cat, idx) in categories" :key="cat.name"
               @click="activeCategory = idx"
               class="shrink-0 px-2 py-1 text-xs rounded-sm transition-colors whitespace-nowrap"
               :class="idx === activeCategory ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:text-[#e5e7eb]'">

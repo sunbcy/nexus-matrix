@@ -30,6 +30,8 @@ export interface Page {
   cover?: string;       // 页眉封面（Notion 的 Cover）：图片 URL/DataURL，或 `gradient:<id>`
   coverPos?: number;    // 封面垂直取景点，0=顶部 100=底部，默认 35（偏上，利于人像）。用于拖动重新构图
   deletedAt?: number;   // 墓碑时间戳（ms）。非空表示该页已被删除，参与同步合并，避免删除被另一端「复活」
+  isTemplate?: boolean; // 模板页：从侧边栏树隐藏，收进「模板」区，可一键套用新建副本
+  prevId?: string | null;  // 同一父级下的前一个页面 id（页面顺序链，与块的 prevId 同思路；根页也有链）
 }
 
 // === 顺序模型（CRDT 前置） ===
@@ -139,7 +141,48 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
   return orderPages(out);
 };
 
-const orderPages = (pages: Page[]): Page[] => pages;
+// 页面顺序链：按当前数组顺序，为每个父级分组重写 prevId（同块的 writePrevIds 思路）。
+// 只改顺序字段、不碰内容（也不改 updatedAt），返回新数组供原位替换。
+const writePagePrevIds = (pages: Page[]): Page[] => {
+  const lastByParent = new Map<string, string>();
+  return pages.map((p) => {
+    const key = p.parentId ?? '__root__';
+    const prev = lastByParent.get(key) ?? null;
+    lastByParent.set(key, p.id);
+    return { ...p, prevId: prev };
+  });
+};
+
+// 按 prevId 链还原页面顺序（替换此前的 no-op）：同父级的页按链排列，
+// 使侧边栏 getChildren / buildTree 消费到的顺序确定；断链 / 环 / 多头按原数组顺序兜底，绝不丢页。
+const orderPages = (pages: Page[]): Page[] => {
+  const byParent = new Map<string, Page[]>();
+  const parentOrder: string[] = [];
+  for (const p of pages) {
+    const key = p.parentId ?? '__root__';
+    if (!byParent.has(key)) { byParent.set(key, []); parentOrder.push(key); }
+    byParent.get(key)!.push(p);
+  }
+  const orderGroup = (group: Page[]): Page[] => {
+    const idSet = new Set(group.map((p) => p.id));
+    const result: Page[] = [];
+    const seen = new Set<string>();
+    const walk = (start: Page) => {
+      let cur: Page | undefined = start;
+      while (cur && !seen.has(cur.id)) {
+        seen.add(cur.id);
+        result.push(cur);
+        cur = group.find((p) => p.prevId === cur!.id && !seen.has(p.id));
+      }
+    };
+    for (const p of group) if (!p.prevId || !idSet.has(p.prevId)) walk(p);   // 头节点沿链走
+    for (const p of group) if (!seen.has(p.id)) { seen.add(p.id); result.push(p); }  // 断链/成环兜底，保证不丢页
+    return result;
+  };
+  const out: Page[] = [];
+  for (const key of parentOrder) out.push(...orderGroup(byParent.get(key)!));
+  return out;
+};
 
 /**
  * 给本地变更的页面/块打上 updatedAt（块级 LWW 的判定依据）。
@@ -151,7 +194,7 @@ const orderPages = (pages: Page[]): Page[] => pages;
  */
 const pageFingerprint = (p: Page): string =>
   JSON.stringify([
-    p.title, p.icon, p.cover, p.parentId, p.isFavorite, p.isExpanded, p.deletedAt ?? 0,
+    p.title, p.icon, p.cover, p.parentId, p.isFavorite, p.isExpanded, p.deletedAt ?? 0, p.isTemplate ?? false,
     // 块只取「内容」参与指纹，不取块自身的 updatedAt——否则打戳本身就会改变指纹
     p.tasks.map((t) => [t.id, t.type, t.content, t.completed, t.indentLevel, t.deletedAt ?? 0]),
   ]);
@@ -160,13 +203,15 @@ const pageFingerprint = (p: Page): string =>
 const pageStampCache = new Map<string, string>();
 const blockStampCache = new Map<string, string>();
 
-const stampUpdated = (pages: Page[]) => {
+const stampUpdated = (pages: Page[]): string[] => {
   const now = Date.now();
+  const changed: string[] = [];
   for (const p of pages) {
     const fp = pageFingerprint(p);
     if (pageStampCache.get(p.id) === fp) continue;   // 内容没变 → 不打戳
     pageStampCache.set(p.id, fp);
     p.updatedAt = now;
+    changed.push(p.id);
 
     for (const t of p.tasks as unknown as Array<Record<string, unknown>>) {
       const bfp = JSON.stringify([t.type, t.content, t.completed, t.indentLevel, t.deletedAt ?? 0]);
@@ -174,6 +219,66 @@ const stampUpdated = (pages: Page[]) => {
       blockStampCache.set(String(t.id), bfp);
       t.updatedAt = now;
     }
+  }
+  return changed;
+};
+
+// === 页面历史版本（本地快照，不同步；独立 pageHistory store，按变化页节流保存） ===
+export interface PageVersion { ts: number; title: string; tasks: Task[]; }
+const HISTORY_MAX = 30;          // 每页最多保留的版本数
+const HISTORY_INTERVAL = 60_000; // 同页 60s 内只存一个版本，避免每次击键都存档
+const lastSnapAt = new Map<string, number>();
+
+export const getPageHistory = async (pageId: string): Promise<PageVersion[]> => {
+  try {
+    const { pageHistoryGet } = await import('./idbStore');
+    const v = await pageHistoryGet(pageId);
+    return Array.isArray(v) ? (v as PageVersion[]) : [];
+  } catch {
+    return [];
+  }
+};
+
+const savePageVersion = async (pageId: string, version: PageVersion): Promise<void> => {
+  try {
+    const { pageHistoryGet, pageHistorySet } = await import('./idbStore');
+    const prev = await pageHistoryGet(pageId);
+    const list = Array.isArray(prev) ? (prev as PageVersion[]).slice() : [];
+    list.push(version);
+    while (list.length > HISTORY_MAX) list.shift();
+    await pageHistorySet(pageId, list);
+  } catch { /* 历史存储失败不影响主流程 */ }
+};
+
+export const deletePageVersion = async (pageId: string, ts: number): Promise<PageVersion[]> => {
+  try {
+    const { pageHistoryGet, pageHistorySet } = await import('./idbStore');
+    const prev = await pageHistoryGet(pageId);
+    const next = (Array.isArray(prev) ? (prev as PageVersion[]) : []).filter((v) => v.ts !== ts);
+    await pageHistorySet(pageId, next);
+    return next;
+  } catch {
+    return [];
+  }
+};
+
+export const clearPageHistory = async (pageId: string): Promise<void> => {
+  try {
+    const { pageHistoryRemove } = await import('./idbStore');
+    await pageHistoryRemove(pageId);
+  } catch { /* noop */ }
+};
+
+// 对刚发生变化的页存档一个版本（节流 + 跳过墓碑页）
+const snapshotPages = async (pages: Page[], changedIds: string[]) => {
+  const now = Date.now();
+  const changed = new Set(changedIds);
+  for (const p of pages) {
+    if (!changed.has(p.id) || p.deletedAt) continue;
+    const last = lastSnapAt.get(p.id) ?? 0;
+    if (now - last < HISTORY_INTERVAL) continue;
+    lastSnapAt.set(p.id, now);
+    await savePageVersion(p.id, { ts: now, title: p.title, tasks: JSON.parse(JSON.stringify(p.tasks)) as Task[] });
   }
 };
 
@@ -230,6 +335,7 @@ let wsUrl = '';
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 let remoteApplying = false;   // 标记：正在应用远端数据，避免回环广播
+let stopWatch: (() => void) | null = null;  // 页面订阅的取消函数，closeSync 时清理，防 HMR 重复订阅
 let currentPagesRef: Ref<Page[]> | null = null;
 
 // === 阶段二 2.1/2.2：上传队列 + 增量游标 ===
@@ -436,16 +542,25 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     wsUrl = `${proto}//${window.location.host}${WS_PATH}${wsQs}`;
   }
 
+  // 防连接泄漏：新建前先关掉并脱离旧 socket（重连 / HMR 竞态时旧的可能没被 closeSync 关掉）
+  if (socket) {
+    try { socket.onclose = null; socket.close(); } catch { /* 忽略 */ }
+    socket = null;
+  }
+  let mySocket: WebSocket;
   try {
-    socket = new WebSocket(wsUrl);
+    mySocket = new WebSocket(wsUrl);
   } catch (e) {
     syncStatus.value = 'offline';
     scheduleReconnect(pagesRef);
     return;
   }
+  socket = mySocket;
   syncStatus.value = 'connecting';
 
-  socket.onopen = () => {
+  mySocket.onopen = () => {
+    // 代际守护：若已被更新的连接取代（HMR / 重连竞态），自关以防后端连接数虚高
+    if (socket !== mySocket) { try { mySocket.close(); } catch { /* 忽略 */ } return; }
     syncStatus.value = 'online';
     lastSyncError.value = '';
     reconnectAttempts = 0;
@@ -459,7 +574,8 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     }
   };
 
-  socket.onmessage = (event) => {
+  mySocket.onmessage = (event) => {
+    if (socket !== mySocket) return;  // 过期连接，忽略
     try {
       const msg = JSON.parse(event.data);
 
@@ -505,8 +621,8 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
             // 只在真正有变化时才写回，避免无谓触发 watch -> 广播回环
             if (JSON.stringify(merged) === JSON.stringify(existing)) { remoteApplying = false; return; }
             remoteApplying = true;
-            pagesRef.value = merged;
-            await saveLocal(merged);
+            pagesRef.value = orderPages(merged);
+            await saveLocal(pagesRef.value);
             remoteApplying = false;
             return;
           }
@@ -525,7 +641,8 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     }
   };
 
-  socket.onclose = () => {
+  mySocket.onclose = () => {
+    if (socket !== mySocket) return;  // 已被取代的旧连接，忽略（不触发重连）
     syncStatus.value = 'offline';
     socket = null;
     scheduleReconnect(pagesRef);
@@ -569,7 +686,8 @@ export const retrySync = async () => {
 
 export const closeSync = () => {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-  if (socket) { socket.close(); socket = null; }
+  if (socket) { socket.onclose = null; socket.close(); socket = null; }
+  if (stopWatch) { stopWatch(); stopWatch = null; }
   syncStatus.value = 'offline';
   currentPagesRef = null;
 };
@@ -690,9 +808,43 @@ export const importNotionZip = async (
   }
 };
 
+// 导入向导支持：把「解析」与「提交」拆开——先在 UI 上预览将创建的页面，确认后再导入。
+// 只解析、不修改 currentPagesRef、不上推，供预览面板展示页面树与层级。
+export const previewNotionZip = async (
+  file: File,
+): Promise<{ ok: boolean; message?: string; pages?: Page[]; report?: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures?: number }> => {
+  try {
+    const { importZip } = await import('./zipImport');
+    const result = await importZip(file);
+    if (!result || result.pages.length === 0) {
+      return { ok: false, message: 'ZIP 中未找到可导入的 Markdown 文件' };
+    }
+    return { ok: true, pages: result.pages, report: result.report, imageFailures: result.imageFailures };
+  } catch (e) {
+    return { ok: false, message: 'ZIP 解析失败：' + (e as Error).message };
+  }
+};
+
+// 提交预览中勾选的页面（追加语义，不动已有内容），落盘 + 上推。
+export const commitImportPages = async (
+  pages: Page[],
+): Promise<{ ok: boolean; message: string }> => {
+  try {
+    if (!currentPagesRef) return { ok: false, message: '同步尚未初始化' };
+    if (pages.length === 0) return { ok: false, message: '未选择任何页面' };
+    currentPagesRef.value = [...currentPagesRef.value, ...pages];
+    await pushAll(currentPagesRef.value);
+    return { ok: true, message: `已导入 ${pages.length} 个页面` };
+  } catch (e) {
+    return { ok: false, message: '导入失败：' + (e as Error).message };
+  }
+};
+
 // === 统一接入：LocalFirst + 远端同步 ===
 // 返回是否成功从远端加载
 export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
+  // 幂等：HMR / 重复挂载会重复调用，先清理上一次的 socket + watch，避免连接与订阅泄漏
+  if (currentPagesRef) closeSync();
   currentPagesRef = pagesRef;
 
   // 1) LocalFirst：先读本地（本地数据优先，绝不被服务端陈旧的种子数据覆盖）
@@ -713,9 +865,9 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
     // 本地与远端都有：增量合并远端（since 之后的变更），再把本地上推到服务端，
     // 让服务端对齐最新（避免陈旧种子），同时补齐本端离线期间其它端的改动。
     const merged = mergePages(pagesRef.value, sanitizeLoadedPages(remote));
-    pagesRef.value = merged;
-    await saveLocal(merged);
-    await pushAll(merged);
+    pagesRef.value = orderPages(merged);
+    await saveLocal(pagesRef.value);
+    await pushAll(pagesRef.value);
   } else if (local && !remote) {
     // 后端不可用或为空：保持本地并尝试上推
     await pushAll(pagesRef.value);
@@ -740,11 +892,12 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   }
 
   // 3) 本地持久化 + 变更广播（防抖 500ms，降低写入频率）
-  watch(pagesRef, (newVal) => {
+  stopWatch = watch(pagesRef, (newVal) => {
     // 远端应用期间的变更不回推，避免无限回环
     if (remoteApplying) return;
     // 标记被修改的页面，供 LWW 与未来的 CRDT 合并判定先后
-    stampUpdated(newVal);
+    const changed = stampUpdated(newVal);
+    if (changed.length > 0) void snapshotPages(newVal, changed);  // 页面历史：对变化页节流存档
     debouncedPersist(newVal);
   }, { deep: true });
 
