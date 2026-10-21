@@ -16,29 +16,22 @@
 // 兼容旧数据：老页面的 payload.url 可能是 data:image/...;base64,...
 // resolveAsset 对 data: 原样返回（不迁移），保证旧内容仍能显示。
 
-import { newId } from './ids';
+import {newId} from './ids';
+// 复用 idbStore 的共享连接：**绝不能再自行 indexedDB.open**。
+// 历史上本模块以 DB_VERSION=2 独立开库，与 idbStore 的 v1 冲突，导致 kv store
+// 永久不可用（页面数据静默丢失）。详见 idbStore.ts 的注释。
+import {openNexusDB, STORE_NAMES} from './idbStore';
+import {getRuntimeConfig} from '../runtimeConfig';
+
+// 阶段二 2.3：把图片 Blob 同步到后端，使其它设备能解析 asset: 引用。
+// 与页面同步同源：优先 URL ?syncServer= / 设置面板，否则走同源（Vite 代理）。
+const SYNC_SERVER = (getRuntimeConfig().syncServer || (import.meta as any).env?.VITE_SYNC_SERVER || '').replace(/\/+$/, '');
+const ASSET_API_BASE = SYNC_SERVER ? `${SYNC_SERVER}/api` : '/api';
 
 export const ASSET_PREFIX = 'asset:';
 
-const DB_NAME = 'nexus-matrix';
-const DB_VERSION = 2; // 1 -> 2：新增 assets object store
-const ASSET_STORE = 'assets';
-
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-const openDB = (): Promise<IDBDatabase> => {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(ASSET_STORE)) db.createObjectStore(ASSET_STORE);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('打开 IndexedDB 失败'));
-  });
-  return dbPromise;
-};
+const ASSET_STORE = STORE_NAMES.assets;
+const openDB = openNexusDB;
 
 /** 存入 Blob，返回 asset:<id> 引用 */
 export const saveAsset = async (blob: Blob): Promise<string> => {
@@ -79,6 +72,54 @@ export const deleteAsset = async (ref: string): Promise<void> => {
   });
 };
 
+/**
+ * 阶段二 2.3：把本地资产上传到后端（尽力而为，不阻塞正文保存）。
+ * 离线或后端不可用时静默失败——本地已存，待下次有网时由 resolveAsset 的回源
+ * 路径触发补传（另一设备来取时本端不一定在线，故采用「按需回源」而非预推送）。
+ */
+export const uploadAssetToServer = async (ref: string, blob: Blob): Promise<void> => {
+  if (!SYNC_SERVER) return; // 纯本地模式（无 syncServer）无需上传
+  try {
+    const buf = await blob.arrayBuffer();
+    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    await fetch(`${ASSET_API_BASE}/assets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: ref, data: b64 }),
+    });
+  } catch (e) {
+    // 静默：离线/后端挂了都不影响本地编辑；其它端来取时再走 resolveAsset 回源
+    console.warn('[NEXUS ASSET] 上传失败（将有网时由对端按需回源）', e);
+  }
+};
+
+/**
+ * 阶段二 2.3：从后端拉取资产（对端已上传、本端缺失时）。
+ * resolveAsset 本地 miss 时调用：把 Blob 存回本地 + 缓存，使后续渲染直读本地。
+ */
+export const fetchAssetFromServer = async (ref: string): Promise<Blob | null> => {
+  if (!SYNC_SERVER) return null;
+  try {
+    const res = await fetch(`${ASSET_API_BASE}/assets/${ref.slice(ASSET_PREFIX.length)}`);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    // 落本地，避免每次渲染都跨网
+    const id = ref.slice(ASSET_PREFIX.length);
+    const db = await openDB();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(ASSET_STORE, 'readwrite');
+      tx.objectStore(ASSET_STORE).put(blob, id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+    return blob;
+  } catch (e) {
+    console.warn('[NEXUS ASSET] 回源下载失败', e);
+    return null;
+  }
+};
+
 export const isAssetRef = (url: unknown): url is string =>
   typeof url === 'string' && url.startsWith(ASSET_PREFIX);
 
@@ -90,7 +131,11 @@ const blobUrlCache = new Map<string, string>();
 export const resolveAsset = async (ref: string): Promise<string> => {
   const cached = blobUrlCache.get(ref);
   if (cached) return cached;
-  const blob = await getAsset(ref);
+  let blob = await getAsset(ref);
+  // 阶段二 2.3：本地 miss → 从后端回源（其它设备上传过的图片）
+  if (!blob) {
+    blob = await fetchAssetFromServer(ref);
+  }
   if (!blob) return '';
   const url = URL.createObjectURL(blob);
   blobUrlCache.set(ref, url);
@@ -153,5 +198,9 @@ const compressImage = (file: Blob): Promise<Blob> =>
 
 export const saveImageAsset = async (file: Blob): Promise<string> => {
   const blob = await compressImage(file);
-  return saveAsset(blob);
+  const ref = await saveAsset(blob);
+  // 阶段二 2.3：本地存好后尽力上传到后端，供其它设备安装/渲染。
+  // 异步、不阻塞正文保存（图片同步失败不应让打字卡顿）。
+  void uploadAssetToServer(ref, blob);
+  return ref;
 };

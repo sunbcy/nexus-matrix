@@ -1,7 +1,7 @@
-import { ref, watch, type Ref } from 'vue';
-import { getStore } from './storage';
-import { newBlockId, newPageId } from './ids';
-import { getRuntimeConfig } from '../runtimeConfig';
+import {ref, type Ref, watch} from 'vue';
+import {getStore} from './storage';
+import {newBlockId, newPageId} from './ids';
+import {getRuntimeConfig} from '../runtimeConfig';
 
 // === 数据结构 ===
 export interface Task {
@@ -15,6 +15,7 @@ export interface Task {
   // 无法确定性地重建顺序（必然冲突），而锚点 ID + 字典序可得到确定性的合并结果。
   // null 表示该块是其父级下的第一个块。见 orderTasks()。
   prevId?: string | null;
+  deletedAt?: number;   // 块级墓碑时间戳（ms）。与 Page.deletedAt 一致，块删除也走墓碑参与合并
 }
 
 export interface Page {
@@ -28,6 +29,7 @@ export interface Page {
   icon?: string;        // 文档图标（Notion 的 Page Icon），单个 emoji 字符
   cover?: string;       // 页眉封面（Notion 的 Cover）：图片 URL/DataURL，或 `gradient:<id>`
   coverPos?: number;    // 封面垂直取景点，0=顶部 100=底部，默认 35（偏上，利于人像）。用于拖动重新构图
+  deletedAt?: number;   // 墓碑时间戳（ms）。非空表示该页已被删除，参与同步合并，避免删除被另一端「复活」
 }
 
 // === 顺序模型（CRDT 前置） ===
@@ -82,27 +84,55 @@ export const orderTasks = (tasks: Task[]): Task[] => {
 // 局限（如实说明）：块内 content 是整体字符串，无法做到字符级合并；
 // 两端同时改同一个块时仍会有一方被覆盖，只是不会再扩散到整页。
 // 要真正解决字符级冲突，需要把 content 换成 Yjs.Text 之类的 CRDT 结构。
+/**
+ * 页面级标量的逐字段合并：谁的时间戳新就采用谁。
+ * 不做整页替换——否则「改了标题」会连带把另一端刚编辑的 icon/cover 冲掉。
+ */
+const PAGE_SCALAR_FIELDS = ['title', 'icon', 'cover', 'parentId', 'isFavorite', 'isExpanded'] as const;
+
 const mergePages = (local: Page[], remote: Page[]): Page[] => {
   const out: Page[] = local.map((p) => ({ ...p, tasks: [...p.tasks] }));
   const byId = new Map(out.map((p) => [p.id, p]));
 
   for (const rp of remote) {
     const lp = byId.get(rp.id);
+    // 墓碑（远端已删除）：无论本地是否仍存在，都按「删除时间戳较新」剔除本地页。
+    // 否则已删页面会被另一端的下一次 CLIENT_UPDATE 推回来「复活」。
+    // 仅当本地页面的删除戳比远端更晚时才保留本地（极端并发：本地后删、远端先删）。
+    if (rp.deletedAt) {
+      if (lp && !(lp.deletedAt && (lp.deletedAt ?? 0) > (rp.deletedAt ?? 0))) {
+        const idx = out.findIndex((p) => p.id === rp.id);
+        if (idx >= 0) out.splice(idx, 1);
+      }
+      continue;
+    }
     if (!lp) { out.push({ ...rp, tasks: orderTasks(rp.tasks) }); continue; }
 
-    // 页面级属性：远端更新则整体采用远端版本
-    if ((rp.updatedAt ?? 0) > (lp.updatedAt ?? 0)) {
-      lp.title = rp.title; lp.parentId = rp.parentId;
-      lp.isFavorite = rp.isFavorite; lp.isExpanded = rp.isExpanded; lp.updatedAt = rp.updatedAt;
+    // 页面级标量：逐字段按 updatedAt 比较。
+    // 远端更新 → 采用远端；否则保留本地。这样「本端刚改的字段」不会被旧远端覆盖。
+    const remoteNewer = (rp.updatedAt ?? 0) > (lp.updatedAt ?? 0);
+    if (remoteNewer) {
+      for (const f of PAGE_SCALAR_FIELDS) {
+        (lp as unknown as Record<string, unknown>)[f] = (rp as unknown as Record<string, unknown>)[f];
+      }
+      lp.updatedAt = rp.updatedAt;
     }
+
+    // 块级：逐块比较 block.updatedAt。
+    // 这是阶段一的核心修复——原先是 Object.assign(lt, rt) 无条件用远端覆盖，
+    // 导致 500ms 防抖窗口内刚编辑的块被任何到达的广播吞掉（且无任何提示）。
     const localBlocks = new Map(lp.tasks.map((t) => [t.id, t]));
     for (const rt of rp.tasks) {
       const lt = localBlocks.get(rt.id);
+      // 本端没有的块：直接加入（另一端新增的）
       if (!lt) { lp.tasks.push({ ...rt }); continue; }
-      // 两端都有：保留远端版本（远端广播即代表其它端的最新提交）。
-      // 注：此处刻意不做逐块 updatedAt 比较——content 字段没有独立的 updatedAt，
-      // 用页面级 updatedAt 判断会导致「本地刚编辑的块被旧远端覆盖」。
-      Object.assign(lt, rt);
+      // 两端都有：谁的块时间戳新就保留谁。
+      // 块没有 updatedAt（旧数据）时退化为「远端优先」，与历史行为一致，不至于丢块。
+      const ltTs = (lt as { updatedAt?: number }).updatedAt ?? 0;
+      const rtTs = (rt as { updatedAt?: number }).updatedAt ?? 0;
+      if (rtTs >= ltTs) {
+        Object.assign(lt, rt);
+      }
     }
     lp.tasks = orderTasks(lp.tasks);
   }
@@ -111,12 +141,39 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
 
 const orderPages = (pages: Page[]): Page[] => pages;
 
-/** 给本地变更的页面打上 updatedAt（后端 LWW 合并与未来的 CRDT 判定都依赖它） */
+/**
+ * 给本地变更的页面/块打上 updatedAt（块级 LWW 的判定依据）。
+ *
+ * 页面级：只在页面**内容真的变了**时才打戳（用内容哈希比对），
+ * 不再「无条件每次 watch 都推成最新」——那是「启动即覆盖另一端」的直接成因。
+ *
+ * 块级：同样只在块内容真的变了时才打戳，这样 mergePages 才能逐块判断谁更新。
+ */
+const pageFingerprint = (p: Page): string =>
+  JSON.stringify([
+    p.title, p.icon, p.cover, p.parentId, p.isFavorite, p.isExpanded, p.deletedAt ?? 0,
+    // 块只取「内容」参与指纹，不取块自身的 updatedAt——否则打戳本身就会改变指纹
+    p.tasks.map((t) => [t.id, t.type, t.content, t.completed, t.indentLevel, t.deletedAt ?? 0]),
+  ]);
+
+// 上一次打戳时各页/各块的内容指纹，用于判断「是否真的变了」
+const pageStampCache = new Map<string, string>();
+const blockStampCache = new Map<string, string>();
+
 const stampUpdated = (pages: Page[]) => {
   const now = Date.now();
   for (const p of pages) {
-    // 只更新「本地上次已知时间」之前的页面，避免每次 watch 都把全部页面推成最新
-    if (!p.updatedAt || p.updatedAt < now - 1000) p.updatedAt = now;
+    const fp = pageFingerprint(p);
+    if (pageStampCache.get(p.id) === fp) continue;   // 内容没变 → 不打戳
+    pageStampCache.set(p.id, fp);
+    p.updatedAt = now;
+
+    for (const t of p.tasks as unknown as Array<Record<string, unknown>>) {
+      const bfp = JSON.stringify([t.type, t.content, t.completed, t.indentLevel, t.deletedAt ?? 0]);
+      if (blockStampCache.get(String(t.id)) === bfp) continue;  // 块没变 → 不打戳
+      blockStampCache.set(String(t.id), bfp);
+      t.updatedAt = now;
+    }
   }
 };
 
@@ -134,6 +191,9 @@ const stripDeadBlobImages = (html: string): string => {
 export const sanitizeLoadedPages = (pages: Page[]): Page[] =>
   pages.map((p) => ({
     ...p,
+    // 后端 tombstone 的 deletedAt 是 ISO 字符串，本地统一用 ms 数字戳比较，
+    // 这里一次性转成数字，保证 mergePages / stampUpdated 与本地数据同源。
+    deletedAt: p.deletedAt ? (typeof p.deletedAt === 'string' ? Date.parse(p.deletedAt) : p.deletedAt) : undefined,
     tasks: (p.tasks ?? []).map((t) => (
       t.content && t.content.indexOf('blob:') > -1 ? { ...t, content: stripDeadBlobImages(t.content) } : t
     )),
@@ -157,6 +217,8 @@ const WS_ORIGIN = SYNC_SERVER
   ? SYNC_SERVER.replace(/^http/, 'ws')
   : '';
 const WS_PATH = '/ws/sync';
+// 共享密钥（后端 NEXUS_API_KEY 启用鉴权时必填；为空走开放模式）。见 runtimeConfig.ts
+const SYNC_API_KEY = (getRuntimeConfig().apiKey || (import.meta.env.VITE_API_KEY as string | undefined) || '').trim();
 
 // === 同步状态 ===
 export const syncStatus = ref<'offline' | 'connecting' | 'online'>('offline');
@@ -169,6 +231,28 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
 let remoteApplying = false;   // 标记：正在应用远端数据，避免回环广播
 let currentPagesRef: Ref<Page[]> | null = null;
+
+// === 阶段二 2.1/2.2：上传队列 + 增量游标 ===
+// lastSyncCursor：服务端已确认的高水位（ms）。持久化到 kv，下次启动用它作
+//   fetchRemotePages(since=cursor) 的增量基准，断线期间错过的变更得以补齐。
+// outboxPages / outboxSeq：断线期间本地发生的「最新一份未确认快照」。
+//   在线时立即整页上推；离线时累积到这里，onopen 重连后补发，避免阶段一的
+//   「断线即丢最后编辑」。LWW + 全量快照语义下，保留最新一份即足够对齐其它端。
+const CURSOR_KEY = 'nexus_matrix_cursor';
+export const lastSyncCursor = ref<number>(0);
+let outboxPages: Page[] | null = null;
+let outboxSeq = 0;
+let clientSeq = 0;
+
+const loadCursor = async (): Promise<void> => {
+  try {
+    const raw = await getStore().get(CURSOR_KEY);
+    if (raw) lastSyncCursor.value = Number(raw) || 0;
+  } catch { /* 忽略 */ }
+};
+const saveCursor = async (): Promise<void> => {
+  try { await getStore().set(CURSOR_KEY, String(lastSyncCursor.value)); } catch { /* 忽略 */ }
+};
 
 // === 本地持久化 ===
 // 走存储抽象层（异步），Web 端为 localStorage，三端可替换为 Preferences / Tauri store
@@ -184,46 +268,110 @@ export const loadLocal = async (): Promise<Page[] | null> => {
   }
 };
 
+// 本地写入失败的可见提示。此前只在 console 打日志，用户完全无感，
+// 表现为「以为存了、重开没了」。现在把它暴露成全局状态，UI 顶层渲染横幅。
+export const storageError = ref<string>('');
+export const setStorageWarning = (msg: string) => { storageError.value = msg; };
+
 export const saveLocal = async (pages: Page[]): Promise<void> => {
   try {
     await getStore().set(LOCAL_STORAGE_KEY, JSON.stringify(pages));
+    // 成功后清掉此前的告警，避免一直挂着旧错误
+    if (storageError.value) storageError.value = '';
   } catch (e) {
     console.error('[NEXUS SYNC] 本地持久化失败', e);
+    storageError.value = '本地保存失败，改动可能没有落盘。请立即导出备份，避免数据丢失。';
+    throw e;
   }
 };
 
-// === 防抖工具 ===
+// === 防抖工具（带 flush） ===
+// flush 是必需的：原本只有防抖，且全仓无 visibilitychange/pagehide 处理，
+// 于是「编辑后立刻切走 / 进程被杀」会丢掉最后 500ms 内的改动。
+// 移动端进程更易被回收，这个窗口是真实的数据丢失点。
 function debounce<T extends (...args: any[]) => void>(fn: T, wait: number) {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  return (...args: Parameters<T>) => {
+  let pending: Parameters<T> | null = null;
+
+  const debounced = (...args: Parameters<T>) => {
+    pending = args;
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => fn(...args), wait);
+    timer = setTimeout(() => {
+      timer = null;
+      pending = null;
+      void fn(...args);
+    }, wait);
   };
+
+  // 立即执行挂起的调用（若有），返回是否真的执行过
+  debounced.flush = (): boolean => {
+    if (!timer || !pending) return false;
+    const args = pending;
+    clearTimeout(timer);
+    timer = null;
+    pending = null;
+    void fn(...args);
+    return true;
+  };
+
+  return debounced;
 }
 
 // 防抖持久化：本地写入 + 远端推送（写入时打 updatedAt，供后端 LWW）
 const persistPages = async (pages: Page[]) => {
-  const stamped = pages.map(p => ({ ...p, updatedAt: Date.now() }));
-  try { await saveLocal(stamped); } catch { /* 写入失败不阻塞后续广播 */ }
+  // 【阶段一修复】不再 pages.map(p => ({...p, updatedAt: Date.now()}))。
+  // 无条件给**每一页**刷成当前时间，配合后端 `inc_ts >= cur_ts` 的整页 LWW，
+  // 会让「最后推送的一方」所有页面全部获胜——于是 App 每次启动（initSync 会 pushAll）
+  // 都会把另一端的改动整体冲掉，属于必然丢数据。
+  // 时间戳现在只由 stampUpdated 打给**内容真的变了的**页/块。
+  try { await saveLocal(pages); } catch { /* 写入失败不阻塞后续广播 */ }
   if (syncStatus.value === 'online') {
-    try { sendWS({ type: 'CLIENT_UPDATE', data: stamped }); } catch (e) { /* 断线忽略 */ }
+    // 阶段二 2.1：带 clientSeq 上推，供后端 ACK 对齐 outbox。
+    clientSeq += 1;
+    outboxSeq = clientSeq;
+    outboxPages = pages;
+    try {
+      sendWS({ type: 'CLIENT_UPDATE', data: pages, clientSeq });
+    } catch (e) { /* 发送瞬间断线：留在 outbox，onopen 会补发 */ }
+  } else {
+    // 阶段二 2.1：离线时把最新快照压入 outbox（累积，不丢）。
+    // onopen 重连后立即补发这一份，对齐其它端。
+    outboxPages = pages;
   }
 };
 const debouncedPersist = debounce(persistPages, 500);
 
+/**
+ * 立即把挂起的改动落盘。在页面隐藏（切后台、切 App）与卸载时调用。
+ * 这是「最后 500ms 必丢」的兜底。
+ */
+export const flushPendingSave = (): void => {
+  debouncedPersist.flush();
+};
+
 // === REST 客户端 ===
 const apiRequest = async (endpoint: string, options?: RequestInit): Promise<any> => {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options?.headers as Record<string, string> | undefined),
+  };
+  if (SYNC_API_KEY) headers['Authorization'] = `Bearer ${SYNC_API_KEY}`;
+  const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 };
 
-// 首次握手：拉取服务端全量矩阵；不可用则返回 null（保持 LocalFirst）
-export const fetchRemotePages = async (): Promise<Page[] | null> => {
+// 阶段二 2.2：握手拉取。支持 since 增量——只有 since 之后变更的页才返回。
+// 无 since 时拉全量（首装/换设备）。后端在响应里带回 cursor（服务端水位），
+// 本地据此更新 lastSyncCursor，下次断线恢复后只拉增量。
+export const fetchRemotePages = async (since = 0): Promise<Page[] | null> => {
   try {
-    const result = await apiRequest('/pages');
+    const qs = since > 0 ? `?since=${since}` : '';
+    const result = await apiRequest(`/pages${qs}`);
+    if (typeof result?.cursor === 'number') {
+      lastSyncCursor.value = result.cursor;
+      void saveCursor();
+    }
     if (result?.success && Array.isArray(result.data) && result.data.length > 0) {
       return result.data;
     }
@@ -237,13 +385,17 @@ export const fetchRemotePages = async (): Promise<Page[] | null> => {
 
 // 推送全量到服务端（服务端会广播给其他设备）
 export const pushAll = async (pages: Page[]) => {
-  const stamped = pages.map(p => ({ ...p, updatedAt: Date.now() }));
+  // 【阶段一修复】同 persistPages：不再无条件给每一页刷 updatedAt。
+  // 否则「启动即 pushAll」= 用本地时间戳强行覆盖服务端，必然冲掉另一端的改动。
+  clientSeq += 1;
+  outboxSeq = clientSeq;
+  outboxPages = pages;
   try {
-    await sendWS({ type: 'CLIENT_UPDATE', data: stamped });
+    await sendWS({ type: 'CLIENT_UPDATE', data: pages, clientSeq });
   } catch (e) {
     // WS 不可用时降级为 REST 全量保存（尽力而为）
     try {
-      for (const p of stamped) {
+      for (const p of pages) {
         await apiRequest(`/pages/${p.id}`, { method: 'PUT', body: JSON.stringify(p) });
       }
     } catch (_) { /* 静默：LocalFirst 不阻塞编辑 */ }
@@ -276,11 +428,12 @@ const sendWS = (payload: any) => {
 
 const connectWS = (pagesRef: Ref<Page[]>) => {
   // 配置了独立服务器地址就用它，否则回退到同源（走 Vite 代理）
+  const wsQs = SYNC_API_KEY ? `?api_key=${encodeURIComponent(SYNC_API_KEY)}` : '';
   if (WS_ORIGIN) {
-    wsUrl = `${WS_ORIGIN}${WS_PATH}`;
+    wsUrl = `${WS_ORIGIN}${WS_PATH}${wsQs}`;
   } else {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    wsUrl = `${proto}//${window.location.host}${WS_PATH}`;
+    wsUrl = `${proto}//${window.location.host}${WS_PATH}${wsQs}`;
   }
 
   try {
@@ -296,18 +449,59 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     syncStatus.value = 'online';
     lastSyncError.value = '';
     reconnectAttempts = 0;
+    // 阶段二 2.1：重连成功后补发离线期间累积的 outbox。
+    // 断线时 persistPages 把最新快照压进 outboxPages，这里一次性上推对齐其它端，
+    // 避免「切后台编辑 → 杀进程 → 重连后改动丢失」。
+    if (outboxPages) {
+      const pending = outboxPages;
+      outboxPages = null;
+      void pushAll(pending);
+    }
   };
 
   socket.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
+
+      // 阶段二 2.1：服务端对 CLIENT_UPDATE 的确认回执。
+      // cursor = 服务端水位；clientSeq = 原样回显，用于对齐哪一批 outbox 被确认。
+      // 阶段三 ACK 细粒度：acceptedIds = 本次被服务端 LWW 采纳的页 id 集合。
+      //   若后端返回该字段，则仅从待发快照中剔除「已确认」的页，保留未确认的页
+      //   待断线重发时补推，避免把已达成一致的全量快照反复重推造成冲突覆盖。
+      if (msg.type === 'ACK') {
+        if (typeof msg.cursor === 'number' && msg.cursor > lastSyncCursor.value) {
+          lastSyncCursor.value = msg.cursor;
+          void saveCursor();
+        }
+        const accepted: string[] = Array.isArray(msg.acceptedIds) ? msg.acceptedIds : [];
+        if (accepted.length && outboxPages) {
+          // 细粒度：剔除已确认页，仅留未确认页
+          const remaining = outboxPages.filter((p) => !accepted.includes(p.id));
+          outboxPages = remaining.length ? remaining : null;
+        } else if (msg.clientSeq === outboxSeq) {
+          // 回退兼容：旧后端不返回 acceptedIds 时，按批次整体清空
+          outboxPages = null;
+        }
+        return;
+      }
+
       if ((msg.type === 'INITIAL_SYNC' || msg.type === 'SERVER_BROADCAST') && Array.isArray(msg.data)) {
         // 不再「本地优先整页丢弃」，而是按块合并：本地与远端各自的编辑都尽量保留。
         // 这是从 LWW 整页覆盖走向 CRDT 的第一步；后续接 Yjs 时可整体替换本函数。
+        const incoming = sanitizeLoadedPages(msg.data as Page[]);
+        // 阶段二 2.2：用合并数据的最大时间戳更新本地水位，作为下次增量拉取的 since。
+        let maxTs = 0;
+        for (const p of incoming) {
+          maxTs = Math.max(maxTs, (p.updatedAt ?? 0) as number, (p.deletedAt ?? 0) as number);
+          for (const t of p.tasks as Array<{ updatedAt?: number }>) {
+            maxTs = Math.max(maxTs, (t.updatedAt ?? 0) as number);
+          }
+        }
+        if (maxTs > lastSyncCursor.value) { lastSyncCursor.value = maxTs; void saveCursor(); }
         void (async () => {
           const existing = await loadLocal();
           if (existing && existing.length > 0) {
-            const merged = mergePages(existing, sanitizeLoadedPages(msg.data as Page[]));
+            const merged = mergePages(existing, incoming);
             // 只在真正有变化时才写回，避免无谓触发 watch -> 广播回环
             if (JSON.stringify(merged) === JSON.stringify(existing)) { remoteApplying = false; return; }
             remoteApplying = true;
@@ -318,7 +512,7 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
           }
           // 本地为空（首次装机/换设备）：直接采用远端
           remoteApplying = true;
-          pagesRef.value = orderPages(sanitizeLoadedPages(msg.data as Page[]));
+          pagesRef.value = orderPages(incoming);
           await saveLocal(pagesRef.value);
           remoteApplying = false;
         })();
@@ -503,19 +697,25 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
 
   // 1) LocalFirst：先读本地（本地数据优先，绝不被服务端陈旧的种子数据覆盖）
   const local = await loadLocal();
+  await loadCursor(); // 阶段二 2.2：读本地水位，作为增量拉取 since
   if (local) {
     pagesRef.value = local;
     await saveLocal(local); // 立刻写回，确保键存在
   }
 
-  // 2) 远端握手：仅当本地为空时才以远端为准（首次装机/换设备场景）
-  const remote = await fetchRemotePages();
+  // 2) 远端握手（阶段二 2.2 增量）：带 lastSyncCursor 作 since，只拉断线期间
+  //    其它端发生变更的页；无 cursor 时拉全量（首装/换设备）。
+  const remote = await fetchRemotePages(lastSyncCursor.value);
   if (!local && remote) {
     pagesRef.value = sanitizeLoadedPages(remote);
     await saveLocal(pagesRef.value);
   } else if (local && remote) {
-    // 本地与远端都有：保留本地，但把本地上推到服务端，让服务端对齐最新（避免陈旧种子）
-    await pushAll(pagesRef.value);
+    // 本地与远端都有：增量合并远端（since 之后的变更），再把本地上推到服务端，
+    // 让服务端对齐最新（避免陈旧种子），同时补齐本端离线期间其它端的改动。
+    const merged = mergePages(pagesRef.value, sanitizeLoadedPages(remote));
+    pagesRef.value = merged;
+    await saveLocal(merged);
+    await pushAll(merged);
   } else if (local && !remote) {
     // 后端不可用或为空：保持本地并尝试上推
     await pushAll(pagesRef.value);

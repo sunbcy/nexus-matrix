@@ -1,8 +1,8 @@
 <!-- src/App.vue -->
 <script setup lang="ts">
-import { ref } from 'vue';
+import {ref} from 'vue';
 import NexusTaskMatrix from './components/NexusTaskMatrix1.vue'
-import { exportBackup, importBackup, importMarkdown, importNotionZip } from './composables/useSync'
+import {exportBackup, importBackup, importMarkdown, importNotionZip, storageError} from './composables/useSync'
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const mdInput = ref<HTMLInputElement | null>(null)
@@ -68,6 +68,21 @@ async function onZipImport(e: Event) {
   <div class="min-h-screen bg-nexus-void relative">
     <!-- 直接渲染 Notion 级核心组件 -->
     <NexusTaskMatrix ref="editorRef" />
+
+    <!-- 存储告警横幅：本地写入失败 / IndexedDB 降级时必须让用户看见。
+         此前这些失败只在 console 打日志，用户以为存了、重开发现没了。 -->
+    <div v-if="storageError"
+         class="fixed left-1/2 -translate-x-1/2 top-[calc(0.5rem+env(safe-area-inset-top,0px))] z-[80] max-w-[92vw]
+                flex items-center gap-2 px-3 py-2 rounded bg-[#2a1214] border border-[#ff2a2a]/60 shadow-lg">
+      <svg class="shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ff2a2a" stroke-width="2" stroke-linecap="round">
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+        <line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line>
+      </svg>
+      <span class="text-xs font-['JetBrains_Mono',monospace] text-[#ffb0b0] leading-snug">{{ storageError }}</span>
+      <button class="shrink-0 text-[11px] font-['JetBrains_Mono',monospace] text-[#00f0ff] underline" @click="onExport">
+        立即导出
+      </button>
+    </div>
 
     <!-- 备份工具栏（SQLite 之外的额外保险）。
          移动端适配：底部留出安全区（WebView 边到边时避开手势条）；按钮放大到 44px 触摸目标；

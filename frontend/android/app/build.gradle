@@ -18,8 +18,8 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
         // 同步服务器地址：编译期默认值（一般为空=纯本地模式）。
-        // 用户实际地址在「设置」Tab 运行时配置，经 URL query 注入 WebView，
-        // 不走构建期 env——同一份 APK 可切换环境。见 MainActivity.withSyncServer()。
+        // 用户实际地址在 Web 侧边栏右上角的「设置」面板里配置，写入 localStorage，
+        // 由 runtimeConfig.ts 读取——不走构建期 env，同一份 APK 可切换环境。
         buildConfigField "String", "SYNC_SERVER", "\"${project.findProperty('nexusSyncServer') ?: ''}\""
     }
     buildTypes {

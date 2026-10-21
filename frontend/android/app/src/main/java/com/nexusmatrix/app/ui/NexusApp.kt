@@ -1,72 +1,26 @@
 package com.nexusmatrix.app.ui
 
 import android.webkit.WebView
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.Icon
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
-
-/** 底部 Tab（阶段 1 决策：导航形态用底部 Tab） */
-enum class ShellTab(val label: String, val icon: ImageVector) {
-    DOCS("文档", Icons.Filled.List),
-    FAVORITES("收藏", Icons.Filled.Star),
-    SETTINGS("设置", Icons.Filled.Settings),
-}
 
 /**
- * 原生壳骨架：底部 Tab + 内容区。
+ * 原生壳：全屏 WebView，无底部 Tab。
  *
- * 文档 Tab = Capacitor WebView（编辑器与页面列表都在 Web 侧，方案 A）；
- * 收藏/设置为原生 Compose UI（阶段 1 的壳能力演示 + 真实可用的设置）。
+ * 【2026-10-17 变更：彻底移除底部 Tab 导航】
+ * 演进过程：
+ * 1) 阶段 1 做了 文档/收藏/设置 三个底部 Tab；
+ * 2) 随后移除「收藏」——它与 Web 侧边栏的收藏分组是同一份数据
+ *    （都过滤 pages.isFavorite），功能重叠，且原生端是启动时快照、会过期；
+ * 3) 现在连「设置」Tab 也一并去掉：底部 Tab 对单页编辑器没有导航价值，
+ *    反而常驻占用约 56dp 垂直空间，而移动端内容区高度极其宝贵。
+ *
+ * 设置能力改由 Web 侧承载：入口在侧边栏右上角齿轮，页面级操作在内容页的
+ * 「···」菜单里（与 Notion 移动端一致：页面操作走右上 ···）。
+ * 需要原生的配置（如同步服务器地址）继续走 ShellPrefs + URL query 注入。
  */
 @Composable
 fun NexusApp(webView: WebView) {
-    var tab by rememberSaveable { mutableStateOf(ShellTab.DOCS) }
-
-    Scaffold(
-        bottomBar = {
-            NavigationBar {
-                ShellTab.entries.forEach { t ->
-                    NavigationBarItem(
-                        selected = tab == t,
-                        onClick = { tab = t },
-                        icon = { Icon(t.icon, contentDescription = t.label) },
-                        label = { Text(t.label) },
-                        alwaysShowLabel = true,
-                    )
-                }
-            }
-        },
-        // 内容区不再统一让出系统栏 inset：文档 Tab 的 WebView 边到边
-        // （状态栏区域由 Web 侧 safe-area CSS 处理，Notion 移动端同款）。
-        // 收藏/设置的 TopAppBar 自带状态栏 inset，NavigationBar 自带手势栏 inset。
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-    ) { padding ->
-        Box(Modifier.padding(padding)) {
-            when (tab) {
-                ShellTab.DOCS -> EditorScreen(webView)
-                ShellTab.FAVORITES -> FavoritesScreen(
-                    webView = webView,
-                    onOpenPage = { tab = ShellTab.DOCS },
-                )
-                ShellTab.SETTINGS -> SettingsScreen(webView)
-            }
-        }
-    }
+    // 直接铺满：不再用 Scaffold/NavigationBar，底部空间全部还给编辑器。
+    // EditorScreen 已内置下拉刷新与 WebView 常驻策略（不 destroy）。
+    EditorScreen(webView)
 }

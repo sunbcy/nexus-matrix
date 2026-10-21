@@ -42,37 +42,39 @@
 | --- | --- |
 | 前端 | Vue 3（`script setup`） + TypeScript + Vite + Tailwind CSS 3 |
 | 后端 | Python + FastAPI + Uvicorn + WebSocket（跨端同步中继） |
-| 持久化 | 前端：`localStorage`（LocalFirst）；后端：内存矩阵 `pages_db`（演示级临时持久化） |
-| 工具链 | PowerShell 一键启动脚本（`start.ps1`）、Yarn 包管理 |
+| 持久化 | 前端：存储抽象（默认 `localStorage`，可切 `IndexedDB` 解决配额/驱逐）；后端：SQLite（`nexus.db`，重启不丢，全局锁防并发） |
+| 工具链 | PowerShell 一键启动（`start.ps1`）、Yarn/npm 包管理、Capacitor（Android 壳） |
 
 ---
 
 ## 系统架构
 
 ```
-┌─────────────────────────────────────────┐
-│              前端 (Vue SPA)               │
-│  App.vue → NexusTaskMatrix1.vue          │
-│  ├─ Sidebar 树状页面空间 / 收藏 / 面包屑   │
-│  ├─ 区块编辑器（Block CRUD + 缩进 + 拖拽） │
-│  ├─ Slash 命令 / Markdown 快捷 / 富文本    │
-│  └─ LocalFirst: localStorage 持久化        │
-└───────────────┬─────────────────────────┘
-                │  (可选) REST API + WebSocket
-                │  /api/pages*   /ws/sync
-┌───────────────▼─────────────────────────┐
-│        后端 (FastAPI + Uvicorn)           │
-│  ├─ REST: 页面 CRUD（内存 pages_db）       │
-│  ├─ WebSocket /ws/sync: 连接管理 + 广播    │
-│  └─ CORS 放通：支持 Tauri/Capacitor 跨端   │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                  前端 (Vue 3 SPA)                     │
+│  App.vue → NexusTaskMatrix1.vue (已集成同步层)        │
+│  ├─ Sidebar 树状页面空间 / 收藏 / 面包屑               │
+│  ├─ 区块编辑器（Block CRUD + 缩进 + 拖拽 + 富文本）     │
+│  └─ 同步层 composables/useSync.ts                     │
+│       ├─ LocalFirst 存储抽象（localStorage↔IndexedDB） │
+│       └─ WebSocket 实时同步（INITIAL_SYNC/BROADCAST）  │
+└──────────────────────┬──────────────────────────────┘
+                       │  REST API + WebSocket（可禁用）
+                       │  /api/pages*   /ws/sync
+┌──────────────────────▼──────────────────────────────┐
+│           后端 (FastAPI + Uvicorn + SQLite)           │
+│  ├─ REST: 页面 CRUD（持久化到 nexus.db）               │
+│  ├─ SQLite 存储（全局锁防线程池/事件循环竞争）          │
+│  ├─ WebSocket /ws/sync: 连接管理 + 全量广播            │
+│  └─ CORS 放通：支持 Tauri/Capacitor/WebView 跨端       │
+└─────────────────────────────────────────────────────┘
 ```
 
 **数据流说明**
 
-1. **本地优先路径（当前默认）**：`NexusTaskMatrix1.vue` 在 `onMounted` 时从 `localStorage` 读取页面矩阵，编辑过程通过 `watch(pages, ...)` 深度监听实时写回 `localStorage`。整条链路不依赖服务器。
-2. **后端同步路径**：后端维护一份 `pages_db` 内存矩阵，通过 REST（`/api/pages`）提供 CRUD，通过 WebSocket（`/ws/sync`）做跨设备广播。组件 `NotionPlus.vue` 已实现对 `/api/pages` 的对接（fetch），可作为后端集成版本的参考实现。
-3. **当前状态提示**：`App.vue` 默认挂载的是 `NexusTaskMatrix1.vue`（LocalFirst 版）。若需启用后端实时同步，可将 `App.vue` 中的导入切换为 `NotionPlus.vue` 并接入 WebSocket 客户端逻辑。
+1. **启动同步（LocalFirst）**：`NexusTaskMatrix1.vue` 在 `onMounted` 调用 `initSync(pages)`——先读本地存储（IndexedDB/localStorage），再向 `/api/pages` 拉取远端全量，经 `mergePages`（最后写入者胜出 + 块级 LWW）合并后回写本地。整条链路离线可用，联网时自动对齐。
+2. **实时同步路径**：后端将页面持久化到 `nexus.db`(SQLite)，REST（`/api/pages`）提供 CRUD，WebSocket（`/ws/sync`）在设备建连时下发 `INITIAL_SYNC`、任何端变更后 `SERVER_BROADCAST` 全量广播；前端编辑经防抖后通过 `CLIENT_UPDATE` 上推。
+3. **统一组件**：`App.vue` 当前直接挂载 `NexusTaskMatrix1.vue`，它已内置 `useSync` 同步层（不依赖 `NotionPlus.vue` 旧参考实现）。后端地址可在「设置」面板或 `?syncServer=` 配置，留空即纯本地模式。
 
 ---
 
@@ -83,25 +85,65 @@ nexus-matrix/
 ├── start.ps1                 # 一键启动脚本（检查 Python→建 venv→装依赖→起前后端）
 ├── .env                      # 端口配置（BACKEND_PORT / FRONTEND_PORT）
 ├── backend/
-│   ├── main.py               # FastAPI 应用：REST + WebSocket 同步中继
+│   ├── main.py               # FastAPI 应用：REST + WebSocket 同步 + SQLite 持久化
+│   ├── nexus.db              # SQLite 数据库（页面矩阵 + 图片 BLOB，重启不丢）
 │   ├── requirements.txt       # fastapi / uvicorn / websockets / pydantic
 │   └── venv/                 # Python 虚拟环境（自动生成）
 └── frontend/
     ├── index.html
-    ├── package.json           # vue / vite / tailwind / typescript
+    ├── package.json           # vue / vite / tailwind / typescript / capacitor
     ├── vite.config.ts         # 端口 + /api、/ws 代理到后端
     ├── tailwind.config.js
     └── src/
         ├── main.ts
         ├── style.css
-        ├── App.vue            # 根组件，挂载主编辑器
+        ├── App.vue            # 根组件，挂载主编辑器 + 备份/导入工具栏 + 存储告警
+        ├── runtimeConfig.ts   # 同步服务器地址（URL query > localStorage）
         ├── assets/
-        └── components/
-            ├── NexusTaskMatrix1.vue  # 当前启用的 LocalFirst 区块编辑器
-            ├── NotionPlus.vue        # 对接后端 REST API 的版本（参考实现）
-            ├── NexusTaskMatrix.vue   # 早期版本
-            └── HelloWorld.vue        # 脚手架示例组件
+        ├── components/
+        │   ├── NexusTaskMatrix1.vue  # 当前启用的区块编辑器（已集成 useSync 同步层）
+        │   ├── NotionPlus.vue        # 早期后端对接参考实现（功能已被前者覆盖）
+        │   ├── SettingsPanel.vue     # 同步服务器 / 图库 Key 等设置
+        │   └── ...
+        └── composables/
+            ├── useSync.ts     # 同步层：initSync / mergePages / 存储读写 / WS 收发
+            ├── storage.ts     # 统一键值存储抽象（默认 localStorage）
+            ├── idbStore.ts    # IndexedDB 实现（突破配额/驱逐，图片 Blob 复用其连接）
+            ├── assets.ts      # 图片资产降采样 + Blob 入库
+            ├── zipImport.ts   # Notion ZIP / MD 导入（层级重建 + 图片转 Base64）
+            └── providerKeys.ts / imageProviders.ts  # 图库 Provider 抽象
 ```
+
+---
+
+## 同步与数据一致性
+
+整体遵循 **LocalFirst（本地优先）** 原则：本地存储是可信源，服务器用于跨设备对齐，断网/无服务器也能完整编辑。
+
+### 存储抽象层
+- `composables/storage.ts` 定义统一 `KeyValueStore` 接口（Promise 化），默认 Web 实现为 `localStorage`。
+- `composables/idbStore.ts` 提供 **IndexedDB** 实现：突破 `localStorage` 的 5 MiB 配额与存储压力下的 LRU 驱逐、避免同步 API 阻塞主线程；图片 Blob 经 `assets.ts` 复用同一数据库连接存入（绝不再独立 `indexedDB.open`，否则版本冲突致数据静默丢失）。
+- `migrateFromLocalStorage` 在 `initSync` 读取前做**双向「较新者优先」迁移**：首次（IndexedDB 空）搬 `localStorage` 过去；降级回退时（localStorage 更新）反向搬回；迁移后保留旧键便于回退。
+
+### initSync 启动流程（`useSync.ts`）
+1. `loadLocal()`：从存储抽象读取 `nexus_matrix_pages_v3`。
+2. `fetchRemotePages()`：若配置了同步服务器，拉取 `/api/pages` 全量。
+3. `mergePages(local, remote)`：本地优先合并——
+   - 以本地页为基准，**远端新增页**直接并入；
+   - 同页内的**块级 Last-Write-Wins**（按 `updatedAt`）：远端块较新则 `Object.assign` 覆盖，本地独有块保留，绝不丢页丢块。
+4. `sanitizeLoadedPages()`：清洗非法/缺字段（如图片 Blob 引用），保证结构完整。
+5. 回写本地，初始化 WebSocket。
+
+### 实时同步协议（WebSocket `/ws/sync`）
+| 消息 | 方向 | 说明 |
+| --- | --- | --- |
+| `INITIAL_SYNC` | 服务端→客户端 | 建连即推送全量 `pages_db` |
+| `SERVER_BROADCAST` | 服务端→客户端 | 任意端变更后广播最新全量矩阵 |
+| `CLIENT_UPDATE` | 客户端→服务端 | 编辑经防抖（约 500ms）后上推，服务端落 SQLite 后广播 |
+
+### 删除与恢复（墓碑机制）
+- 页面/块删除采用**软删除**：打 `deletedAt` 时间戳而非物理删除，便于跨端合并与恢复。
+- 恢复时必须显式传 `deletedAt: null`；`{...old, ...incoming}` 合并无法清除旧字段，这点务必注意（曾导致恢复后仍处于删除态）。
 
 ---
 
@@ -203,8 +245,41 @@ cd android
 
 ---
 
+## 近期升级调整与已知问题修复
+
+### 架构与持久化升级
+- **后端落盘 SQLite**：由内存 `pages_db` 改为 `nexus.db`（SQLite），重启不丢数据；用全局锁序列化所有读写，规避 FastAPI 线程池（REST）与 WebSocket 事件循环并发访问 SQLite 的报错。
+- **前端存储抽象 + IndexedDB**：新增 `composables/storage.ts` 统一 Promise 接口（默认 `localStorage`），可切换 `idbStore.ts`（IndexedDB）突破 5 MiB 配额与 LRU 驱逐；图片 Blob 经 `assets.ts` 复用同一连接。`migrateFromLocalStorage` 做 localStorage ↔ IndexedDB 双向「较新者优先」迁移。
+- **LocalFirst 同步层 `useSync.ts`**：封装 `initSync / fetchRemotePages / loadLocal / saveLocal / mergePages / sanitizeLoadedPages` 与 WebSocket 收发；`App.vue` 直接挂载已集成该层的 `NexusTaskMatrix1.vue`。
+
+### 已修复的关键 Bug（记入此，避免重犯）
+| 现象 | 根因 | 修复 |
+| --- | --- | --- |
+| 切换页签时文档内容偶发消失，刷新恢复 | ① 同时起了多个后端实例，REST 与 WS 被分发到不同进程的内存 `pages_db`，前端收到陈旧广播覆盖本地；② contenteditable 在 DOM 复用/切换时依赖 watch 的 `nextTick` 回填 `innerHTML`，时机竞态导致块为空（只剩占位符） | ① 运行期确保**只有一个后端进程**监听 8010；② `setInputRef` 在元素挂载/复用时**立即确定性回填** `task.content` 到 `innerHTML` |
+| 侧边栏只显示部分根页 | `getChildren(null)` 用 `p.parentId === null` 严格判等，后端缺省 `parentId` 字段解析为 `undefined` 被排除 | 改为宽松 `!p.parentId` 假值判断 |
+| PUT 更新返回 500 | 同步 REST 端点在 worker 线程执行，`asyncio.get_event_loop()` 抛 `RuntimeError` 未捕获 | `_schedule_broadcast` 无可用 loop 时安全跳过（数据已落 SQLite，`INITIAL_SYNC` 会补发） |
+| 墓碑页（已删除）恢复后 `deletedAt` 仍在 | `{**p, **incoming}` 合并无法清旧字段 | 恢复时显式传 `deletedAt: null` 覆盖 |
+| 存储写入失败用户无感知 | 失败只打 console，用户以为已保存 | `App.vue` 新增红色告警横幅（`storageError`），并提供「立即导出」兜底 |
+| 多标签页/多端同步互相覆盖 | 多实例后端各自内存不一致 | 同「切换页签消失」①，单实例后消除 |
+
+### 运行须知
+- **禁止同时启动多个 `py main.py`**：多实例共享同一 `nexus.db` 但内存 `pages_db` 不共享，REST 写入进程 A、WS 广播进程 B 的旧内存会覆盖前端正确数据，表现为内容偶尔消失。排查：`netstat -ano \| findstr :8010` 应只有一个 LISTEN。
+- 指定后端地址：Web「设置」面板填写，或 URL 加 `?syncServer=http://<IP>:8010`，留空即纯本地模式。
+
+---
+
+## 公网暴露与访问鉴权
+
+将后端经隧道 / 反向代理暴露到公网或上云时，**务必启用共享密钥鉴权**，否则任何能连上的人都能读写你的 `nexus.db`。
+
+- 后端：环境变量 `NEXUS_API_KEY=<密钥>` 即开启强制校验；**未设置则完全开放**（纯本地 / 局域网向后兼容）。REST 经全局依赖校验，WebSocket 在握手阶段校验。
+- 客户端携带方式：REST → `Authorization: Bearer <key>` 或 `?api_key=<key>`；WebSocket → 握手 query `?api_key=<key>`（浏览器 WebSocket 无法自定义 header）。
+- 前端配置：「设置」面板「访问密钥」输入框，或 URL 加 `?apiKey=<key>`；构建期可用 `VITE_API_KEY` 注入。空密钥即开放模式。
+- 建议：配合 Cloudflare Access / Tailscale 做二次访问控制；公网务必用 wss/https（TLS）避免明文传输文档。
+
 ## 说明与后续方向
 
-- 后端 `pages_db` 为内存级存储，重启即重置，生产化需接入数据库（如 SQLite/Postgres）。
-- 实时同步目前为「全量广播」模型，后续可演进为增量 diff / CRDT 冲突合并。
-- 前端 LocalFirst 版与后端集成版（`NotionPlus.vue`）目前并存，建议统一为一种持久化策略并补全 WebSocket 客户端。
+- 后端已落地 **SQLite 持久化**（`nexus.db`，全局锁防并发），重启不丢数据；如需水平扩展再考虑 Postgres。
+- 实时同步为 **LocalFirst + 全量广播** 模型（合并采用最后写入者胜出 + 块级 LWW），后续可演进为增量 diff / CRDT 冲突合并。
+- 前端存储为统一 **抽象层**：Web 默认 `localStorage`，已支持切换 `IndexedDB`；Android/iOS 可替换为 Capacitor Preferences / Tauri store。
+- `NotionPlus.vue` 为早期后端对接参考实现，功能已被 `NexusTaskMatrix1.vue` + `useSync.ts` 覆盖，可逐步退役。

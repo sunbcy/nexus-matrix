@@ -14,6 +14,7 @@
           <span class="w-2 h-2 bg-[#00f0ff] rounded-sm shadow-[0_0_8px_rgba(0,240,255,0.6)] animate-pulse"></span>
           <span class="font-['Rajdhani',sans-serif] font-bold tracking-widest text-[#e5e7eb] text-sm">NEXUS MATRIX</span>
         </div>
+        <div class="flex items-center gap-1">
         <!-- 同步状态指示：点击可手动重试（后端离线时不再无限自动重连） -->
         <button class="flex items-center gap-1 cursor-pointer hover:opacity-80 transition-opacity"
                 :title="syncStatus === 'online' ? `已同步 · 在线设备 ${onlineDevices}` : (syncStatus === 'connecting' ? '正在连接后端…' : '纯本地模式（数据已存本机）· 点击重试连接')"
@@ -24,6 +25,18 @@
             {{ syncStatus === 'online' ? 'SYNC' : (syncStatus === 'connecting' ? 'LINK' : 'LOCAL') }}
           </span>
         </button>
+        <!-- 设置入口（2026-10-17）：原生底部 Tab 已移除，设置能力收回 Web 侧。
+             位置遵循 Notion 移动端的惯例——全局操作在侧边栏右上角，
+             页面级操作在内容页的「···」里。触摸目标 44px。 -->
+        <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] active:text-[#00f0ff] transition-colors"
+                @click="openSettings($event)"
+                title="设置" aria-label="设置">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+        </div>
       </div>
 
       <!-- 全局搜索：匹配页面标题与正文，点击结果直接跳转 -->
@@ -171,10 +184,10 @@
 
       <!-- 顶部 padding：有封面时封面已全出血占据状态栏区域，内容按常规 pt-6/md:pt-12；
            无封面时内容列直接顶到屏幕最上（边到边），用 0.5rem + 安全区避开状态栏。
-           左右 padding：移动端 pl-6（24px，2026-10-17 从 pl-16(64px) 收紧后微调——
-           16px 时嵌套块的缩进引导线和折叠箭头挤在屏幕沿；24px 兼顾满幅与可读性）/
-           pr-5（留 4px 自定义滚动条余量）；桌面端 md:px-20 不变。 -->
-      <div class="max-w-4xl w-full mx-auto pb-0 pl-6 pr-5 md:px-20 flex-1 flex flex-col"
+           左右 padding：移动端 pl-2 / pr-4（2026-10-17 再调：块手柄改为**流内**排布后
+           不再需要靠大左 padding 把外槽挤回屏幕内，左 8px + 手柄 36px = 文本起点 44px，
+           右侧 16px，文本可用宽度 ~352px（412px 屏）；桌面端 md:px-20 不变） -->
+      <div class="max-w-4xl w-full mx-auto pb-0 pl-2 pr-4 md:px-20 flex-1 flex flex-col"
            :class="activePage.cover ? 'pt-6 md:pt-12' : 'pt-safe-plus'">
         <!-- 面包屑 + 添加入口（无封面时才显示，避免与封面操作条重复）。
              移动端左侧放汉堡按钮唤出抽屉（桌面端隐藏，侧边栏常驻） -->
@@ -227,7 +240,7 @@
         <div class="flex-1 relative pb-32" @click="handleEmptyClick">
           
           <!-- 任务行循环渲染 (含层级缩进与多媒体类型) -->
-          <div v-for="(task, index) in visibleTasks" :key="task.id" 
+          <div v-for="(task, index) in visibleTasks" :key="task.id" :data-block-id="task.id"
                class="task-item-container group relative flex items-start py-2 pr-2 my-1 rounded-sm transition-all duration-150"
                :style="{ marginLeft: `${(task.indentLevel || 0) * 1.5}rem` }"
                :class="{ 
@@ -268,9 +281,17 @@
 
                  -ml-[84px] w-[84px]：把槽位整体拉到正文左边缘之外，不占流宽，
                  从而保证各块类型的文字起点与标题左缘严格对齐。 -->
-            <!-- 移动端外槽收窄到 60px 并配合 pl-16：否则 -84px 的外槽在窄屏上整个跑到屏幕外，
-                 块手柄完全点不到（实测 412px 屏上左边缘为 -84px）。桌面端维持 84px 不变。 -->
-            <div class="shrink-0 -ml-[60px] w-[60px] md:-ml-[84px] md:w-[84px] self-stretch flex items-start justify-end pr-1">
+            <!-- 手柄槽位：
+                 桌面 `-ml-[84px] w-[84px]`：拉到正文左边缘之外，不占流宽，
+                 保证各块类型的文字起点与标题左缘严格对齐。
+
+                 移动端**改为流内排布**（`ml-0 w-9`），不再用负 margin 外槽：
+                 负 margin 的槽位宽度必须与内容区左 padding 严格匹配，而 pl 一旦
+                 调整（历史上有过 pl-16→pl-6 的收紧）两者就会脱节——实测 412px 屏上
+                 手柄左边缘被推到 -40px，完全在屏幕外、点不到。
+                 流内排布下手柄永远在可视区内，代价是块文字比标题右移约 36px
+                 （Notion 移动端同样是手柄占行内位置）。 -->
+            <div class="shrink-0 ml-0 w-9 md:-ml-[84px] md:w-[84px] self-stretch flex items-start justify-start md:justify-end pr-1">
               <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-relaxed" :class="getFontSizeClass(task)">
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
@@ -291,13 +312,13 @@
                   <!-- 桌面：拖拽排序手柄 + 点击操作菜单；触屏：仅作操作菜单入口（拖拽排序为桌面专属，
                        触屏下显式降级，避免制造无法触达的桌面交互，与 Notion 移动端一致） -->
                   <div :class="isCoarsePointer ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'"
-                       class="text-[#6b7280] active:text-[#e5e7eb] p-2.5 md:p-1"
+                       class="text-[#6b7280] active:text-[#e5e7eb] p-2.5 md:p-1 select-none"
                        @mousedown="!isCoarsePointer && (draggableTaskId = task.id)"
                        @mouseup="draggableTaskId = null"
                        @mouseleave="draggableTaskId = null"
-                       @click="(e) => openActionMenu(e, task.id)"
-                       @touchstart.stop="openActionMenuAtTouch(task.id, $event)"
-                       :title="isCoarsePointer ? '点击打开操作菜单' : '拖拽排序 / 点击操作菜单'">
+                       @click="isCoarsePointer ? undefined : openActionMenu($event, task.id)"
+                       @touchstart.stop="onHandleTouchStart(task, $event)"
+                       :title="isCoarsePointer ? '长按拖拽 / 轻点操作菜单' : '拖拽排序 / 点击操作菜单'">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <circle cx="9" cy="12" r="1"></circle><circle cx="9" cy="5" r="1"></circle><circle cx="9" cy="19" r="1"></circle>
                       <circle cx="15" cy="12" r="1"></circle><circle cx="15" cy="5" r="1"></circle><circle cx="15" cy="19" r="1"></circle>
@@ -521,6 +542,9 @@
       <img :src="resolveAssetUrl(previewImageUrl)" class="max-w-full max-h-full object-contain rounded-sm" @click.stop @touchstart.stop />
     </div>
 
+    <!-- 设置面板：入口在侧边栏右上角齿轮（原生底部 Tab 已移除） -->
+    <SettingsPanel :visible="settingsOpen" @close="settingsOpen = false" />
+
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
     <!-- 选中文本后的浮动格式工具栏（对齐 Notion 的 selection toolbar） -->
@@ -616,6 +640,8 @@
       </button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), -1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↑</span> 上移</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), 1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↓</span> 下移</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, 1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">→</span> 向右缩进</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, -1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">←</span> 向左缩进</button>
       <div class="border-t border-[#1e2126]/50 my-1"></div>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors" @click="duplicateTask(actionMenuConfig.taskId)">复制</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a]" @click="deleteBlockAndFocus(actionMenuTask!); actionMenuConfig.isOpen = false">删除</button>
@@ -641,15 +667,26 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, onUnmounted, nextTick, watch, computed } from 'vue';
-import { initSync, closeSync, createRemotePage, deleteRemotePage, syncStatus, onlineDevices, retrySync } from '../composables/useSync';
-import { installNativeBridge } from '../composables/nativeBridge';
-import { useMobileInput } from '../composables/useMobileInput';
-import { newBlockId, newPageId } from '../composables/ids';
-import { writePrevIds } from '../composables/useSync';
-import { resolveAsset, saveImageAsset, isAssetRef, warmAssets, deleteAsset } from '../composables/assets';
+import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue';
+import {
+  closeSync,
+  createRemotePage,
+  flushPendingSave,
+  initSync,
+  onlineDevices,
+  retrySync,
+  setStorageWarning,
+  syncStatus,
+  writePrevIds
+} from '../composables/useSync';
+import {installNativeBridge} from '../composables/nativeBridge';
+import {useMobileInput} from '../composables/useMobileInput';
+import {newBlockId, newPageId} from '../composables/ids';
+import {randomEmoji} from '../composables/emoji';
+import SettingsPanel from './SettingsPanel.vue';
+import {deleteAsset, isAssetRef, resolveAsset, saveImageAsset, warmAssets} from '../composables/assets';
 import PageIconPicker from './PageIconPicker.vue';
-import PageCoverPicker, { COVER_GRADIENTS } from './PageCoverPicker.vue';
+import PageCoverPicker, {COVER_GRADIENTS} from './PageCoverPicker.vue';
 
 // === 数据结构 ===
 interface Task {
@@ -661,7 +698,7 @@ interface Task {
   payload?: any;
   prevId?: string | null;
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; coverPos?: number; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; coverPos?: number; deletedAt?: number; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -1002,33 +1039,77 @@ const onSyncIndicatorClick = () => {
   void retrySync();
 };
 
+/**
+ * 存储初始化：把历史数据从 localStorage 搬到 IndexedDB，确认可用后切换存储。
+ *
+ * 必须在 initSync 之前调用并 await —— initSync 的 loadLocal() 依赖「当前 store」，
+ * 若此时还没切换，就会读到 localStorage 里的旧快照并在之后覆盖掉 IndexedDB 的新数据。
+ */
+const initStorage = async (): Promise<void> => {
+  try {
+    const { idbStore, migrateFromLocalStorage, requestPersistence, probeIdb } = await import('../composables/idbStore');
+    const { setStore } = await import('../composables/storage');
+    await migrateFromLocalStorage(['nexus_matrix_pages_v3', 'nexus_image_provider_keys']);
+    // 关键：切换存储前必须真实读写一轮确认可用。
+    // 只看异常是不够的——migrateFromLocalStorage 内部会 catch 吞错，
+    // 会导致「迁移实际失败却照常切到失效存储」，之后所有写入静默丢失。
+    const ok = await probeIdb();
+    if (!ok) throw new Error('IndexedDB 读写探针未通过');
+    setStore(idbStore);
+    await requestPersistence();
+    // 探针用的临时键在成功后清掉，避免脏数据
+    await idbStore.remove('__nexus_probe__').catch(() => { /* 清理失败无碍 */ });
+  } catch (e) {
+    // 迁移失败不影响使用：仍留在 localStorage，但必须让用户知道
+    console.warn('[NEXUS] IndexedDB 迁移失败，继续使用 localStorage', e);
+    setStorageWarning('本地存储降级：数据暂存在 localStorage，存在被系统清理的风险。请及时导出备份。');
+  }
+};
+
 onMounted(async () => {
+  // 【关键顺序】存储初始化**必须**在 initSync 之前完成并 await。
+  //
+  // 历史缺陷：迁移原本放在 initSync 之后「异步不阻塞首屏」，于是 initSync 里的
+  // loadLocal() 用的是默认存储 localStorage，读到的是**迁移前的旧快照**；随后
+  // setStore(idbStore) 切换，watch 又把这份旧快照写回 IndexedDB，
+  // 直接覆盖上次会话存进去的新数据 —— 表现为「重开 App 数据回到旧版本/丢失」。
+  // 首屏多等几十毫秒远不如数据正确性重要。
+  await initStorage();
+
   // LocalFirst: 读本地 -> 远端握手对齐 -> 建立 WebSocket -> 变更自动持久化+广播
   await initSync(pages as any);
   // 原生壳（Android Compose）只读桥：查询页面/同步状态、反向打开页面
   installNativeBridge(pages as any, activePageId);
-  // 存储迁移与持久化申请放在 initSync 之后异步进行，不阻塞首屏：
-  // initSync 已用默认存储（localStorage）读出数据并完成内存填充，
-  // 之后 initSync 内部的 watch 会把数据写回——此时若已切换到 IndexedDB，
-  // 新写入会走新存储；这里再把 localStorage 的历史数据补迁过去。
-  void (async () => {
-    try {
-      const { idbStore, migrateFromLocalStorage, requestPersistence } = await import('../composables/idbStore');
-      const { setStore } = await import('../composables/storage');
-      await migrateFromLocalStorage(['nexus_matrix_pages_v3', 'nexus_image_provider_keys']);
-      setStore(idbStore);
-      await requestPersistence();
-    } catch (e) {
-      // 迁移失败不影响使用：仍留在 localStorage
-      console.warn('[NEXUS] IndexedDB 迁移失败，继续使用 localStorage', e);
-    }
-  })();
   const hash = window.location.hash.slice(1);
   if (hash && pages.value.find(p => p.id === hash)) activePageId.value = hash;
-  else if (pages.value.length > 0) { activePageId.value = pages.value[0].id; window.history.replaceState(null, '', `#${activePageId.value}`); }
+  else if (pages.value.length > 0) {
+    // 跳过已删除（墓碑）页面，避免首屏默认选中墓碑页导致主编辑区空白
+    const live = pages.value.find(p => !p.deletedAt) || pages.value[0];
+    activePageId.value = live.id;
+    window.history.replaceState(null, '', `#${activePageId.value}`);
+  }
   window.addEventListener('hashchange', () => {
      const newHash = window.location.hash.slice(1);
      if (newHash && pages.value.find(p => p.id === newHash)) activePageId.value = newHash;
+  });
+
+  // 离场落盘：防抖 500ms 意味着切走/杀进程会丢掉最后一批改动。
+  // 移动端 App 切后台极易被回收，这里在隐藏与卸载时强制 flush。
+  // pagehide 比 beforeunload 在移动端（iOS Safari / WebView）可靠得多。
+  const flush = () => flushPendingSave();
+  window.addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flush();
+      return;
+    }
+    // 阶段一 1.4：移动端切回前台时自动重连。
+    // WebView 切后台 WebSocket 即被系统回收，且重连达上限后会转入「纯本地模式」
+    // 等用户手动点——但移动端用户很难发现状态按钮。这里回到前台且处于离线时
+    // 自动触发 retrySync()，无需手动干预，保证多端数据联动及时恢复。
+    if (syncStatus.value === 'offline') {
+      retrySync();
+    }
   });
 
   // 全局点击关闭转换区块浮窗
@@ -1167,9 +1248,14 @@ watch(activePageId, (newId) => { if(window.location.hash.slice(1) !== newId) win
 onUnmounted(() => { closeSync(); });
 
 // === Sidebar 树状逻辑 ===
-const favoritePages = computed(() => pages.value.filter(p => p.isFavorite));
-const getChildren = (parentId: string | null) => pages.value.filter(p => p.parentId === parentId);
-const hasChildren = (id: string) => pages.value.some(p => p.parentId === id);
+// 墓碑页（deletedAt 非空）从侧边栏隐藏：用户删除后在 UI 上立即消失，
+// 但墓碑仍保留在 pages 数组里随同步上推，待其它端消化后再从本地彻底移除。
+const favoritePages = computed(() => pages.value.filter(p => p.isFavorite && !p.deletedAt));
+// 后端页的 parentId 可能是显式 null 或干脆缺省字段（前端解析为 undefined），
+// 两者都代表「根页面」。用宽松的假值判断，避免 undefined 的根页被侧边栏遗漏。
+const getChildren = (parentId: string | null) =>
+  pages.value.filter(p => (parentId ? p.parentId === parentId : !p.parentId) && !p.deletedAt);
+const hasChildren = (id: string) => pages.value.some(p => p.parentId === id && !p.deletedAt);
 const buildTree = (parentId: string | null, depth: number): any[] => {
   let result: any[] = [];
   for (const child of getChildren(parentId)) {
@@ -1187,7 +1273,9 @@ const activePageBreadcrumbs = computed(() => {
 
 const createPage = (parentId: string | null = null) => {
   const newId = newPageId();
-  pages.value.push({ id: newId, title: '', tasks: [{ id: newBlockId(), type: 'text', content: '', completed: false, indentLevel: 0 }], parentId, isFavorite: false, isExpanded: true });
+  // 新建页面默认给一个随机图标：移动端改图标要弹选择器（会被软键盘打断），
+  // 默认随机可让绝大多数情况下「根本不用去改图标」。用户仍可随时自定义。
+  pages.value.push({ id: newId, title: '', icon: randomEmoji(), tasks: [{ id: newBlockId(), type: 'text', content: '', completed: false, indentLevel: 0 }], parentId, isFavorite: false, isExpanded: true });
   if (parentId) { const parent = pages.value.find(p => p.id === parentId); if (parent) parent.isExpanded = true; }
   activePageId.value = newId;
   // 同步到后端（失败不影响本地编辑）
@@ -1198,20 +1286,44 @@ const createPage = (parentId: string | null = null) => {
 };
 const toggleFavorite = (id: string) => { const p = pages.value.find(p => p.id === id); if (p) p.isFavorite = !p.isFavorite; };
 const toggleExpand = (id: string) => { const p = pages.value.find(p => p.id === id); if (p) p.isExpanded = !p.isExpanded; };
+// 阶段一：删除改为**墓碑**，不再真删数组元素。
+// 原因：直接 filter 移除 + REST DELETE 会让「已删页」在同步时被远端的下一次
+// CLIENT_UPDATE 推回来「复活」——因为服务端原本保留自己独有的页、且 DELETE 不广播。
+// 现在给页打 deletedAt 戳，留在 pages 数组里随全量上推：服务端 _merge_pages 按 LWW
+// 保留墓碑并广播给其它端；其它端的 mergePages 检测到墓碑会剔除本地副本。
+// 侧边栏渲染时过滤掉墓碑页，用户无感；墓碑页直到被所有端同步消化后自然不再可见。
 const deletePage = (id: string) => {
    const idsToDelete = new Set([id]); let currentSize = 0;
    while(idsToDelete.size > currentSize) {
        currentSize = idsToDelete.size;
        pages.value.forEach(p => { if (p.parentId && idsToDelete.has(p.parentId)) idsToDelete.add(p.id); });
    }
-   pages.value = pages.value.filter(p => !idsToDelete.has(p.id));
-   if (!pages.value.find(p => p.id === activePageId.value)) activePageId.value = pages.value[0]?.id || '';
-   idsToDelete.forEach(pid => deleteRemotePage(pid));
+   const now = Date.now();
+   for (const p of pages.value) {
+     if (idsToDelete.has(p.id)) p.deletedAt = now;
+   }
+   // 切换到第一个未删除的页（墓碑页从 UI 隐藏，但保留在数组中供同步）
+   const alive = pages.value.filter((p) => !p.deletedAt);
+   if (!alive.find(p => p.id === activePageId.value)) activePageId.value = alive[0]?.id || '';
+   // 变更经 watch -> stampUpdated + persistPages 上推（携带 deletedAt），无需单独调 REST DELETE
 };
 
 // === 核心状态与 Refs ===
 const inputRefs = ref<Record<string, HTMLElement>>({});
-const setInputRef = (el: any, id: string) => { if (el) inputRefs.value[id] = el; else delete inputRefs.value[id]; };
+const setInputRef = (el: any, id: string) => {
+  if (el) {
+    inputRefs.value[id] = el;
+    // 元素挂载/复用时立即回填内容。切换页签时旧块卸载、新块创建，此回调必被调用，
+    // 可确定性地把 task.content 写入 DOM，避免依赖下方 watch 的 nextTick 竞态导致
+    // contenteditable 偶尔显示为空（只剩占位符），即「切换页签内容消失、刷新恢复」的 bug。
+    const task = activePage.value?.tasks.find((t: any) => t.id === id);
+    if (task && EDITABLE_TYPES.includes(task.type) && el.innerHTML !== task.content) {
+      el.innerHTML = task.content;
+    }
+  } else {
+    delete inputRefs.value[id];
+  }
+};
 const focusConfig = ref<{ id: string | null, pos: any }>({ id: null, pos: null });
 // 当前获得焦点的文本块（用于对齐 Notion：占位提示只在聚焦/悬停时出现）
 const focusedTaskId = ref<string | null>(null);
@@ -1389,6 +1501,100 @@ const handleDrop = (e: DragEvent, task: Task) => {
 const handleDragEnd = () => resetDragState();
 const resetDragState = () => { draggedTaskId.value = null; dragOverTaskId.value = null; draggableTaskId.value = null; };
 
+// === 触屏长按拖拽引擎（移动端块排序，对齐 Notion 移动端） ===
+// 桌面用原生 HTML5 DnD（见 handleDragStart 等）；触屏无 DnD，改为：
+// 手柄长按 ~400ms 进入拖拽 → 手指移动实时高亮目标块（复用桌面蓝线视觉）
+// → 松手落位（继承目标缩进 + 重写 prevId 链）。轻点（未长按）仍打开操作菜单。
+const TOUCH_MOVE_OPTS: AddEventListenerOptions = { passive: false };
+const restoreUserSelect = () => { document.body.style.userSelect = ''; (document.body.style as any).webkitUserSelect = ''; };
+
+// 按手指 Y 命中目标块，更新蓝线指示（复用桌面 dragOverTaskId / dropPosition 视觉）
+const updateDropTarget = (clientY: number, dragId: string) => {
+  const blocks = Array.from(document.querySelectorAll<HTMLElement>('[data-block-id]'));
+  for (const el of blocks) {
+    const r = el.getBoundingClientRect();
+    if (clientY >= r.top && clientY <= r.bottom) {
+      const id = el.dataset.blockId!;
+      if (id === dragId) { dragOverTaskId.value = null; return; }
+      dragOverTaskId.value = id;
+      dropPosition.value = clientY < r.top + r.height / 2 ? 'top' : 'bottom';
+      return;
+    }
+  }
+  // 手指超出所有块范围：吸附到首 / 尾
+  if (blocks.length) {
+    const first = blocks[0], last = blocks[blocks.length - 1];
+    if (clientY < first.getBoundingClientRect().top) { dragOverTaskId.value = first.dataset.blockId!; dropPosition.value = 'top'; }
+    else if (clientY > last.getBoundingClientRect().bottom) { dragOverTaskId.value = last.dataset.blockId!; dropPosition.value = 'bottom'; }
+    else dragOverTaskId.value = null;
+  }
+};
+
+// 松手落位：把拖动块移到目标前 / 后，继承缩进并重写 prevId 链（与桌面 handleDrop 一致）
+const finishTouchDrag = () => {
+  const dragId = draggedTaskId.value;
+  const overId = dragOverTaskId.value;
+  if (dragId && overId && overId !== dragId && activePage.value) {
+    const list = activePage.value.tasks;
+    const from = list.findIndex((t: Task) => t.id === dragId);
+    const target = list.find((t: Task) => t.id === overId);
+    if (from > -1 && target) {
+      const [item] = list.splice(from, 1);
+      const newTo = list.findIndex((t: Task) => t.id === overId);
+      item.indentLevel = target.indentLevel;
+      list.splice(dropPosition.value === 'top' ? newTo : newTo + 1, 0, item);
+      list.splice(0, list.length, ...writePrevIds(list));
+    }
+  }
+  resetDragState();
+  restoreUserSelect();
+};
+
+const onHandleTouchStart = (task: Task, e: TouchEvent) => {
+  if (!isCoarsePointer.value || !activePage.value) return;
+  const t0 = e.touches[0];
+  if (!t0) return;
+  const startX = t0.clientX, startY = t0.clientY;
+  let fired = false;
+  const cleanup = () => {
+    window.clearTimeout(timer);
+    window.removeEventListener('touchmove', onMove, TOUCH_MOVE_OPTS);
+    window.removeEventListener('touchend', onEnd);
+    window.removeEventListener('touchcancel', onCancel);
+  };
+  const timer = window.setTimeout(() => {
+    if (fired) return;
+    fired = true;
+    draggedTaskId.value = task.id;
+    document.body.style.userSelect = 'none';
+    (document.body.style as any).webkitUserSelect = 'none';
+    (navigator as any).vibrate?.(15);
+    updateDropTarget(startY, task.id);
+  }, 400);
+  const onMove = (ev: TouchEvent) => {
+    const ct = ev.touches[0];
+    if (!ct) return;
+    // 未进入拖拽：移动超过阈值即视为滚动意图，取消长按（不拦截页面滚动）
+    if (!fired) {
+      if (Math.abs(ct.clientX - startX) > 10 || Math.abs(ct.clientY - startY) > 10) cleanup();
+      return;
+    }
+    // 已进入拖拽：阻止页面滚动并实时更新落点
+    if (ev.cancelable) ev.preventDefault();
+    updateDropTarget(ct.clientY, task.id);
+  };
+  const onEnd = (ev: TouchEvent) => {
+    const wasFired = fired;
+    cleanup();
+    if (wasFired) finishTouchDrag();
+    else openActionMenuAtTouch(task.id, ev);   // 轻点 → 打开操作菜单
+  };
+  const onCancel = () => { cleanup(); if (fired) { resetDragState(); restoreUserSelect(); } };
+  window.addEventListener('touchmove', onMove, TOUCH_MOVE_OPTS);
+  window.addEventListener('touchend', onEnd);
+  window.addEventListener('touchcancel', onCancel);
+};
+
 // === 撤销 / 重做（快照式历史栈） ===
 // 关键：必须自己接管 Cmd/Ctrl+Z。否则浏览器原生 undo 会直接回滚 contenteditable 的 DOM，
 // 与 Vue 的响应式数据分叉，随后任何一次输入都会把错乱的 DOM 写回数据。
@@ -1478,9 +1684,18 @@ watch(
 // 一套状态同时服务侧边栏与标题区两个入口；icon 存在 Page 上，三端同步自动继承
 const iconPicker = ref<{ pageId: string; anchorEl: HTMLElement | null } | null>(null);
 
+// 设置面板（原生底部 Tab 已移除，设置入口在侧边栏右上角齿轮）
+const settingsOpen = ref(false);
+const openSettings = (_e?: MouseEvent) => { settingsOpen.value = true; };
+
 const openIconPicker = (pageId: string, e: MouseEvent) => {
   e.stopPropagation();
   if (iconPicker.value?.pageId === pageId) { iconPicker.value = null; return; }
+  // 触屏：先收掉软键盘再打开选择器。
+  // 否则正文 contenteditable 仍持有焦点，键盘不收，选择器会被顶到屏幕外。
+  if (isCoarsePointer.value) {
+    (document.activeElement as HTMLElement | null)?.blur();
+  }
   iconPicker.value = { pageId, anchorEl: (e.currentTarget as HTMLElement) ?? null };
 };
 
@@ -1923,7 +2138,7 @@ const duplicateTask = (id: string) => {
   if (idx !== -1) { const newId = newBlockId(); activePage.value.tasks.splice(idx + 1, 0, { ...activePage.value.tasks[idx], id: newId }); }
   actionMenuConfig.value.isOpen = false;
 };
-// 上下移动块（Cmd/Ctrl + Shift + ↑/↓）
+// 上下移动块（Cmd/Ctrl + Shift + ↑/↓ / 移动端菜单上移下移）
 const moveBlock = (index: number, dir: number) => {
   if (!activePage.value) return;
   const list = activePage.value.tasks;
@@ -1931,6 +2146,25 @@ const moveBlock = (index: number, dir: number) => {
   if (index < 0 || target < 0 || target >= list.length) return;
   const [item] = list.splice(index, 1);
   list.splice(target, 0, item);
+  // 顺序已变：重写整条 prevId 链，保证三端合并时块顺序一致。
+  // 修复：原先只裸 splice，移动后 prevId 链错乱，多端同步时块顺序会乱。
+  list.splice(0, list.length, ...writePrevIds(list));
+};
+
+// 调整块缩进层级（向右 +1 / 向左 -1）。移动端无 Tab 键盘，靠菜单按钮触发；
+// 约束与桌面 Tab 完全一致：不能比上一块深超过 1 级，且不能小于 0。
+const changeIndent = (task: Task, dir: 1 | -1) => {
+  const list = activePage.value?.tasks ?? [];
+  const index = list.findIndex((t: Task) => t.id === task.id);
+  if (index < 0) return;
+  const cur = task.indentLevel || 0;
+  if (dir < 0) {
+    if (cur > 0) updateTask(task.id, { indentLevel: cur - 1 });
+  } else if (index > 0) {
+    const prevTask = list[index - 1];
+    const maxIndent = (prevTask.indentLevel || 0) + 1;
+    if (cur < maxIndent) updateTask(task.id, { indentLevel: cur + 1 });
+  }
 };
 
 // 拦截文本输入 (Markdown 与 Slash)
@@ -2509,7 +2743,7 @@ const openActionMenu = (e: MouseEvent, taskId: string) => { e.stopPropagation();
 // 触屏：由 touch 坐标直接定位菜单（e.currentTarget 在 touch 事件里拿不到可靠元素）
 const openActionMenuAtTouch = (taskId: string, e: TouchEvent) => {
   e.stopPropagation();
-  const t = e.touches[0];
+  const t = e.touches[0] || (e.changedTouches && e.changedTouches[0]);
   if (!t) return;
   actionMenuConfig.value = { isOpen: true, x: Math.round(t.clientX), y: Math.round(t.clientY), taskId };
   // 触屏防越界：菜单是 fixed 定位，点击位置靠近屏幕边缘（尤其底部）时会画出可视区。

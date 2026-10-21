@@ -1,7 +1,6 @@
 package com.nexusmatrix.app
 
 import android.graphics.Color
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup
@@ -17,8 +16,11 @@ import com.nexusmatrix.app.ui.NexusTheme
  * 原生壳入口（阶段 1）。
  *
  * 架构：Capacitor BridgeActivity（保留全部插件/生命周期/本地资源服务）
- * + Compose 外壳（底部 Tab 导航）。编辑器即 Capacitor 的 WebView，
- * 从默认布局中取出后嵌入 Compose——Notion 同款「原生壳 + WebView 编辑器」。
+ * + Compose 外壳。编辑器即 Capacitor 的 WebView，从默认布局中取出后嵌入 Compose
+ * ——Notion 同款「原生壳 + WebView 编辑器」。
+ *
+ * 2026-10-17：底部 Tab 导航已全部移除（收藏 → 设置 → 彻底去掉），
+ * 现在是全屏 WebView，把垂直空间全部留给编辑器；设置入口迁到 Web 侧边栏右上角。
  */
 class MainActivity : BridgeActivity() {
 
@@ -28,8 +30,8 @@ class MainActivity : BridgeActivity() {
         // 时读平台属性 android:windowActionBar，启动主题必须是 AppCompat 主题。
         setTheme(R.style.AppTheme_NoActionBar)
         // 边到边（Notion 移动端形态）：WebView 延伸到状态栏/手势栏区域，原生壳不占高度。
-        // 系统栏透明 + 亮色图标（暗色 UI）；状态栏区域由 Web 侧 viewport-fit=cover +
-        // env(safe-area-inset-*) 避开，底部手势区由底部 NavigationBar 兜底。
+        // 系统栏透明 + 亮色图标（暗色 UI）；状态栏与底部手势区均由 Web 侧
+        // viewport-fit=cover + env(safe-area-inset-*) 自行避开（底部已无 NavigationBar）。
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
@@ -50,16 +52,27 @@ class MainActivity : BridgeActivity() {
         // WebView 默认白底，冷启动/刷新时会闪一下白屏；改为品牌深色（与 Web 端 nexus-void 一致）
         webView.setBackgroundColor(0xFF090A0C.toInt())
 
+        // 本地存储加固：显式打开 DOM Storage 与 Database（IndexedDB）。
+        // 这两项在部分 WebView/ROM 上并非默认开启，一旦关闭，Web 侧的 IndexedDB
+        // 不可用会静默降级到 localStorage（5 MiB 且会被系统整 origin 驱逐），
+        // 直接表现为「重开 App 数据丢失」。这里显式兜底，不依赖 Capacitor 的默认值。
         try {
-            // 若用户配置过后端地址，抢在首页提交前用带 ?syncServer= 的 URL 重新加载：
-            // Bridge 构造器已同步发起 loadUrl(appUrl)，此次调用会取消那次尚未提交的导航，
-            // 保证前端 runtimeConfig.ts 在模块初始化时就能读到服务器地址。
-            val server = ShellPrefs(this).syncServer
-            if (server.isNotEmpty()) {
-                webView.loadUrl(withSyncServer(bridge.appUrl, server))
+            webView.settings.apply {
+                domStorageEnabled = true
+                databaseEnabled = true
+                // 允许 file/https 混合场景下的本地存储访问，避免资产加载时 origin 受限
+                allowContentAccess = true
+                allowFileAccess = true
             }
+        } catch (e: Throwable) {
+            Log.e(TAG, "WebView 存储设置失败", e)
+        }
 
+        try {
             // 把 WebView 从 Capacitor 默认布局取出，交给 Compose 外壳
+            // 注：同步服务器地址不再由原生注入（ShellPrefs 已移除）——设置入口迁到
+            // Web 侧边栏右上角后，配置由 Web 设置面板写入 localStorage，
+            // 由 runtimeConfig.ts 读取。原生若再注入 URL query，会盖掉用户的新配置。
             val originalParent = webView.parent as? ViewGroup
             originalParent?.removeView(webView)
             try {
@@ -80,15 +93,5 @@ class MainActivity : BridgeActivity() {
 
     companion object {
         private const val TAG = "NexusShell"
-
-        /**
-         * 把同步服务器地址编码进 URL query（前端 runtimeConfig.ts 读取，优先级高于构建期 env）。
-         * 幂等：总是基于去掉 query 的 base 重建，重复保存不会叠加参数。
-         */
-        fun withSyncServer(url: String?, server: String): String {
-            val base = (url ?: "https://localhost/index.html").substringBefore('?')
-            if (server.isEmpty()) return base
-            return "$base?syncServer=${Uri.encode(server)}"
-        }
     }
 }
