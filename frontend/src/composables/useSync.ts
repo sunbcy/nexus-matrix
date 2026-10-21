@@ -143,7 +143,7 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
 
 // 页面顺序链：按当前数组顺序，为每个父级分组重写 prevId（同块的 writePrevIds 思路）。
 // 只改顺序字段、不碰内容（也不改 updatedAt），返回新数组供原位替换。
-const writePagePrevIds = (pages: Page[]): Page[] => {
+export const writePagePrevIds = (pages: Page[]): Page[] => {
   const lastByParent = new Map<string, string>();
   return pages.map((p) => {
     const key = p.parentId ?? '__root__';

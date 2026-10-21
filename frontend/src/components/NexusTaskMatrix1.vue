@@ -932,8 +932,8 @@ import {
   retrySync,
   setStorageWarning,
   syncStatus,
-  writePrevIds,
   writePagePrevIds,
+  writePrevIds,
 } from '../composables/useSync';
 import {installNativeBridge} from '../composables/nativeBridge';
 import {useMobileInput} from '../composables/useMobileInput';
@@ -1500,6 +1500,13 @@ onMounted(async () => {
 
 // 持久化与远端广播统一由 useSync 内部 watch 处理
 watch(activePageId, (newId) => { if(window.location.hash.slice(1) !== newId) window.location.hash = newId; });
+// 兜底：激活页无效时（打开了已删除/不存在的页面锚点，或数据异步加载完成前 hash 指向失效），
+// 回退到第一个可用页，避免主编辑区空白（移动端侧边栏是默认隐藏的抽屉，空白会更明显）。
+watch(activePage, (ap) => {
+  if (ap) return;
+  const live = pages.value.find((p) => !p.deletedAt) || pages.value[0];
+  if (live) { activePageId.value = live.id; window.history.replaceState(null, '', `#${live.id}`); }
+});
 
 onUnmounted(() => { closeSync(); });
 
