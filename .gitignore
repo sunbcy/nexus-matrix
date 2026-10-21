@@ -13,3 +13,4 @@ frontend/dist/
 # 测试与临时文件
 frontend/vitest*.log
 frontend/*.log
+/test_samples/
