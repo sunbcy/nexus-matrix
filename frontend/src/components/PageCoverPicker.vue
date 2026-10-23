@@ -5,11 +5,11 @@
 // localStorage 仅约 5MB，且 Base64 会膨胀 33%；封面通常是 1500x500 的大图，
 // 不压缩的话两三张就会撑爆配额（而同一个存储键里还存着图片块的 Base64）。
 // 因此这里限制到 1600x600 以内、JPEG q0.82，实测可把体积压到 100KB 量级。
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue';
-import { PROVIDERS, getProvider } from '../composables/providerRegistry';
-import { saveImageAsset } from '../composables/assets';
-import { getProviderKey, setProviderKey } from '../composables/providerKeys';
-import type { CoverPhoto, ImageProvider } from '../composables/imageProviders';
+import {nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
+import {getProvider, PROVIDERS} from '../composables/providerRegistry';
+import {saveImageAsset} from '../composables/assets';
+import {getProviderKey, setProviderKey} from '../composables/providerKeys';
+import type {CoverPhoto, ImageProvider} from '../composables/imageProviders';
 
 const props = defineProps<{
   current?: string;
@@ -186,26 +186,26 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="cover-picker-popup fixed z-[70] w-[300px] bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-md overflow-hidden flex flex-col"
+  <div class="cover-picker-popup fixed z-[70] w-[300px] bg-void border border-line shadow-2xl rounded-md overflow-hidden flex flex-col"
        :style="{ top: `${pos.top}px`, left: `${pos.left}px` }">
-    <div class="px-3 py-2 border-b border-[#1e2126]/60 text-xs font-bold text-[#e5e7eb] tracking-wide shrink-0">设置页眉封面</div>
+    <div class="px-3 py-2 border-b border-line/60 text-xs font-bold text-display tracking-wide shrink-0">设置页眉封面</div>
 
     <div class="p-3 space-y-3 overflow-y-auto custom-scrollbar">
       <!-- 图库（Unsplash） -->
       <div v-if="activeProvider">
         <div class="flex items-center justify-between mb-1.5">
-          <div class="text-[10px] text-[#6b7280] uppercase tracking-wider">图库</div>
+          <div class="text-[10px] text-dim uppercase tracking-wider">图库</div>
           <!-- 多图库时显示切换按钮；目前仅 Unsplash，故隐藏 -->
           <template v-if="PROVIDERS.length > 1">
             <button v-for="p in PROVIDERS" :key="p.id"
                     @click="activeProviderId = p.id; onProviderChange()"
                     class="px-1.5 py-0.5 text-[10px] rounded-sm transition-colors"
-                    :class="p.id === activeProviderId ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:text-[#e5e7eb]'">
+                    :class="p.id === activeProviderId ? 'bg-panel text-accent' : 'text-dim hover:text-display'">
               {{ p.name }}
             </button>
           </template>
           <a :href="activeProvider.keyHelpUrl" target="_blank" rel="noopener"
-             class="text-[10px] text-[#6b7280] hover:text-[#00f0ff] transition-colors">
+             class="text-[10px] text-dim hover:text-accent transition-colors">
             申请 Key ↗
           </a>
         </div>
@@ -215,12 +215,12 @@ onUnmounted(() => {
           <input v-model="apiKey" type="password" :placeholder="`${activeProvider.name} API Key`"
                  @keydown.enter.prevent="saveKey"
                  @blur="saveKey"
-                 class="flex-1 bg-[#14161a] border border-[#1e2126] focus:border-[#00f0ff] outline-none px-2 py-1.5 text-xs text-[#e5e7eb] rounded-sm transition-colors" />
-          <button @click="saveKey" class="px-2.5 py-1.5 text-xs font-bold text-[#090a0c] bg-[#00f0ff] hover:bg-[#00d4e0] rounded-sm transition-colors">保存</button>
+                 class="flex-1 bg-surface border border-line focus:border-accent outline-none px-2 py-1.5 text-xs text-display rounded-sm transition-colors" />
+          <button @click="saveKey" class="px-2.5 py-1.5 text-xs font-bold text-onaccent bg-accent hover:bg-accent2 rounded-sm transition-colors">保存</button>
         </div>
         <!-- 申请入口：Unsplash 需注册开发者应用获取 Access Key -->
         <a :href="activeProvider.keyHelpUrl" target="_blank" rel="noopener"
-           class="block text-[10px] text-[#6b7280] hover:text-[#00f0ff] transition-colors mb-2">
+           class="block text-[10px] text-dim hover:text-accent transition-colors mb-2">
           没有 Key？去 {{ activeProvider.name }} 申请 ↗
         </a>
 
@@ -228,16 +228,16 @@ onUnmounted(() => {
         <div class="flex gap-1.5 mb-2">
           <input v-model="galleryQuery" type="text" placeholder="搜索图片关键词…"
                  @keydown.enter.prevent="loadGallery(true)"
-                 class="flex-1 bg-[#14161a] border border-[#1e2126] focus:border-[#00f0ff] outline-none px-2 py-1.5 text-xs text-[#e5e7eb] rounded-sm transition-colors" />
+                 class="flex-1 bg-surface border border-line focus:border-accent outline-none px-2 py-1.5 text-xs text-display rounded-sm transition-colors" />
           <button @click="loadGallery(true)" :disabled="galleryLoading"
-                  class="px-2.5 py-1.5 text-xs font-bold text-[#e5e7eb] bg-[#1e2126] hover:bg-[#2a2e35] rounded-sm transition-colors disabled:opacity-50">
+                  class="px-2.5 py-1.5 text-xs font-bold text-display bg-panel hover:bg-panel2 rounded-sm transition-colors disabled:opacity-50">
             搜索
           </button>
         </div>
 
         <!-- 错误 / 空态提示 -->
         <div v-if="galleryError && galleryPhotos.length === 0"
-             class="text-[11px] text-[#ff2a2a] px-1 py-2 leading-relaxed">
+             class="text-[11px] text-danger px-1 py-2 leading-relaxed">
           {{ galleryError }}
         </div>
 
@@ -246,29 +246,29 @@ onUnmounted(() => {
           <button v-for="p in galleryPhotos" :key="p.id"
                   @click="pickFromGallery(p)"
                   :disabled="galleryLoading"
-                  class="relative h-[52px] rounded-sm border border-[#1e2126] hover:border-[#00f0ff] transition-colors overflow-hidden disabled:opacity-50"
+                  class="relative h-[52px] rounded-sm border border-line hover:border-accent transition-colors overflow-hidden disabled:opacity-50"
                   :style="{ backgroundImage: `url('${p.thumbUrl}')`, backgroundSize: 'cover', backgroundPosition: 'center' }"
                   :title="`${p.author} · ${activeProvider.name}`">
           </button>
         </div>
 
         <!-- 加载中 / 已到底 -->
-        <div v-if="galleryLoading" class="text-[11px] text-[#6b7280] text-center py-2">加载中…</div>
-        <div v-else-if="galleryDone && galleryPhotos.length > 0" class="text-[11px] text-[#6b7280] text-center py-1.5">— 已到底部 —</div>
+        <div v-if="galleryLoading" class="text-[11px] text-dim text-center py-2">加载中…</div>
+        <div v-else-if="galleryDone && galleryPhotos.length > 0" class="text-[11px] text-dim text-center py-1.5">— 已到底部 —</div>
 
         <!-- 署名要求提示（Unsplash 的硬性合规要求） -->
-        <div v-if="galleryPhotos.length > 0" class="text-[10px] text-[#6b7280]/70 leading-relaxed pt-1">
+        <div v-if="galleryPhotos.length > 0" class="text-[10px] text-dim/70 leading-relaxed pt-1">
           选用后会在封面浮层显示摄影师署名
         </div>
       </div>
 
       <!-- 渐变色（零存储成本） -->
       <div>
-        <div class="text-[10px] text-[#6b7280] uppercase tracking-wider mb-1.5">渐变色</div>
+        <div class="text-[10px] text-dim uppercase tracking-wider mb-1.5">渐变色</div>
         <div class="flex gap-1.5">
           <button v-for="g in COVER_GRADIENTS" :key="g.id"
                   @click="emit('select', `gradient:${g.id}`)"
-                  class="w-9 h-9 rounded-sm border border-[#1e2126] hover:border-[#00f0ff] transition-colors"
+                  class="w-9 h-9 rounded-sm border border-line hover:border-accent transition-colors"
                   :style="{ background: g.css }"
                   :title="g.id"></button>
         </div>
@@ -276,9 +276,9 @@ onUnmounted(() => {
 
       <!-- 上传本地图片 -->
       <div>
-        <div class="text-[10px] text-[#6b7280] uppercase tracking-wider mb-1.5">上传图片</div>
+        <div class="text-[10px] text-dim uppercase tracking-wider mb-1.5">上传图片</div>
         <button @click="fileRef?.click()" :disabled="busy"
-                class="w-full flex items-center justify-center gap-2 px-3 py-2 border border-dashed border-[#1e2126] hover:border-[#00f0ff] text-[#6b7280] hover:text-[#00f0ff] rounded-sm transition-colors text-xs">
+                class="w-full flex items-center justify-center gap-2 px-3 py-2 border border-dashed border-line hover:border-accent text-dim hover:text-accent rounded-sm transition-colors text-xs">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
           {{ busy ? '处理中…' : '选择图片（自动压缩）' }}
         </button>
@@ -287,19 +287,19 @@ onUnmounted(() => {
 
       <!-- 外部链接 -->
       <div>
-        <div class="text-[10px] text-[#6b7280] uppercase tracking-wider mb-1.5">图片链接</div>
+        <div class="text-[10px] text-dim uppercase tracking-wider mb-1.5">图片链接</div>
         <div class="flex gap-1.5">
           <input v-model="urlInput" type="text" placeholder="https://..."
                  @keydown.enter.prevent="submitUrl"
-                 class="flex-1 bg-[#14161a] border border-[#1e2126] focus:border-[#00f0ff] outline-none px-2 py-1.5 text-xs text-[#e5e7eb] rounded-sm transition-colors" />
-          <button @click="submitUrl" class="px-2.5 py-1.5 text-xs font-bold text-[#090a0c] bg-[#00f0ff] hover:bg-[#00d4e0] rounded-sm transition-colors">用</button>
+                 class="flex-1 bg-surface border border-line focus:border-accent outline-none px-2 py-1.5 text-xs text-display rounded-sm transition-colors" />
+          <button @click="submitUrl" class="px-2.5 py-1.5 text-xs font-bold text-onaccent bg-accent hover:bg-accent2 rounded-sm transition-colors">用</button>
         </div>
       </div>
     </div>
 
-    <div class="px-3 py-2 border-t border-[#1e2126]/60 shrink-0">
+    <div class="px-3 py-2 border-t border-line/60 shrink-0">
       <button @click="emit('remove')"
-              class="w-full flex items-center justify-center gap-1.5 px-2 py-1 text-xs text-[#6b7280] hover:text-[#ff2a2a] hover:bg-[#1e2126] rounded-sm transition-colors">
+              class="w-full flex items-center justify-center gap-1.5 px-2 py-1 text-xs text-dim hover:text-danger hover:bg-panel rounded-sm transition-colors">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         移除封面
       </button>

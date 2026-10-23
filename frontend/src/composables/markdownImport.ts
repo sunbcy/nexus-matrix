@@ -64,7 +64,7 @@ export const inlineToHtml = (text: string): string => {
     out = out.replace(re, (_m, inner) => {
       const html =
         tag === 'mark'
-          ? `<mark style="background-color: #ffb000; color: #090a0c;">${inner}</mark>`
+          ? `<mark style="background-color: rgb(var(--warn)); color: rgb(var(--onaccent));">${inner}</mark>`
           : `<${tag}>${inner}</${tag}>`;
       return keep(html);
     });

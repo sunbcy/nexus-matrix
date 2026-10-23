@@ -27,6 +27,7 @@ import {
   syncStatus
 } from '../composables/useSync';
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
+import {applyTheme, currentThemeId, type ThemeId, THEMES} from '../composables/theme';
 
 const props = defineProps<{ visible: boolean; dirtyTitleCount?: number }>();
 const emit = defineEmits<{
@@ -37,6 +38,10 @@ const emit = defineEmits<{
 }>();
 
 const { isCoarsePointer } = useMobileInput();
+
+// 外观：主题即刻生效（只改 html[data-theme]），无需重连或刷新
+const themes = THEMES;
+const pickTheme = (id: ThemeId) => applyTheme(id);
 
 // 同步服务器地址：Web 侧可编辑，保存到 localStorage 后重载生效。
 // 移动端 WebView 的 location.host 不是后端地址，不配置就连不上。
@@ -146,120 +151,143 @@ const onCleanTitles = () => {
     <!-- 遮罩：点击关闭 -->
     <div class="absolute inset-0 bg-black/60" @click="emit('close')" @touchstart.stop="emit('close')"></div>
 
-    <div class="relative w-full md:w-[420px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+    <div class="relative w-full md:w-[420px] bg-void border border-line shadow-2xl flex flex-col"
          :class="isCoarsePointer
            ? 'rounded-t-xl border-b-0 max-h-[85vh] pb-[env(safe-area-inset-bottom,0px)]'
            : 'rounded-md max-h-[80vh]'">
       <!-- 抓取条（触屏） -->
       <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0">
-        <div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div>
+        <div class="w-10 h-1 rounded-full bg-dim/60"></div>
       </div>
 
-      <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
-        <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">设置</span>
-        <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors"
+      <div class="flex items-center justify-between px-4 py-3 border-b border-line shrink-0">
+        <span class="font-['JetBrains_Mono',monospace] text-sm text-display tracking-wider">设置</span>
+        <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim hover:text-display hover:bg-panel transition-colors"
                 @click="emit('close')" title="关闭">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
       </div>
 
       <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 space-y-5 text-sm">
+        <!-- 外观：主题。放在最上面——这是最常被改、且反馈最即时的设置。
+             每张卡片给出「什么时候用 / 对注意力与眼睛的影响」，而不是只给颜色名。 -->
+        <section>
+          <div class="text-[11px] font-['Rajdhani',sans-serif] text-dim uppercase tracking-wider mb-2">外观 · 主题</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button v-for="t in themes" :key="t.id" @click="pickTheme(t.id)"
+                    class="text-left p-2 rounded-sm border transition-colors bg-surface active:opacity-80"
+                    :class="currentThemeId === t.id ? 'border-accent' : 'border-line hover:border-dim'">
+              <div class="flex items-center gap-1 mb-1.5">
+                <span v-for="(c, i) in t.swatch" :key="i"
+                      class="w-3.5 h-3.5 rounded-[2px] border border-black/20"
+                      :style="{ background: c }"></span>
+                <span class="ml-auto text-[10px] font-['JetBrains_Mono',monospace]"
+                      :class="currentThemeId === t.id ? 'text-accent' : 'text-dim'">
+                  {{ t.mode === 'light' ? '浅色' : '深色' }}{{ currentThemeId === t.id ? ' · 使用中' : '' }}
+                </span>
+              </div>
+              <div class="text-xs text-display">{{ t.name }}</div>
+              <div class="text-[11px] text-dim leading-snug mt-0.5">{{ t.desc }}</div>
+            </button>
+          </div>
+        </section>
+
         <!-- 存储状态：数据到底存没存住，用户自己能看见 -->
         <section>
-          <div class="text-[11px] font-['Rajdhani',sans-serif] text-[#6b7280] uppercase tracking-wider mb-2">本地存储</div>
-          <div class="space-y-1.5 text-[#9ca3af]">
+          <div class="text-[11px] font-['Rajdhani',sans-serif] text-dim uppercase tracking-wider mb-2">本地存储</div>
+          <div class="space-y-1.5 text-muted">
             <div class="flex items-center justify-between gap-3">
               <span>数据库（IndexedDB）</span>
               <span class="font-['JetBrains_Mono',monospace]"
-                    :class="idbOk === true ? 'text-[#00f0ff]' : (idbOk === false ? 'text-[#ff2a2a]' : 'text-[#6b7280]')">
+                    :class="idbOk === true ? 'text-accent' : (idbOk === false ? 'text-danger' : 'text-dim')">
                 {{ idbOk === true ? '正常' : (idbOk === false ? '不可用' : '检测中…') }}
               </span>
             </div>
             <div v-if="storageInfo" class="flex items-center justify-between gap-3">
               <span>已用 / 配额</span>
-              <span class="font-['JetBrains_Mono',monospace] text-[#9ca3af]">
+              <span class="font-['JetBrains_Mono',monospace] text-muted">
                 {{ formatBytes(storageInfo.usage) }} / {{ formatBytes(storageInfo.quota) }}
               </span>
             </div>
             <div v-if="storageInfo" class="flex items-center justify-between gap-3">
               <span>持久化豁免</span>
               <span class="font-['JetBrains_Mono',monospace]"
-                    :class="storageInfo.persisted ? 'text-[#00f0ff]' : 'text-[#ffb000]'">
+                    :class="storageInfo.persisted ? 'text-accent' : 'text-warn'">
                 {{ storageInfo.persisted ? '已授予' : '未授予' }}
               </span>
             </div>
           </div>
-          <p v-if="idbOk === false" class="mt-2 text-xs text-[#ffb0b0] leading-snug">
+          <p v-if="idbOk === false" class="mt-2 text-xs text-danger leading-snug">
             数据当前降级在 localStorage，系统存储紧张时可能被整体清理。建议及时导出备份。
           </p>
         </section>
 
         <!-- 同步服务器 -->
         <section>
-          <div class="text-[11px] font-['Rajdhani',sans-serif] text-[#6b7280] uppercase tracking-wider mb-2">同步</div>
+          <div class="text-[11px] font-['Rajdhani',sans-serif] text-dim uppercase tracking-wider mb-2">同步</div>
           <div class="flex items-center justify-between gap-3 mb-2">
-            <span class="text-[#9ca3af]">状态</span>
-            <span class="font-['JetBrains_Mono',monospace] text-xs text-[#9ca3af]">{{ syncLabel }}</span>
+            <span class="text-muted">状态</span>
+            <span class="font-['JetBrains_Mono',monospace] text-xs text-muted">{{ syncLabel }}</span>
           </div>
-          <label class="block text-xs text-[#6b7280] mb-1">后端地址（留空则纯本地）</label>
+          <label class="block text-xs text-dim mb-1">后端地址（留空则纯本地）</label>
           <input v-model="serverInput" type="text" inputmode="url" placeholder="http://192.168.1.10:8010"
-                 class="w-full bg-[#14161a] border border-[#1e2126] focus:border-[#00f0ff] outline-none px-2 py-2 text-sm text-[#e5e7eb] rounded-sm transition-colors placeholder:text-[#6b7280]/60" />
-          <label class="block text-xs text-[#6b7280] mb-1 mt-3">访问密钥（后端启用鉴权时填写）</label>
+                 class="w-full bg-surface border border-line focus:border-accent outline-none px-2 py-2 text-sm text-display rounded-sm transition-colors placeholder:text-dim/60" />
+          <label class="block text-xs text-dim mb-1 mt-3">访问密钥（后端启用鉴权时填写）</label>
           <input v-model="apiKeyInput" type="password" placeholder="与后端 NEXUS_API_KEY 一致"
-                 class="w-full bg-[#14161a] border border-[#1e2126] focus:border-[#00f0ff] outline-none px-2 py-2 text-sm text-[#e5e7eb] rounded-sm transition-colors placeholder:text-[#6b7280]/60" />
+                 class="w-full bg-surface border border-line focus:border-accent outline-none px-2 py-2 text-sm text-display rounded-sm transition-colors placeholder:text-dim/60" />
           <div class="flex items-center gap-2 mt-2">
             <button @click="saveServer"
-                    class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-surface border border-line text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               保存并重连
             </button>
             <button @click="onRetry"
-                    class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#6b7280] hover:text-[#e5e7eb] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-surface border border-line text-dim hover:text-display active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               立即重试
             </button>
           </div>
-          <p v-if="savedMsg" class="mt-2 text-xs text-[#00f0ff]">{{ savedMsg }}</p>
+          <p v-if="savedMsg" class="mt-2 text-xs text-accent">{{ savedMsg }}</p>
         </section>
 
         <!-- 数据与备份：导入 / 导出。工作区级操作，对齐 Notion「在设置里做 Import/Export」 -->
         <section>
-          <div class="text-[11px] font-['Rajdhani',sans-serif] text-[#6b7280] uppercase tracking-wider mb-2">数据与备份</div>
+          <div class="text-[11px] font-['Rajdhani',sans-serif] text-dim uppercase tracking-wider mb-2">数据与备份</div>
           <div class="flex flex-wrap gap-2">
             <button @click="onExportJson"
-                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               导出 JSON 备份
             </button>
             <button @click="emit('export-md')"
-                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               导出当前页 MD
             </button>
           </div>
           <div class="flex flex-wrap gap-2 mt-2">
             <button @click="triggerJsonImport"
-                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               导入 JSON
             </button>
             <button @click="triggerMdImport"
-                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               导入 Markdown
             </button>
             <button @click="emit('open-notion-import')"
-                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] hover:text-[#ffb000] hover:border-[#ffb000] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-warn hover:border-warn active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               导入 Notion ZIP
             </button>
           </div>
           <div class="mt-2">
             <button @click="onCleanTitles" :disabled="!dirtyTitleCount"
-                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] enabled:hover:text-[#00f0ff] enabled:hover:border-[#00f0ff] enabled:active:bg-[#1e2126] disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-accent enabled:hover:border-accent enabled:active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
               清理标题里的 Notion ID<template v-if="dirtyTitleCount">（{{ dirtyTitleCount }}）</template>
             </button>
           </div>
-          <p class="text-xs text-[#6b7280] mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID 可用上面的按钮一键清理。</p>
-          <p v-if="dataMsg" class="mt-2 text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
+          <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID 可用上面的按钮一键清理。</p>
+          <p v-if="dataMsg" class="mt-2 text-xs text-accent font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
           <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />
           <input ref="mdInput" type="file" accept=".md,.markdown,text/markdown" class="hidden" @change="onMdImport" />
         </section>
 
-        <p v-if="storageError" class="text-xs text-[#ffb0b0] leading-snug">{{ storageError }}</p>
+        <p v-if="storageError" class="text-xs text-danger leading-snug">{{ storageError }}</p>
       </div>
     </div>
   </div>

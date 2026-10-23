@@ -4,23 +4,187 @@
 @tailwind components;
 @tailwind utilities;
 
-/* 工业风核心 CSS 原生变量声明 - 保证本地编译免受 tailwind.config 加载顺序影响 */
+/* 主题化核心变量（2026-10-24）
+   ------------------------------------------------------------------
+   规则：变量存 **RGB 通道三元组**（不是 hex），因为 Tailwind v3 只有在
+   `rgb(var(--x) / <alpha-value>)` 形态下才能给 `bg-void/50` 这类透明度
+   修饰符注入 alpha。换肤只改 html[data-theme] 下的这组变量即可。
+
+   语义层级（所有组件只准用语义 token，不要再写死 hex）：
+     --bg        页面最底层背景
+     --surface   次级背景：侧边栏 / 卡片 / 输入框
+     --panel     三级背景：按钮 / 菜单 / 浮层
+     --panel2    再高一级：hover / 选中态
+     --line      边框与分隔线
+     --display   正文主文字
+     --muted     次级文字
+     --dim       弱化文字与图标
+     --onaccent  强调色按钮上的字色（深色主题上是深色，浅色主题上是白色）
+     --accent / --accent2   强调色与其 hover 态
+     --warn / --danger / --dangerbg / --success
+*/
 @layer base {
   :root {
-    --nexus-void: #090a0c;
-    --nexus-surface: #14161a;
-    --nexus-panel: #1e2126;
-    --cyan-glow: #00f0ff;
-    --amber-warn: #ffb000;
-    --danger-red: #ff2a2a;
-    --text-dim: #6b7280;
-    --text-display: #e5e7eb;
+    /* 默认主题 = 酷黑（见 [data-theme="void"]，这里只放别名）
+       别名用 rgb(var(--x)) 书写：var 是在**使用处**才展开的，
+       所以 html 上换掉通道值后，别名自动跟着变，无需在每个主题里重复定义。 */
+    --nexus-void: rgb(var(--bg));
+    --nexus-surface: rgb(var(--surface));
+    --nexus-panel: rgb(var(--panel));
+    --cyan-glow: rgb(var(--accent));
+    --amber-warn: rgb(var(--warn));
+    --danger-red: rgb(var(--danger));
+    --text-dim: rgb(var(--dim));
+    --text-display: rgb(var(--display));
+
+    /* 1. 酷黑 · Void（默认）
+       极高对比 + 无彩色背景：文字边界清晰、界面退到背景里，长时间聚焦时
+       屏幕自身不产生视觉噪声。适合夜间、暗光环境与代码/结构化写作。 */
+    --bg: 9 10 12;
+    --surface: 20 22 26;
+    --panel: 30 33 38;
+    --panel2: 42 46 53;
+    --line: 30 33 38;
+    --display: 229 231 235;
+    --muted: 156 163 175;
+    --dim: 107 114 128;
+    --onaccent: 9 10 12;
+    --accent: 0 240 255;
+    --accent2: 0 212 224;
+    --warn: 255 176 0;
+    --danger: 255 42 42;
+    --dangerbg: 42 18 20;
+    --success: 61 220 132;
+    /* 深色主题上强调色可以「发光」；浅色主题必须是 0，否则文字发虚 */
+    --accent-glow: 0.3;
+    --accent-glow-radius: 4px;
+    color-scheme: dark;
+  }
+
+  /* 2. 纸白 · Paper（Notion 浅色）
+       白底 + 暖灰层级：与纸媒一致的阅读反射模型，白天/明亮环境下瞳孔收缩
+       更自然，细节辨认成本最低。中性灰（而非纯黑）文字避免「刺眼发虚」。 */
+  [data-theme='paper'] {
+    --bg: 255 255 255;
+    --surface: 251 251 250;
+    --panel: 239 239 237;
+    --panel2: 227 226 224;
+    --line: 231 231 228;
+    --display: 55 53 47;
+    --muted: 99 97 92;
+    --dim: 138 136 131;
+    --onaccent: 255 255 255;
+    --accent: 43 111 235;
+    --accent2: 29 90 200;
+    --warn: 168 100 0;
+    --danger: 197 40 40;
+    --dangerbg: 253 240 240;
+    --success: 30 146 88;
+    --accent-glow: 0;
+    --accent-glow-radius: 0px;
+    color-scheme: light;
+  }
+
+  /* 3. 暖阳 · Sepia
+       低色温（米黄）+ 去掉纯白：蓝光占比显著下降，长时间连续阅读时
+       睫状肌与视网膜负担更小，是「解压 / 不催眠」的经典长文配色。 */
+  [data-theme='sepia'] {
+    --bg: 250 244 232;
+    --surface: 243 235 219;
+    --panel: 234 224 205;
+    --panel2: 222 210 188;
+    --line: 225 213 194;
+    --display: 74 60 42;
+    --muted: 106 90 68;
+    --dim: 138 120 98;
+    --onaccent: 255 252 245;
+    --accent: 176 88 20;
+    --accent2: 148 72 14;
+    --warn: 150 96 0;
+    --danger: 176 46 38;
+    --dangerbg: 250 232 228;
+    --success: 74 130 74;
+    --accent-glow: 0;
+    --accent-glow-radius: 0px;
+    color-scheme: light;
+  }
+
+  /* 4. 墨绿 · Forest
+       深绿基底：人眼对绿光最敏感、调节负担最小，且绿色在暗色下饱和度低、
+       不易产生「霓虹残留」；适合需要长时间盯屏又不想全黑的场景。 */
+  [data-theme='forest'] {
+    --bg: 15 26 21;
+    --surface: 20 32 26;
+    --panel: 27 43 35;
+    --panel2: 36 56 46;
+    --line: 34 54 45;
+    --display: 223 232 226;
+    --muted: 163 179 170;
+    --dim: 124 143 132;
+    --onaccent: 9 22 16;
+    --accent: 74 222 128;
+    --accent2: 52 190 105;
+    --warn: 230 170 40;
+    --danger: 240 90 80;
+    --dangerbg: 42 20 18;
+    --success: 74 222 128;
+    --accent-glow: 0.25;
+    --accent-glow-radius: 4px;
+    color-scheme: dark;
+  }
+
+  /* 5. 午夜蓝 · Ocean
+       深蓝基底：比纯黑多一点「空间感」，冷色让心率与唤醒度略降，
+       夜间写作既能压住屏幕亮度又不至于压抑；对比度控制在舒适区。 */
+  [data-theme='ocean'] {
+    --bg: 11 18 32;
+    --surface: 17 26 43;
+    --panel: 26 37 64;
+    --panel2: 34 48 80;
+    --line: 34 48 80;
+    --display: 219 230 245;
+    --muted: 159 176 201;
+    --dim: 123 141 176;
+    --onaccent: 8 15 28;
+    --accent: 96 165 250;
+    --accent2: 59 130 246;
+    --warn: 240 180 60;
+    --danger: 248 113 113;
+    --dangerbg: 44 20 24;
+    --success: 52 211 153;
+    --accent-glow: 0.25;
+    --accent-glow-radius: 4px;
+    color-scheme: dark;
+  }
+
+  /* 6. 石墨 · Graphite
+       几乎无彩色：把色彩「奖励信号」降到最低，界面不跟内容抢注意力；
+       对色觉敏感或容易被高饱和 UI 干扰的人最友好，也是最耐看的一套。 */
+  [data-theme='graphite'] {
+    --bg: 23 24 26;
+    --surface: 30 32 35;
+    --panel: 38 41 45;
+    --panel2: 48 52 57;
+    --line: 47 51 56;
+    --display: 223 225 228;
+    --muted: 168 173 181;
+    --dim: 125 131 140;
+    --onaccent: 18 19 21;
+    --accent: 176 190 210;
+    --accent2: 142 157 176;
+    --warn: 214 170 90;
+    --danger: 226 110 110;
+    --dangerbg: 44 26 26;
+    --success: 130 190 150;
+    --accent-glow: 0.18;
+    --accent-glow-radius: 4px;
+    color-scheme: dark;
   }
 
   /* 替换脆弱的 @apply 规则，使用 100% 稳健的 CSS 属性与标准变量 */
   body {
-    background-color: var(--nexus-void);
-    color: var(--text-display);
+    background-color: rgb(var(--bg));
+    color: rgb(var(--display));
     font-family: 'Inter', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -28,8 +192,8 @@
 
   /* 核心选区主题色 */
   ::selection {
-    background-color: rgba(0, 240, 255, 0.3);
-    color: #ffffff;
+    background-color: rgb(var(--accent) / 0.3);
+    color: rgb(var(--display));
   }
 
   /* 移动端基础设置（阶段 1 移动适配）：
@@ -91,17 +255,17 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: rgba(30, 33, 38, 0.3);
+  background: rgb(var(--panel) / 0.3);
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgba(0, 240, 255, 0.3);
+  background: rgb(var(--accent) / 0.3);
   border-radius: 2px;
   transition: background 0.2s ease-in-out;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 240, 255, 0.6);
+  background: rgb(var(--accent) / 0.6);
 }
 
 /* ContentEditable 空白时的占位提示符 (Placeholder) 逻辑。
@@ -117,9 +281,10 @@
 /* 1. 粗体 (Bold)：青色霓虹发光文字 */
 .ce-block b,
 .ce-block strong {
-  color: var(--cyan-glow);
+  color: rgb(var(--accent));
   font-weight: 700;
-  text-shadow: 0 0 4px rgba(0, 240, 255, 0.3);
+  /* 发光只在深色主题下好看；浅色主题靠 --accent-glow 关掉它（由主题变量控制） */
+  text-shadow: 0 0 var(--accent-glow-radius, 4px) rgb(var(--accent) / var(--accent-glow, 0.3));
 }
 
 /* 2. 斜体 (Italic)：琥珀警告色文字 */
@@ -133,7 +298,7 @@
 .ce-block u {
   text-decoration: underline;
   text-underline-offset: 3px;
-  text-decoration-color: rgba(0, 240, 255, 0.6);
+  text-decoration-color: rgb(var(--accent) / 0.6);
 }
 
 /* 4. 删除线 (StrikeThrough)：深色调低对比删除线 */
@@ -144,9 +309,9 @@
   opacity: 0.8;
 }
 
-/* 5. 链接 (Anchor)：青色下划线，带悬停发光动画 */
+/* 5. 链接 (Anchor)：强调色下划线，带悬停发光动画（浅色主题自动关发光） */
 .ce-block a {
-  color: var(--cyan-glow);
+  color: rgb(var(--accent));
   text-decoration: underline;
   text-underline-offset: 4px;
   cursor: pointer;
@@ -154,29 +319,29 @@
 }
 
 .ce-block a:hover {
-  text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+  text-shadow: 0 0 8px rgb(var(--accent) / var(--accent-glow, 0.3));
 }
 
-/* 6. 行内代码块 (Code)：碳素灰底纹配合青色外框与等宽字体 */
+/* 6. 行内代码块 (Code)：淡强调色底纹配合同色外框与等宽字体 */
 .ce-block code {
-  background: rgba(0, 240, 255, 0.08);
-  color: var(--cyan-glow);
+  background: rgb(var(--accent) / 0.08);
+  color: rgb(var(--accent));
   padding: 2px 6px;
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.9em;
-  border: 1px solid rgba(0, 240, 255, 0.15);
+  border: 1px solid rgb(var(--accent) / 0.15);
 }
 
 /* 7. 键盘按键风格 (Keyboard Key)：立体硬件感的小卡片 */
 .ce-block kbd {
-  background: var(--nexus-panel);
-  border: 1px solid #374151;
-  border-bottom: 2px solid #111827;
+  background: rgb(var(--panel));
+  border: 1px solid rgb(var(--line));
+  border-bottom: 2px solid rgb(var(--line));
   padding: 2px 6px;
   border-radius: 3px;
   font-size: 0.85em;
-  color: var(--text-display);
+  color: rgb(var(--display));
   font-family: 'JetBrains Mono', monospace;
 }
 

@@ -1,18 +1,18 @@
 <template>
-  <div class="flex h-viewport w-full bg-[#090a0c] text-[#e5e7eb] font-sans overflow-hidden" @drop="handleGlobalDrop" @dragover.prevent>
+  <div class="flex h-viewport w-full bg-void text-display font-sans overflow-hidden" @drop="handleGlobalDrop" @dragover.prevent>
 
     <!-- 左侧边栏 (Sidebar - Tree & Routing)
          移动端（<768px）变为浮层抽屉：默认移出屏幕，汉堡按钮/遮罩控制开合。
          桌面端保持常驻（md: 断点恢复 static 定位与 translate-x-0）。
          注意：抽屉内所有导航点击都要顺手关抽屉（见 selectPage 系列调用）。 -->
-    <aside class="fixed inset-y-0 left-0 z-40 w-[min(280px,85vw)] bg-[#14161a] border-r border-[#1e2126] flex flex-col shrink-0 transition-transform duration-200 md:relative md:inset-auto md:z-10 md:w-[280px] md:translate-x-0"
+    <aside class="fixed inset-y-0 left-0 z-40 w-[min(280px,85vw)] bg-surface border-r border-line flex flex-col shrink-0 transition-transform duration-200 md:relative md:inset-auto md:z-10 md:w-[280px] md:translate-x-0"
            :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'">
       <!-- pt-safe：原生壳边到边时抽屉从状态栏底下开始，头部避开状态栏；
            非边到边时 env() 恒为 0，无副作用。h-14 改 min-h-14 防止 padding 撑破固定高 -->
-      <div class="min-h-14 pt-safe px-4 flex items-center justify-between border-b border-[#1e2126] shadow-sm shrink-0">
+      <div class="min-h-14 pt-safe px-4 flex items-center justify-between border-b border-line shadow-sm shrink-0">
         <div class="flex items-center gap-2">
-          <span class="w-2 h-2 bg-[#00f0ff] rounded-sm shadow-[0_0_8px_rgba(0,240,255,0.6)] animate-pulse"></span>
-          <span class="font-['Rajdhani',sans-serif] font-bold tracking-widest text-[#e5e7eb] text-sm">NEXUS MATRIX</span>
+          <span class="w-2 h-2 bg-accent rounded-sm shadow-[0_0_8px_rgba(0,240,255,0.6)] animate-pulse"></span>
+          <span class="font-['Rajdhani',sans-serif] font-bold tracking-widest text-display text-sm">NEXUS MATRIX</span>
         </div>
         <div class="flex items-center gap-1">
         <!-- 同步状态指示：点击可手动重试（后端离线时不再无限自动重连） -->
@@ -20,15 +20,15 @@
                 :title="syncStatus === 'online' ? `已同步 · 在线设备 ${onlineDevices}` : (syncStatus === 'connecting' ? '正在连接后端…' : '纯本地模式（数据已存本机）· 点击重试连接')"
                 @click="onSyncIndicatorClick">
           <span class="w-1.5 h-1.5 rounded-full transition-colors"
-                :class="syncStatus === 'online' ? 'bg-[#00f0ff] shadow-[0_0_6px_rgba(0,240,255,0.8)]' : (syncStatus === 'connecting' ? 'bg-[#ffb000]' : 'bg-[#6b7280]')"></span>
-          <span class="text-[10px] font-['JetBrains_Mono',monospace] text-[#6b7280] uppercase">
+                :class="syncStatus === 'online' ? 'bg-accent shadow-[0_0_6px_rgba(0,240,255,0.8)]' : (syncStatus === 'connecting' ? 'bg-warn' : 'bg-dim')"></span>
+          <span class="text-[10px] font-['JetBrains_Mono',monospace] text-dim uppercase">
             {{ syncStatus === 'online' ? 'SYNC' : (syncStatus === 'connecting' ? 'LINK' : 'LOCAL') }}
           </span>
         </button>
         <!-- 设置入口（2026-10-17）：原生底部 Tab 已移除，设置能力收回 Web 侧。
              位置遵循 Notion 移动端的惯例——全局操作在侧边栏右上角，
              页面级操作在内容页的「···」里。触摸目标 44px。 -->
-        <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126] active:text-[#00f0ff] transition-colors"
+        <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim hover:text-accent hover:bg-panel active:text-accent transition-colors"
                 @click="openSettings($event)"
                 title="设置" aria-label="设置">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -40,29 +40,29 @@
       </div>
 
       <!-- 全局搜索：匹配页面标题与正文，点击结果直接跳转 -->
-      <div class="px-2 pb-2 shrink-0 border-b border-[#1e2126]">
+      <div class="px-2 pb-2 shrink-0 border-b border-line">
         <div class="relative">
-          <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6b7280] pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+          <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-dim pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
           <input v-model="searchQuery" type="text" placeholder="搜索标题或正文…  (Ctrl+Shift+F)"
-                 class="w-full bg-[#090a0c] border border-[#1e2126] focus:border-[#00f0ff] outline-none pl-7 pr-2 py-1.5 text-sm text-[#e5e7eb] rounded-sm transition-colors placeholder:text-[#6b7280]/60" />
-          <button v-if="searchQuery" @click="searchQuery = ''" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-[#6b7280] hover:text-[#e5e7eb] transition-colors" title="清空">
+                 class="w-full bg-void border border-line focus:border-accent outline-none pl-7 pr-2 py-1.5 text-sm text-display rounded-sm transition-colors placeholder:text-dim/60" />
+          <button v-if="searchQuery" @click="searchQuery = ''" class="absolute right-1.5 top-1/2 -translate-y-1/2 text-dim hover:text-display transition-colors" title="清空">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
         <!-- 搜索结果 -->
         <div v-if="searchQuery.trim()" class="mt-2 max-h-[280px] overflow-y-auto custom-scrollbar space-y-0.5">
-          <div v-if="searchResults.length === 0" class="text-xs text-[#6b7280] py-3 text-center">无匹配结果</div>
+          <div v-if="searchResults.length === 0" class="text-xs text-dim py-3 text-center">无匹配结果</div>
           <div v-for="r in searchResults" :key="'sr-'+r.page.id"
                @click="selectPage(r.page.id); searchQuery = ''"
-               class="px-2 py-1.5 rounded-sm cursor-pointer transition-colors hover:bg-[#1e2126]/60 group">
-            <div class="flex items-center gap-1.5 text-sm text-[#e5e7eb] truncate">
+               class="px-2 py-1.5 rounded-sm cursor-pointer transition-colors hover:bg-panel/60 group">
+            <div class="flex items-center gap-1.5 text-sm text-display truncate">
               <span v-if="r.page.icon" class="shrink-0">{{ r.page.icon }}</span>
-              <svg v-else class="w-3.5 h-3.5 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <svg v-else class="w-3.5 h-3.5 shrink-0 text-dim" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
               <!-- 标题命中时 snippet 就是带高亮的标题，直接渲染，不再重复显示纯文本标题 -->
               <span v-if="r.isTitleHit" class="truncate" v-html="r.snippet"></span>
               <span v-else class="truncate">{{ r.page.title || '无标题' }}</span>
             </div>
-            <div v-if="!r.isTitleHit && r.snippet" class="text-xs text-[#6b7280] truncate pl-5 mt-0.5" v-html="r.snippet"></div>
+            <div v-if="!r.isTitleHit && r.snippet" class="text-xs text-dim truncate pl-5 mt-0.5" v-html="r.snippet"></div>
           </div>
         </div>
       </div>
@@ -70,15 +70,15 @@
       <div class="flex-1 py-4 space-y-6 custom-scrollbar" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'">
         <!-- 最近访问（Notion 的 Recent）：本地记录、按访问倒序 -->
         <div v-if="recentPages.length > 0">
-          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">最近</div>
+          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-dim mb-1 px-4 uppercase tracking-wider font-bold">最近</div>
           <div class="space-y-0.5 px-2">
             <div v-for="page in recentPages" :key="'recent-'+page.id"
                  @click="selectPage(page.id)"
                  class="group flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer transition-colors"
-                 :class="activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50'">
+                 :class="activePageId === page.id ? 'bg-panel text-accent' : 'text-dim hover:bg-panel/50'">
               <div class="flex items-center gap-2 truncate">
                 <span v-if="page.icon" class="shrink-0">{{ page.icon }}</span>
-                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <svg v-else class="w-4 h-4 shrink-0 text-dim" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                 <span class="text-sm truncate font-medium">{{ page.title || '无标题' }}</span>
               </div>
             </div>
@@ -87,14 +87,14 @@
 
         <!-- 收藏的子程序 -->
         <div v-if="favoritePages.length > 0">
-          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">最爱</div>
+          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-dim mb-1 px-4 uppercase tracking-wider font-bold">最爱</div>
           <div class="space-y-0.5 px-2">
             <div v-for="page in favoritePages" :key="'fav-'+page.id"
                  @click="selectPage(page.id)"
                  class="group flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer transition-colors"
-                 :class="activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50'">
+                 :class="activePageId === page.id ? 'bg-panel text-accent' : 'text-dim hover:bg-panel/50'">
               <div class="flex items-center gap-2 truncate">
-                <svg class="w-4 h-4 shrink-0 text-[#ffb000]" fill="currentColor" viewBox="0 0 24 24" stroke="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                <svg class="w-4 h-4 shrink-0 text-warn" fill="currentColor" viewBox="0 0 24 24" stroke="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
                 <span class="text-sm truncate font-medium">{{ page.title || '无标题' }}</span>
               </div>
             </div>
@@ -103,19 +103,19 @@
 
         <!-- 模板区（isTemplate 页从私人空间树隐藏，收在这里；点 + 用模板新建页面） -->
         <div v-if="templatePages.length > 0">
-          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">模板</div>
+          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-dim mb-1 px-4 uppercase tracking-wider font-bold">模板</div>
           <div class="space-y-0.5 px-2">
-            <div v-for="tpl in templatePages" :key="'tpl-'+tpl.id" class="group flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-[#1e2126]/50">
+            <div v-for="tpl in templatePages" :key="'tpl-'+tpl.id" class="group flex items-center justify-between px-2 py-1.5 rounded-md hover:bg-panel/50">
               <div class="flex items-center gap-2 truncate cursor-pointer" @click="createFromTemplate(tpl.id)">
                 <span v-if="tpl.icon" class="shrink-0">{{ tpl.icon }}</span>
-                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                <span class="text-sm truncate font-medium text-[#9ca3af]">{{ tpl.title || '无标题' }}</span>
+                <svg v-else class="w-4 h-4 shrink-0 text-dim" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span class="text-sm truncate font-medium text-muted">{{ tpl.title || '无标题' }}</span>
               </div>
               <div class="flex items-center gap-0.5 shrink-0 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                <button @click.stop="createFromTemplate(tpl.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#00f0ff] transition-colors" title="使用模板新建页面">
+                <button @click.stop="createFromTemplate(tpl.id)" class="p-2.5 md:p-1 text-dim active:text-accent transition-colors" title="使用模板新建页面">
                   <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 </button>
-                <button @click.stop="unmakeTemplate(tpl.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#e5e7eb] transition-colors" title="取消模板（恢复为普通页面）">
+                <button @click.stop="unmakeTemplate(tpl.id)" class="p-2.5 md:p-1 text-dim active:text-display transition-colors" title="取消模板（恢复为普通页面）">
                   <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
@@ -125,10 +125,10 @@
 
         <!-- 私人空间树状视图 -->
         <div>
-          <div class="flex items-center justify-between text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold group">
+          <div class="flex items-center justify-between text-[11px] font-['JetBrains_Mono',monospace] text-dim mb-1 px-4 uppercase tracking-wider font-bold group">
             <span>私人</span>
             <!-- 新建根页面：桌面端 hover 才浮出；触屏无 hover，必须常驻可见 -->
-            <button @click="createPage(null)" class="opacity-100 md:opacity-0 md:group-hover:opacity-100 active:text-[#00f0ff] transition-all p-2 md:p-0 -mr-2 md:mr-0" title="新建根页面" aria-label="新建根页面">
+            <button @click="createPage(null)" class="opacity-100 md:opacity-0 md:group-hover:opacity-100 active:text-accent transition-all p-2 md:p-0 -mr-2 md:mr-0" title="新建根页面" aria-label="新建根页面">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
             </button>
           </div>
@@ -139,11 +139,11 @@
                  :style="{ paddingLeft: `${page.depth * 0.75 + 0.25}rem` }"
                  class="group relative flex items-center justify-between py-1.5 pr-2 rounded-md cursor-pointer transition-colors"
                  :class="[
-                   activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50',
+                   activePageId === page.id ? 'bg-panel text-accent' : 'text-dim hover:bg-panel/50',
                    draggedPageId === page.id ? 'opacity-40' : '',
-                   dragOverPageId === page.id && pageDropPosition === 'top' ? 'shadow-[inset_0_2px_0_0_#00f0ff] bg-[#1e2126]/60' : '',
-                   dragOverPageId === page.id && pageDropPosition === 'bottom' ? 'shadow-[inset_0_-2px_0_0_#00f0ff] bg-[#1e2126]/60' : '',
-                   dragOverPageId === page.id && pageDropPosition === 'child' ? 'ring-1 ring-[#00f0ff]/70 bg-[#00f0ff]/10' : '',
+                   dragOverPageId === page.id && pageDropPosition === 'top' ? 'shadow-[inset_0_2px_0_0_var(--cyan-glow)] bg-panel/60' : '',
+                   dragOverPageId === page.id && pageDropPosition === 'bottom' ? 'shadow-[inset_0_-2px_0_0_var(--cyan-glow)] bg-panel/60' : '',
+                   dragOverPageId === page.id && pageDropPosition === 'child' ? 'ring-1 ring-accent/70 bg-accent/10' : '',
                  ]"
                  :draggable="!isCoarsePointer"
                  @dragstart="onPageDragStart($event, page)"
@@ -154,14 +154,14 @@
                  @touchstart.stop="onPageHandleTouchStart(page, $event)">
               
               <div class="flex items-center gap-1.5 truncate">
-                <button @click.stop="toggleExpand(page.id)" class="w-8 h-8 md:w-5 md:h-5 flex items-center justify-center shrink-0 active:bg-[#1e2126] rounded text-[#6b7280] transition-colors" aria-label="展开或折叠子页面">
+                <button @click.stop="toggleExpand(page.id)" class="w-8 h-8 md:w-5 md:h-5 flex items-center justify-center shrink-0 active:bg-panel rounded text-dim transition-colors" aria-label="展开或折叠子页面">
                   <svg v-if="page.hasChildren" class="w-3 h-3 transition-transform duration-200" :class="{'rotate-90': page.isExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
                   <div v-else class="w-3 h-3"></div> 
                 </button>
                 <!-- 文档图标：有图标显示 emoji，无图标显示默认文件图标。
                      点击即可设置（对齐 Notion：图标是页面的第一公民） -->
-                <span class="w-4 h-4 flex items-center justify-center shrink-0 text-[15px] leading-none cursor-pointer rounded-sm hover:bg-[#1e2126] transition-colors"
-                      :class="page.icon ? '' : 'text-[#6b7280]'"
+                <span class="w-4 h-4 flex items-center justify-center shrink-0 text-[15px] leading-none cursor-pointer rounded-sm hover:bg-panel transition-colors"
+                      :class="page.icon ? '' : 'text-dim'"
                       :title="page.icon ? `图标：${page.icon}（点击修改）` : '点击设置文档图标'"
                       @click.stop="openIconPicker(page.id, $event)">
                   <template v-if="page.icon">{{ page.icon }}</template>
@@ -172,14 +172,14 @@
               
               <!-- 行内操作组：桌面端 hover 浮出；触屏无 hover，常驻可见（Notion 移动端同理：
                    hover 收纳的控件在触屏一律常驻）。桌面端仅激活页常驻的行为不变 -->
-              <div class="flex items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity gap-0.5 shrink-0 bg-[#1e2126] rounded px-1 shadow-sm" :class="activePageId === page.id ? 'md:opacity-100' : ''">
-                <button @click.stop="toggleFavorite(page.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#ffb000] transition-colors" title="收藏" aria-label="收藏">
-                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" :fill="page.isFavorite ? 'currentColor' : 'none'" :class="page.isFavorite ? 'text-[#ffb000]' : ''" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+              <div class="flex items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity gap-0.5 shrink-0 bg-panel rounded px-1 shadow-sm" :class="activePageId === page.id ? 'md:opacity-100' : ''">
+                <button @click.stop="toggleFavorite(page.id)" class="p-2.5 md:p-1 text-dim active:text-warn transition-colors" title="收藏" aria-label="收藏">
+                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" :fill="page.isFavorite ? 'currentColor' : 'none'" :class="page.isFavorite ? 'text-warn' : ''" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
                 </button>
-                <button @click.stop="createPage(page.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#00f0ff] transition-colors" title="新建子页面" aria-label="新建子页面">
+                <button @click.stop="createPage(page.id)" class="p-2.5 md:p-1 text-dim active:text-accent transition-colors" title="新建子页面" aria-label="新建子页面">
                   <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 </button>
-                <button @click.stop="deletePage(page.id)" class="p-2.5 md:p-1 text-[#6b7280] active:text-[#ff2a2a] transition-colors" v-if="pages.length > 1" title="删除" aria-label="删除页面">
+                <button @click.stop="deletePage(page.id)" class="p-2.5 md:p-1 text-dim active:text-danger transition-colors" v-if="pages.length > 1" title="删除" aria-label="删除页面">
                   <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                 </button>
               </div>
@@ -190,13 +190,13 @@
 
       <!-- 回收站入口（aside 底部固定）：已删除页面可在此恢复或彻底删除 -->
       <button @click="openTrash"
-              class="shrink-0 mx-2 mb-2 px-3 py-2 flex items-center justify-between rounded-md text-[#6b7280] hover:bg-[#1e2126] hover:text-[#e5e7eb] transition-colors border-t border-[#1e2126]"
+              class="shrink-0 mx-2 mb-2 px-3 py-2 flex items-center justify-between rounded-md text-dim hover:bg-panel hover:text-display transition-colors border-t border-line"
               title="回收站">
         <span class="flex items-center gap-2 text-sm">
           <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
           回收站
         </span>
-        <span v-if="trashedPages.length" class="text-[10px] font-['JetBrains_Mono',monospace] text-[#6b7280]">{{ trashedPages.length }}</span>
+        <span v-if="trashedPages.length" class="text-[10px] font-['JetBrains_Mono',monospace] text-dim">{{ trashedPages.length }}</span>
       </button>
     </aside>
 
@@ -206,7 +206,7 @@
     <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
     <Transition name="page-fade" mode="out-in">
     <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
-      <div class="w-full h-1 bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
+      <div class="w-full h-1 bg-accent shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
            高度按图片自然比例自适应（clamp 200~420px），而非固定 240px ——
@@ -224,24 +224,24 @@
         <div class="absolute top-3 right-4 pt-safe flex items-center gap-1.5 transition-opacity z-10"
              :class="coverTouched || coverDragging ? 'opacity-100' : 'opacity-0 group-hover/cover:opacity-100'">
           <button @click.stop="openCoverPicker($event)"
-                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#e5e7eb] active:text-[#00f0ff] active:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
+                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-display active:text-accent active:border-accent rounded-sm transition-colors backdrop-blur-sm">
             更换封面
           </button>
           <button @click.stop="removeCover"
-                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] active:text-[#ff2a2a] active:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
+                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-dim active:text-danger active:border-danger rounded-sm transition-colors backdrop-blur-sm">
             移除
           </button>
         </div>
         <!-- 拖动取景提示：仅在 hover 时淡入，不干扰日常浏览 -->
-        <div class="absolute bottom-2 left-4 text-[10px] text-[#e5e7eb]/50 opacity-0 group-hover/cover:opacity-100 transition-opacity pointer-events-none">
+        <div class="absolute bottom-2 left-4 text-[10px] text-display/50 opacity-0 group-hover/cover:opacity-100 transition-opacity pointer-events-none">
           拖动可重新取景
         </div>
         <!-- 摄影师署名（Unsplash 等图库的硬性合规要求） -->
-        <div v-if="coverCredit" class="absolute bottom-2 right-4 text-[10px] text-[#e5e7eb]/70 backdrop-blur-sm bg-[#090a0c]/60 px-2 py-0.5 rounded-sm">
+        <div v-if="coverCredit" class="absolute bottom-2 right-4 text-[10px] text-display/70 backdrop-blur-sm bg-void/60 px-2 py-0.5 rounded-sm">
           Photo by
-          <a :href="coverCredit.authorUrl" target="_blank" rel="noopener" class="text-[#00f0ff] hover:underline">{{ coverCredit.author }}</a>
+          <a :href="coverCredit.authorUrl" target="_blank" rel="noopener" class="text-accent hover:underline">{{ coverCredit.author }}</a>
           on
-          <a :href="coverCredit.sourceUrl" target="_blank" rel="noopener" class="text-[#00f0ff] hover:underline">{{ coverCredit.source }}</a>
+          <a :href="coverCredit.sourceUrl" target="_blank" rel="noopener" class="text-accent hover:underline">{{ coverCredit.source }}</a>
         </div>
       </div>
 
@@ -255,28 +255,28 @@
         <!-- 面包屑 + 添加入口（无封面时才显示，避免与封面操作条重复）。
              移动端左侧放汉堡按钮唤出抽屉（桌面端隐藏，侧边栏常驻） -->
         <div class="flex items-start justify-between gap-4 mb-6 md:mb-8">
-          <div class="flex items-center gap-1 md:gap-2 text-xs font-['JetBrains_Mono',monospace] text-[#6b7280] min-w-0">
+          <div class="flex items-center gap-1 md:gap-2 text-xs font-['JetBrains_Mono',monospace] text-dim min-w-0">
             <!-- 汉堡按钮：44px 触摸目标；only 移动端显示。
                  -ml-2 已移除：旧 pl-16(64px) 边距下的光学补偿，现 pl-4(16px) 满幅布局不需要 -->
-            <button class="md:hidden shrink-0 w-11 h-11 flex items-center justify-center rounded-sm text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] transition-colors"
+            <button class="md:hidden shrink-0 w-11 h-11 flex items-center justify-center rounded-sm text-dim active:text-accent active:bg-panel transition-colors"
                     @click="sidebarOpen = true" title="打开页面列表" aria-label="打开页面列表">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
             </button>
             <template v-if="activePageBreadcrumbs.length > 0">
              <template v-for="(crumb, idx) in activePageBreadcrumbs" :key="crumb.id">
-                <span class="hover:text-[#e5e7eb] active:text-[#e5e7eb] cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id"><span v-if="crumb.icon" class="mr-1">{{ crumb.icon }}</span>{{ crumb.title || '无标题' }}</span>
+                <span class="hover:text-display active:text-display cursor-pointer transition-colors truncate max-w-[150px]" @click="activePageId = crumb.id"><span v-if="crumb.icon" class="mr-1">{{ crumb.icon }}</span>{{ crumb.title || '无标题' }}</span>
                 <span v-if="idx < activePageBreadcrumbs.length - 1" class="opacity-50">/</span>
              </template>
             </template>
           </div>
           <button v-if="!activePage.cover" @click="openCoverPicker($event)"
-                  class="shrink-0 flex items-center gap-1.5 px-3 py-2 md:px-2 md:py-1 text-xs text-[#6b7280] active:text-[#00f0ff] rounded-sm transition-colors"
+                  class="shrink-0 flex items-center gap-1.5 px-3 py-2 md:px-2 md:py-1 text-xs text-dim active:text-accent rounded-sm transition-colors"
                   title="设置页眉封面">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
             添加封面
           </button>
           <!-- 页面级「···」菜单入口（对齐 Notion：页面操作收敛到内容页右上角） -->
-          <button class="shrink-0 w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] active:text-[#00f0ff] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors"
+          <button class="shrink-0 w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim active:text-accent hover:text-display hover:bg-panel transition-colors"
                   @click="openPageMenu($event)" title="页面操作" aria-label="页面操作">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="19" cy="12" r="2"></circle></svg>
           </button>
@@ -287,7 +287,7 @@
         <div class="mb-2 -ml-1">
           <button ref="titleIconBtnRef"
                   class="w-16 h-16 flex items-center justify-center rounded-md transition-colors group/icon"
-                  :class="activePage.icon ? 'text-[64px] leading-none hover:bg-[#1e2126]/50' : 'text-[#6b7280] hover:text-[#00f0ff] hover:bg-[#1e2126]/50'"
+                  :class="activePage.icon ? 'text-[64px] leading-none hover:bg-panel/50' : 'text-dim hover:text-accent hover:bg-panel/50'"
                   :title="activePage.icon ? `文档图标：${activePage.icon}（点击修改）` : '添加文档图标'"
                   @click="openIconPicker(activePage.id, $event)">
             <template v-if="activePage.icon">{{ activePage.icon }}</template>
@@ -303,7 +303,7 @@
         <input ref="titleInputRef" type="text" v-model="activePage.title" 
                placeholder="无标题"
                @keydown="handleTitleKeyDown"
-               class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-5xl font-bold tracking-tight text-[#e5e7eb] placeholder-[#6b7280]/30 mb-10 pb-4 border-b border-[#1e2126]" />
+               class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-5xl font-bold tracking-tight text-display placeholder-dim/30 mb-10 pb-4 border-b border-line" />
 
         <div class="flex-1 relative pb-32" @click="handleEmptyClick">
           
@@ -313,12 +313,12 @@
                :style="{ marginLeft: `${(task.indentLevel || 0) * 1.5}rem` }"
                :class="{ 
                  'opacity-50': task.completed && task.type === 'todo',
-                 'hover:bg-[#1e2126]/40': draggedTaskId !== task.id,
-                 'opacity-30 scale-[0.98] border border-dashed border-[#6b7280]/50': draggedTaskId === task.id,
-                 'shadow-[inset_0_2px_0_0_#00f0ff] bg-[#1e2126]/30': dragOverTaskId === task.id && dropPosition === 'top',
-                 'shadow-[inset_0_-2px_0_0_#00f0ff] bg-[#1e2126]/30': dragOverTaskId === task.id && dropPosition === 'bottom',
-                 'ring-1 ring-[#00f0ff]/70 bg-[#00f0ff]/5': selectedTaskIds.has(task.id),
-                 'bg-[#14161a]/70 rounded-md': task.type === 'callout'
+                 'hover:bg-panel/40': draggedTaskId !== task.id,
+                 'opacity-30 scale-[0.98] border border-dashed border-dim/50': draggedTaskId === task.id,
+                 'shadow-[inset_0_2px_0_0_var(--cyan-glow)] bg-panel/30': dragOverTaskId === task.id && dropPosition === 'top',
+                 'shadow-[inset_0_-2px_0_0_var(--cyan-glow)] bg-panel/30': dragOverTaskId === task.id && dropPosition === 'bottom',
+                 'ring-1 ring-accent/70 bg-accent/5': selectedTaskIds.has(task.id),
+                 'bg-surface/70 rounded-md': task.type === 'callout'
                }"
                :draggable="draggableTaskId === task.id"
                @dragstart="handleDragStart($event, task)"
@@ -328,7 +328,7 @@
                @dragend="handleDragEnd">
             
             <!-- 缩进引导线 (Guide Line) -->
-            <div v-if="(task.indentLevel || 0) > 0" class="absolute -left-4 top-0 bottom-0 w-[2px] bg-[#1e2126] rounded-full group-hover:bg-[#00f0ff]/30 transition-colors"></div>
+            <div v-if="(task.indentLevel || 0) > 0" class="absolute -left-4 top-0 bottom-0 w-[2px] bg-panel rounded-full group-hover:bg-accent/30 transition-colors"></div>
 
             <!-- 左槽（统一垂直对齐容器）：把「+号 / 拖拽点 / 块类型标记」收进同一个 flex 容器，
                  使它们与右侧文字首行的水平中线严格对齐。
@@ -367,7 +367,7 @@
                      :class="{ 'is-active': focusedTaskId === task.id }"
                      draggable="false">
                   <!-- 「+」插入按钮在移动端隐藏：外槽放不下，插入块用回车即可（Notion 移动端同样没有该按钮） -->
-                  <span class="hidden md:inline-flex items-center justify-center w-9 h-9 md:w-7 md:h-7 cursor-pointer text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] rounded transition-colors"
+                  <span class="hidden md:inline-flex items-center justify-center w-9 h-9 md:w-7 md:h-7 cursor-pointer text-dim active:text-accent active:bg-panel rounded transition-colors"
                         draggable="false"
                         @mousedown.stop.prevent="onInsertMouseDown(task.id, $event)"
                         @touchstart.stop.prevent="insertTask(task.id, 'below')"
@@ -380,7 +380,7 @@
                   <!-- 桌面：拖拽排序手柄 + 点击操作菜单；触屏：仅作操作菜单入口（拖拽排序为桌面专属，
                        触屏下显式降级，避免制造无法触达的桌面交互，与 Notion 移动端一致） -->
                   <div :class="isCoarsePointer ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'"
-                       class="text-[#6b7280] active:text-[#e5e7eb] p-2.5 md:p-1 select-none"
+                       class="text-dim active:text-display p-2.5 md:p-1 select-none"
                        @mousedown="!isCoarsePointer && (draggableTaskId = task.id)"
                        @mouseup="draggableTaskId = null"
                        @mouseleave="draggableTaskId = null"
@@ -399,14 +399,14 @@
                      例外：todo 的复选框不在槽内 —— Notion 的复选框与其它行文字左缘平齐、
                      文字跟在其后，故渲染在正文流内（见下方 EDITABLE_TYPES 前）。 -->
                 <div v-if="task.type === 'bullet'" class="w-5 flex items-center justify-center">
-                  <div class="w-1.5 h-1.5 rounded-full bg-[#00f0ff]/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
+                  <div class="w-1.5 h-1.5 rounded-full bg-accent/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
                 </div>
                 <div v-else-if="task.type === 'numbered'" class="w-5 flex items-center justify-end">
-                  <span class="font-['JetBrains_Mono',monospace] text-[13px] text-[#00f0ff]/80 select-none">{{ getNumberedIndex(task) }}.</span>
+                  <span class="font-['JetBrains_Mono',monospace] text-[13px] text-accent/80 select-none">{{ getNumberedIndex(task) }}.</span>
                 </div>
                 <button v-else-if="isCollapsible(task)"
                         @click="toggleCollapse(task)"
-                        class="relative w-5 h-5 flex items-center justify-center text-[#6b7280] active:text-[#00f0ff] active:bg-[#1e2126] rounded transition-colors before:absolute before:-inset-2 before:content-['']"
+                        class="relative w-5 h-5 flex items-center justify-center text-dim active:text-accent active:bg-panel rounded transition-colors before:absolute before:-inset-2 before:content-['']"
                         :class="task.payload?.collapsed ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100'"
                         :title="task.payload?.collapsed ? '展开' : '折叠'">
                   <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
@@ -418,7 +418,7 @@
             </div>
 
             <!-- 引用竖线：装饰元素，贴在文字左侧（quote 的 flex-1 有 pl-4 让出空间） -->
-            <div v-if="task.type === 'quote'" class="absolute -left-4 top-2 bottom-2 w-0.5 bg-[#ffb000] rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
+            <div v-if="task.type === 'quote'" class="absolute -left-4 top-2 bottom-2 w-0.5 bg-warn rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
 
             <!-- todo 复选框：正文流内、压在正文左缘（对齐 Notion——复选框与其它行文字平齐，
                  待办文字跟在复选框右侧）。垂直对齐复用手柄槽的同款方案：
@@ -426,9 +426,9 @@
             <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-relaxed" :class="getFontSizeClass(task)">
               <div class="relative w-5 h-5 flex items-center justify-center">
                 <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
-                       class="peer appearance-none w-5 h-5 border-2 border-[#1e2126] bg-[#090a0c] checked:border-[#00f0ff] checked:bg-[#00f0ff]/20 cursor-pointer transition-all rounded-none outline-none"
+                       class="peer appearance-none w-5 h-5 border-2 border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
                        style="clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px)" />
-                <svg class="absolute w-3.5 h-3.5 text-[#00f0ff] pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                <svg class="absolute w-3.5 h-3.5 text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
                   <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
@@ -456,24 +456,24 @@
 
             <!-- 提及菜单：[[ 唤出页面链接（对齐 Notion 的双向链接入口） -->
             <div v-if="mentionTaskId === task.id"
-                 class="absolute left-0 w-64 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm z-50 flex flex-col overflow-hidden"
+                 class="absolute left-0 w-64 bg-void border border-line shadow-2xl rounded-sm z-50 flex flex-col overflow-hidden"
                  :class="slashMenuPosition === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'">
-              <div class="px-3 py-2 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] bg-[#090a0c] z-10 border-b border-[#1e2126]/50 shadow-sm shrink-0">
+              <div class="px-3 py-2 text-xs text-dim uppercase tracking-wider font-['Rajdhani',sans-serif] bg-void z-10 border-b border-line/50 shadow-sm shrink-0">
                 {{ filteredMentionPages.length > 0 ? '链接到页面' : '无匹配页面' }}
               </div>
               <div class="overflow-y-auto max-h-[220px] py-1 custom-scrollbar">
                 <div v-for="(page, idx) in filteredMentionPages" :key="page.id"
                      @mousedown.prevent="insertPageLink(task.id, page.id)"
                      class="flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors"
-                     :class="idx === mentionIndex ? 'bg-[#1e2126]/80' : 'hover:bg-[#1e2126]/40'">
+                     :class="idx === mentionIndex ? 'bg-panel/80' : 'hover:bg-panel/40'">
                   <span v-if="page.icon" class="text-[15px] leading-none shrink-0">{{ page.icon }}</span>
                   <svg v-else class="w-4 h-4 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                  <span class="text-sm truncate" :class="idx === mentionIndex ? 'text-[#00f0ff]' : 'text-[#e5e7eb]'">{{ page.title || '无标题' }}</span>
+                  <span class="text-sm truncate" :class="idx === mentionIndex ? 'text-accent' : 'text-display'">{{ page.title || '无标题' }}</span>
                 </div>
                 <div v-if="filteredMentionPages.length === 0"
                      @mousedown.prevent="insertPageLink(task.id, null)"
-                     class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[#1e2126]/40">
-                  <span class="text-sm text-[#6b7280]">+ 新建页面「{{ mentionQuery }}」并链接</span>
+                     class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-panel/40">
+                  <span class="text-sm text-dim">+ 新建页面「{{ mentionQuery }}」并链接</span>
                 </div>
               </div>
             </div>
@@ -488,7 +488,7 @@
                  @keydown.backspace.prevent="deleteBlockAndFocus(task)"
                  @keydown.delete.prevent="deleteBlockAndFocus(task)">
               <img v-if="task.payload?.url" :src="resolveAssetUrl(task.payload.url)"
-                   class="max-w-full rounded-md border border-[#1e2126] shadow-sm object-contain max-h-[500px] block" />
+                   class="max-w-full rounded-md border border-line shadow-sm object-contain max-h-[500px] block" />
               <!-- 图片操作浮层：替换 / 删除。
                    desktop 靠 hover，触屏无 hover 故点击后（selectedMediaId）常驻显示 -->
               <div v-if="task.payload?.url"
@@ -497,40 +497,40 @@
                 <button @mousedown.stop.prevent="triggerImageUpload(task.id)"
                         @touchstart.stop.prevent="triggerImageUpload(task.id)"
                         title="替换图片"
-                        class="w-9 h-9 md:w-7 md:h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#00f0ff] hover:border-[#00f0ff] rounded-sm transition-colors backdrop-blur-sm">
+                        class="w-9 h-9 md:w-7 md:h-7 flex items-center justify-center bg-void/90 border border-line text-dim hover:text-accent hover:border-accent rounded-sm transition-colors backdrop-blur-sm">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-9 9c-9 9-9 0 0-9 9-9 9 0 0-9z"></path><path d="M21 3v6h-6"></path><path d="M3 21v-6h6"></path></svg>
                 </button>
                 <button @mousedown.stop.prevent="deleteBlockAndFocus(task)"
                         @touchstart.stop.prevent="deleteBlockAndFocus(task)"
                         title="删除图片"
-                        class="w-9 h-9 md:w-7 md:h-7 flex items-center justify-center bg-[#090a0c]/90 border border-[#1e2126] text-[#6b7280] hover:text-[#ff2a2a] hover:border-[#ff2a2a] rounded-sm transition-colors backdrop-blur-sm">
+                        class="w-9 h-9 md:w-7 md:h-7 flex items-center justify-center bg-void/90 border border-line text-dim hover:text-danger hover:border-danger rounded-sm transition-colors backdrop-blur-sm">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
               </div>
-              <div v-else class="w-full h-32 border-2 border-dashed border-[#1e2126] bg-[#14161a] hover:bg-[#1e2126]/50 flex flex-col items-center justify-center rounded-md cursor-pointer hover:border-[#00f0ff] transition-all" @click="triggerImageUpload(task.id)">
-                  <svg class="w-8 h-8 text-[#6b7280] mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                  <span class="text-sm font-['JetBrains_Mono',monospace] text-[#6b7280]">点击选择图片，或拖拽文件至屏幕任意位置</span>
+              <div v-else class="w-full h-32 border-2 border-dashed border-line bg-surface hover:bg-panel/50 flex flex-col items-center justify-center rounded-md cursor-pointer hover:border-accent transition-all" @click="triggerImageUpload(task.id)">
+                  <svg class="w-8 h-8 text-dim mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                  <span class="text-sm font-['JetBrains_Mono',monospace] text-dim">点击选择图片，或拖拽文件至屏幕任意位置</span>
               </div>
               <!-- 上传输入框常驻：既服务初始上传，也服务「替换图片」 -->
               <input type="file" :id="'img-upload-'+task.id" class="hidden" @change="(e) => handleImageUpload(e, task.id)" accept="image/*">
             </div>
 
             <!-- 多行代码容器 (Code Block) -->
-            <div v-else-if="task.type === 'codeblock'" class="flex-1 mt-1 bg-[#090a0c] border border-[#1e2126] rounded-md overflow-hidden font-['JetBrains_Mono',monospace] shadow-inner relative group/code">
-              <div class="flex items-center justify-between px-4 py-2 bg-[#14161a] border-b border-[#1e2126]">
+            <div v-else-if="task.type === 'codeblock'" class="flex-1 mt-1 bg-void border border-line rounded-md overflow-hidden font-['JetBrains_Mono',monospace] shadow-inner relative group/code">
+              <div class="flex items-center justify-between px-4 py-2 bg-surface border-b border-line">
                   <div class="flex items-center gap-2">
-                    <span class="w-2.5 h-2.5 rounded-full bg-[#ff2a2a]/80"></span>
-                    <span class="w-2.5 h-2.5 rounded-full bg-[#ffb000]/80"></span>
-                    <span class="w-2.5 h-2.5 rounded-full bg-[#00f0ff]/80"></span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-danger/80"></span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-warn/80"></span>
+                    <span class="w-2.5 h-2.5 rounded-full bg-accent/80"></span>
                   </div>
-                  <select v-model="task.payload.language" class="bg-transparent text-xs font-bold text-[#6b7280] hover:text-[#00f0ff] outline-none cursor-pointer uppercase tracking-wider">
+                  <select v-model="task.payload.language" class="bg-transparent text-xs font-bold text-dim hover:text-accent outline-none cursor-pointer uppercase tracking-wider">
                     <option value="javascript">JavaScript</option>
                     <option value="python">Python</option>
                     <option value="vue">Vue / HTML</option>
                     <option value="rust">Rust</option>
                   </select>
               </div>
-              <textarea v-model="task.payload.code" @keydown.tab.prevent="insertTabInCode($event, task)" class="w-full bg-transparent text-[#00f0ff] p-4 text-sm outline-none resize-y min-h-[120px] custom-scrollbar leading-relaxed" placeholder="// TYPE YOUR DIRECTIVES HERE..."></textarea>
+              <textarea v-model="task.payload.code" @keydown.tab.prevent="insertTabInCode($event, task)" class="w-full bg-transparent text-accent p-4 text-sm outline-none resize-y min-h-[120px] custom-scrollbar leading-relaxed" placeholder="// TYPE YOUR DIRECTIVES HERE..."></textarea>
             </div>
 
             <!-- 可视化看板 (Kanban / Database)。
@@ -539,17 +539,17 @@
                  桌面端维持横排三列 + 横向滚动。 -->
             <div v-else-if="task.type === 'kanban'" class="flex-1 mt-1 overflow-x-auto custom-scrollbar pb-4 pt-2 md:overflow-x-auto">
                <div class="flex flex-col gap-4 px-1 md:flex-row md:gap-4 md:min-w-max md:px-1">
-                   <div v-for="col in task.payload.columns" :key="col.id" class="w-full md:w-64 bg-[#14161a] border border-[#1e2126] rounded-md flex flex-col p-3 shrink-0 shadow-lg">
+                   <div v-for="col in task.payload.columns" :key="col.id" class="w-full md:w-64 bg-surface border border-line rounded-md flex flex-col p-3 shrink-0 shadow-lg">
                        <div class="flex items-center justify-between mb-3 px-1">
-                          <div class="text-sm font-bold font-['Rajdhani',sans-serif] text-[#e5e7eb] tracking-wide">{{col.title}}</div>
-                          <div class="text-xs bg-[#1e2126] text-[#6b7280] px-2 rounded-full">{{ col.cards.length }}</div>
+                          <div class="text-sm font-bold font-['Rajdhani',sans-serif] text-display tracking-wide">{{col.title}}</div>
+                          <div class="text-xs bg-panel text-dim px-2 rounded-full">{{ col.cards.length }}</div>
                        </div>
                        <div class="flex flex-col gap-2 flex-1">
-                           <div v-for="(card, cIdx) in col.cards" :key="card.id" class="bg-[#1e2126] border border-[#374151]/50 p-2.5 rounded-sm text-sm text-[#e5e7eb] shadow-sm relative group/card">
+                           <div v-for="(card, cIdx) in col.cards" :key="card.id" class="bg-panel border border-line/50 p-2.5 rounded-sm text-sm text-display shadow-sm relative group/card">
                                {{card.text}}
-                               <button @click="deleteKanbanCard(task, col, Number(cIdx))" class="absolute top-1 right-1 p-1 opacity-0 group-hover/card:opacity-100 text-[#6b7280] hover:text-[#ff2a2a] transition-all"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+                               <button @click="deleteKanbanCard(task, col, Number(cIdx))" class="absolute top-1 right-1 p-1 opacity-0 group-hover/card:opacity-100 text-dim hover:text-danger transition-all"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
                            </div>
-                           <input type="text" placeholder="+ 新建数据片" class="bg-transparent border border-dashed border-[#1e2126] hover:border-[#00f0ff]/50 focus:border-[#00f0ff] focus:bg-[#1e2126]/30 rounded-sm px-3 py-1.5 text-sm outline-none text-[#e5e7eb] transition-all mt-1 font-['JetBrains_Mono',monospace]" @keydown.enter="(e) => addKanbanCard(e, task, col)">
+                           <input type="text" placeholder="+ 新建数据片" class="bg-transparent border border-dashed border-line hover:border-accent/50 focus:border-accent focus:bg-panel/30 rounded-sm px-3 py-1.5 text-sm outline-none text-display transition-all mt-1 font-['JetBrains_Mono',monospace]" @keydown.enter="(e) => addKanbanCard(e, task, col)">
                        </div>
                    </div>
                </div>
@@ -557,27 +557,27 @@
 
             <!-- 分割线 (Divider) -->
             <div v-else-if="task.type === 'divider'" class="flex-1 py-3">
-              <div class="w-full h-px bg-[#1e2126]"></div>
+              <div class="w-full h-px bg-panel"></div>
             </div>
 
             <!-- 统一 Slash 命令弹出菜单 -->
             <div v-if="activeSlashTaskId === task.id" 
-                 class="absolute left-0 w-64 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm z-50 flex flex-col overflow-hidden"
+                 class="absolute left-0 w-64 bg-void border border-line shadow-2xl rounded-sm z-50 flex flex-col overflow-hidden"
                  :class="slashMenuPosition === 'top' ? 'bottom-full mb-2' : 'top-full mt-2'">
-              <div class="px-3 py-2 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] bg-[#090a0c] z-10 border-b border-[#1e2126]/50 shadow-sm shrink-0">{{ filteredSlashOptions.length > 0 ? '基础区块 & 多媒体容器' : '无匹配命令' }}</div>
+              <div class="px-3 py-2 text-xs text-dim uppercase tracking-wider font-['Rajdhani',sans-serif] bg-void z-10 border-b border-line/50 shadow-sm shrink-0">{{ filteredSlashOptions.length > 0 ? '基础区块 & 多媒体容器' : '无匹配命令' }}</div>
               <div class="overflow-y-auto max-h-[260px] py-1 custom-scrollbar">
                 <div v-for="(option, idx) in filteredSlashOptions" :key="option.id"
                      :ref="(el) => setSlashItemRef(el, idx)"
                      @mousedown.prevent="executeSlashCommand(task.id, option.id)"
                      class="flex items-center gap-3 px-3 py-2 cursor-pointer transition-colors"
-                     :class="idx === slashIndex ? 'bg-[#1e2126]/80' : 'hover:bg-[#1e2126]/40'">
+                     :class="idx === slashIndex ? 'bg-panel/80' : 'hover:bg-panel/40'">
                   <div class="w-8 h-8 flex items-center justify-center shrink-0 rounded-sm font-['JetBrains_Mono',monospace] text-sm border"
-                       :class="idx === slashIndex ? 'border-[#00f0ff] text-[#00f0ff] bg-[#00f0ff]/10 shadow-[0_0_8px_rgba(0,240,255,0.3)]' : 'border-[#1e2126] text-[#6b7280] bg-[#14161a]'">
+                       :class="idx === slashIndex ? 'border-accent text-accent bg-accent/10 shadow-[0_0_8px_rgba(0,240,255,0.3)]' : 'border-line text-dim bg-surface'">
                     {{ option.icon }}
                   </div>
                   <div class="flex flex-col min-w-0">
-                    <span class="text-sm font-medium truncate" :class="idx === slashIndex ? 'text-[#00f0ff]' : 'text-[#e5e7eb]'">{{ option.label }}</span>
-                    <span class="text-[11px] text-[#6b7280] truncate">{{ option.desc }}</span>
+                    <span class="text-sm font-medium truncate" :class="idx === slashIndex ? 'text-accent' : 'text-display'">{{ option.label }}</span>
+                    <span class="text-[11px] text-dim truncate">{{ option.desc }}</span>
                   </div>
                 </div>
               </div>
@@ -586,19 +586,19 @@
           </div>
           
           <!-- 反向链接（Backlinks）：自动聚合引用本页的页面 -->
-          <div v-if="backlinks.length > 0" class="mt-12 pt-4 border-t border-[#1e2126]">
-            <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] uppercase tracking-wider font-bold mb-2">
+          <div v-if="backlinks.length > 0" class="mt-12 pt-4 border-t border-line">
+            <div class="text-[11px] font-['JetBrains_Mono',monospace] text-dim uppercase tracking-wider font-bold mb-2">
               反向链接 · {{ backlinks.length }}
             </div>
             <div class="space-y-1">
               <div v-for="bl in backlinks" :key="bl.page.id"
-                   class="flex items-start gap-2 text-sm text-[#6b7280] hover:text-[#00f0ff] cursor-pointer transition-colors px-2 py-1 rounded-sm hover:bg-[#1e2126]/40"
+                   class="flex items-start gap-2 text-sm text-dim hover:text-accent cursor-pointer transition-colors px-2 py-1 rounded-sm hover:bg-panel/40"
                    @click="activePageId = bl.page.id">
                 <span v-if="bl.page.icon" class="text-[15px] leading-none mt-0.5 shrink-0">{{ bl.page.icon }}</span>
                 <svg v-else class="w-4 h-4 mt-0.5 shrink-0 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                 <div class="min-w-0">
                   <div class="truncate">{{ bl.page.title || '无标题' }}</div>
-                  <div class="text-xs text-[#6b7280]/70 truncate">{{ bl.excerpt }}</div>
+                  <div class="text-xs text-dim/70 truncate">{{ bl.excerpt }}</div>
                 </div>
               </div>
             </div>
@@ -621,58 +621,58 @@
     <!-- ... -->
     <!-- 选中文本后的浮动格式工具栏（对齐 Notion 的 selection toolbar） -->
     <div v-if="formatToolbar.visible"
-         class="format-toolbar fixed z-50 flex items-center gap-0.5 px-1 py-1 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm"
+         class="format-toolbar fixed z-50 flex items-center gap-0.5 px-1 py-1 bg-void border border-line shadow-2xl rounded-sm"
          :class="isCoarsePointer ? 'format-toolbar--touch' : ''"
          :style="formatToolbarStyle">
       <button @mousedown.prevent="execFormat('bold')" title="加粗 (Ctrl/Cmd+B)" class="ft-btn font-bold">B</button>
       <button @mousedown.prevent="execFormat('italic')" title="斜体 (Ctrl/Cmd+I)" class="ft-btn italic">I</button>
       <button @mousedown.prevent="execFormat('underline')" title="下划线 (Ctrl/Cmd+U)" class="ft-btn underline">U</button>
       <button @mousedown.prevent="execFormat('strikeThrough')" title="删除线 (Ctrl/Cmd+Shift+S)" class="ft-btn line-through">S</button>
-      <div class="w-px h-4 bg-[#1e2126] mx-0.5"></div>
+      <div class="w-px h-4 bg-panel mx-0.5"></div>
       <button @mousedown.prevent="execFormat('code')" title="行内代码 (Ctrl/Cmd+E)" class="ft-btn font-['JetBrains_Mono',monospace] text-xs">&lt;/&gt;</button>
       <button @mousedown.prevent="execFormat('link')" title="链接 (Ctrl/Cmd+K)" class="ft-btn">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
       </button>
-      <div class="w-px h-4 bg-[#1e2126] mx-0.5"></div>
+      <div class="w-px h-4 bg-panel mx-0.5"></div>
       <button @mousedown.prevent="colorPanel = colorPanel === 'text' ? null : 'text'" title="文本颜色" class="ft-btn font-bold">A</button>
       <button @mousedown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
-        <span class="px-1 bg-[#ffb000]/30 text-[#ffb000] rounded-sm">H</span>
+        <span class="px-1 bg-warn/30 text-warn rounded-sm">H</span>
       </button>
       <!-- 颜色面板：触屏时工具条吸底，面板必须向上展开，否则画到键盘底下 -->
       <div v-if="colorPanel"
-           class="absolute left-0 flex gap-1 px-2 py-1.5 bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-sm"
+           class="absolute left-0 flex gap-1 px-2 py-1.5 bg-void border border-line shadow-2xl rounded-sm"
            :class="isCoarsePointer ? 'bottom-full mb-1' : 'top-full mt-1'">
         <button v-for="c in colorPalette" :key="c.value"
                 @mousedown.prevent="applyColor(c.value)"
-                class="color-swatch w-5 h-5 rounded-sm border border-[#1e2126] hover:scale-110 transition-transform"
+                class="color-swatch w-5 h-5 rounded-sm border border-line hover:scale-110 transition-transform"
                 :style="{ background: c.value }" :title="c.label"></button>
-        <button @mousedown.prevent="applyColor('transparent')" class="color-swatch w-5 h-5 rounded-sm border border-[#6b7280] text-[10px] text-[#6b7280] flex items-center justify-center" title="清除">/</button>
+        <button @mousedown.prevent="applyColor('transparent')" class="color-swatch w-5 h-5 rounded-sm border border-dim text-[10px] text-dim flex items-center justify-center" title="清除">/</button>
       </div>
     </div>
 
     <!-- 链接输入弹窗（替代原生 prompt：原生弹窗会抢焦点导致选区丢失，且观感突兀） -->
     <div v-if="linkDialog.visible" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="closeLinkDialog">
-      <div class="w-[420px] bg-[#090a0c] border border-[#1e2126] shadow-2xl rounded-md overflow-hidden">
-        <div class="px-4 py-3 border-b border-[#1e2126]/60 flex items-center gap-2">
-          <svg class="w-4 h-4 text-[#00f0ff]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-          <span class="text-sm font-bold tracking-wide text-[#e5e7eb]">添加链接</span>
+      <div class="w-[420px] bg-void border border-line shadow-2xl rounded-md overflow-hidden">
+        <div class="px-4 py-3 border-b border-line/60 flex items-center gap-2">
+          <svg class="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+          <span class="text-sm font-bold tracking-wide text-display">添加链接</span>
         </div>
         <div class="p-4 space-y-3">
           <div>
-            <label class="block text-xs text-[#6b7280] mb-1.5 uppercase tracking-wider">地址</label>
+            <label class="block text-xs text-dim mb-1.5 uppercase tracking-wider">地址</label>
             <input ref="linkInputRef" v-model="linkDialog.url" type="text"
                    placeholder="https://"
                    @keydown.enter.prevent="confirmLink"
                    @keydown.esc.prevent="closeLinkDialog"
-                   class="w-full bg-[#090a0c] border border-[#1e2126] focus:border-[#00f0ff] outline-none px-3 py-2 text-sm text-[#e5e7eb] rounded-sm transition-colors" />
+                   class="w-full bg-void border border-line focus:border-accent outline-none px-3 py-2 text-sm text-display rounded-sm transition-colors" />
           </div>
-          <div v-if="linkDialog.selectedText" class="text-xs text-[#6b7280] truncate">
-            将链接应用到：<span class="text-[#00f0ff]">{{ linkDialog.selectedText }}</span>
+          <div v-if="linkDialog.selectedText" class="text-xs text-dim truncate">
+            将链接应用到：<span class="text-accent">{{ linkDialog.selectedText }}</span>
           </div>
         </div>
-        <div class="px-4 py-3 border-t border-[#1e2126]/60 flex justify-end gap-2">
-          <button @click="closeLinkDialog" class="px-3 py-1.5 text-sm text-[#6b7280] hover:text-[#e5e7eb] transition-colors">取消</button>
-          <button @click="confirmLink" class="px-4 py-1.5 text-sm font-bold text-[#090a0c] bg-[#00f0ff] hover:bg-[#00d4e0] rounded-sm transition-colors">确认</button>
+        <div class="px-4 py-3 border-t border-line/60 flex justify-end gap-2">
+          <button @click="closeLinkDialog" class="px-3 py-1.5 text-sm text-dim hover:text-display transition-colors">取消</button>
+          <button @click="confirmLink" class="px-4 py-1.5 text-sm font-bold text-onaccent bg-accent hover:bg-accent2 rounded-sm transition-colors">确认</button>
         </div>
       </div>
     </div>
@@ -686,73 +686,73 @@
          桌面 = 定点 popover，行为不变。两者共用同一份菜单项，只切容器样式。
          注意 .action-menu-popup 同时是桌面端「视口夹取」测量用的选择器（见 openActionMenuAtTouch）。 -->
     <div v-if="actionMenuConfig.isOpen"
-         class="fixed z-50 bg-[#090a0c] text-sm overflow-y-auto custom-scrollbar"
+         class="fixed z-50 bg-void text-sm overflow-y-auto custom-scrollbar"
          :class="isCoarsePointer
-            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-[#1e2126] shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
-            : 'action-menu-popup w-52 border border-[#1e2126] shadow-2xl py-1 rounded-sm max-h-[70vh]'"
+            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-line shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
+            : 'action-menu-popup w-52 border border-line shadow-2xl py-1 rounded-sm max-h-[70vh]'"
          :style="isCoarsePointer ? undefined : { top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }"
          @click.stop>
       <!-- 底部面板的抓取条（仅触屏） -->
-      <div v-if="isCoarsePointer" class="w-10 h-1 bg-[#6b7280]/60 rounded-full mx-auto my-2"></div>
-      <div class="px-3 py-1 text-xs text-[#6b7280] uppercase tracking-wider font-['Rajdhani',sans-serif] mb-1 border-b border-[#1e2126]/50">转换区块为</div>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('text')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">T</span> 文本</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors text-[#00f0ff]/80 font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h1')"><span class="font-['JetBrains_Mono',monospace] text-[#00f0ff]/40 font-normal">H1</span> 标题 1</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h2')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280] font-normal">H2</span> 标题 2</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h3')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280] font-normal">H3</span> 标题 3</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('todo')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">[]</span> 待办事项</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('bullet')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">•</span> 无序列表</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('numbered')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">1.</span> 编号列表</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('toggle')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">▸</span> 折叠列表</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('quote')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">&quot;</span> 引用块</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('callout')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">💡</span> 标注块</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="handleActionCommand('divider')"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">—</span> 分割线</button>
-      <div class="border-t border-[#1e2126]/50 my-1"></div>
-      <button v-if="isCollapsible(actionMenuTask!)" class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="toggleCollapse(actionMenuTask!); actionMenuConfig.isOpen = false">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">▸</span> {{ actionMenuTask?.payload?.collapsed ? '展开' : '折叠' }}
+      <div v-if="isCoarsePointer" class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
+      <div class="px-3 py-1 text-xs text-dim uppercase tracking-wider font-['Rajdhani',sans-serif] mb-1 border-b border-line/50">转换区块为</div>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('text')"><span class="font-['JetBrains_Mono',monospace] text-dim">T</span> 文本</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors text-accent/80 font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h1')"><span class="font-['JetBrains_Mono',monospace] text-accent/40 font-normal">H1</span> 标题 1</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h2')"><span class="font-['JetBrains_Mono',monospace] text-dim font-normal">H2</span> 标题 2</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h3')"><span class="font-['JetBrains_Mono',monospace] text-dim font-normal">H3</span> 标题 3</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('todo')"><span class="font-['JetBrains_Mono',monospace] text-dim">[]</span> 待办事项</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('bullet')"><span class="font-['JetBrains_Mono',monospace] text-dim">•</span> 无序列表</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('numbered')"><span class="font-['JetBrains_Mono',monospace] text-dim">1.</span> 编号列表</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('toggle')"><span class="font-['JetBrains_Mono',monospace] text-dim">▸</span> 折叠列表</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('quote')"><span class="font-['JetBrains_Mono',monospace] text-dim">&quot;</span> 引用块</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('callout')"><span class="font-['JetBrains_Mono',monospace] text-dim">💡</span> 标注块</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('divider')"><span class="font-['JetBrains_Mono',monospace] text-dim">—</span> 分割线</button>
+      <div class="border-t border-line/50 my-1"></div>
+      <button v-if="isCollapsible(actionMenuTask!)" class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="toggleCollapse(actionMenuTask!); actionMenuConfig.isOpen = false">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">▸</span> {{ actionMenuTask?.payload?.collapsed ? '展开' : '折叠' }}
       </button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), -1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↑</span> 上移</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), 1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↓</span> 下移</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, 1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">→</span> 向右缩进</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, -1)"><span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">←</span> 向左缩进</button>
-      <div class="border-t border-[#1e2126]/50 my-1"></div>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors" @click="duplicateTask(actionMenuConfig.taskId)">复制</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a]" @click="deleteBlockAndFocus(actionMenuTask!); actionMenuConfig.isOpen = false">删除</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), -1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↑</span> 上移</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), 1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↓</span> 下移</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, 1)"><span class="font-['JetBrains_Mono',monospace] text-dim">→</span> 向右缩进</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, -1)"><span class="font-['JetBrains_Mono',monospace] text-dim">←</span> 向左缩进</button>
+      <div class="border-t border-line/50 my-1"></div>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors" @click="duplicateTask(actionMenuConfig.taskId)">复制</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-danger/10 transition-colors text-danger" @click="deleteBlockAndFocus(actionMenuTask!); actionMenuConfig.isOpen = false">删除</button>
     </div>
 
     <!-- 页面「···」菜单：触屏 bottom sheet / 桌面 popover（复用块菜单双形态范式）。
          收拢页面级操作——导出 / 收藏 / 新建子页 / 重命名 / 删除。 -->
     <div v-if="pageMenuConfig.isOpen" class="fixed inset-0 z-40" :class="isCoarsePointer ? 'bg-black/60' : 'bg-transparent'" @click="closePageMenu"></div>
     <div v-if="pageMenuConfig.isOpen && activePage"
-         class="fixed z-50 bg-[#090a0c] text-sm overflow-y-auto custom-scrollbar"
+         class="fixed z-50 bg-void text-sm overflow-y-auto custom-scrollbar"
          :class="isCoarsePointer
-            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-[#1e2126] shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
-            : 'action-menu-popup w-52 border border-[#1e2126] shadow-2xl py-1 rounded-sm max-h-[70vh]'"
+            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-line shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
+            : 'action-menu-popup w-52 border border-line shadow-2xl py-1 rounded-sm max-h-[70vh]'"
          :style="isCoarsePointer ? undefined : { top: `${pageMenuConfig.y}px`, left: `${pageMenuConfig.x}px` }"
          @click.stop>
-      <div v-if="isCoarsePointer" class="w-10 h-1 bg-[#6b7280]/60 rounded-full mx-auto my-2"></div>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="exportMarkdown(); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↓</span> 导出为 Markdown
+      <div v-if="isCoarsePointer" class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="exportMarkdown(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">↓</span> 导出为 Markdown
       </button>
-      <button v-if="!activePage.isTemplate" class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="saveAsTemplate(); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">⛶</span> 存为模板
+      <button v-if="!activePage.isTemplate" class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="saveAsTemplate(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">⛶</span> 存为模板
       </button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="toggleFavorite(activePage.id); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">★</span> {{ activePage.isFavorite ? '取消收藏' : '收藏' }}
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="toggleFavorite(activePage.id); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">★</span> {{ activePage.isFavorite ? '取消收藏' : '收藏' }}
       </button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="createPage(activePage.id); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">+</span> 新建子页面
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="createPage(activePage.id); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">+</span> 新建子页面
       </button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="focusTitle(); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">✎</span> 重命名
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="focusTitle(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">✎</span> 重命名
       </button>
-      <button v-if="pages.length > 1" class="w-full text-left px-4 py-1.5 hover:bg-[#ff2a2a]/10 transition-colors text-[#ff2a2a] flex items-center gap-2" @click="deletePage(activePage.id); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#ff2a2a]">✕</span> 删除页面
+      <button v-if="pages.length > 1" class="w-full text-left px-4 py-1.5 hover:bg-danger/10 transition-colors text-danger flex items-center gap-2" @click="deletePage(activePage.id); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-danger">✕</span> 删除页面
       </button>
-      <button v-if="backlinks.length" class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="openBacklinks(); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">↩</span> 反向链接 ({{ backlinks.length }})
+      <button v-if="backlinks.length" class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="openBacklinks(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">↩</span> 反向链接 ({{ backlinks.length }})
       </button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-[#1e2126]/50 transition-colors flex items-center gap-2" @click="openPageHistory(); closePageMenu()">
-        <span class="font-['JetBrains_Mono',monospace] text-[#6b7280]">⏱</span> 历史版本
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="openPageHistory(); closePageMenu()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">⏱</span> 历史版本
       </button>
     </div>
 
@@ -760,63 +760,63 @@
          解决「选完 ZIP 静默新建一堆页面、用户毫无掌控」的问题。 -->
     <div v-if="importWizardOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
       <div class="absolute inset-0 bg-black/70" @click="closeNotionImportWizard"></div>
-      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+      <div class="relative w-full md:w-[480px] bg-void border border-line shadow-2xl flex flex-col"
            :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[85vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[80vh]'">
-        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
-        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
-          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">从 Notion 导入</span>
-          <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closeNotionImportWizard" title="关闭">
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-dim/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-line shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-display tracking-wider">从 Notion 导入</span>
+          <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim hover:text-display hover:bg-panel transition-colors" @click="closeNotionImportWizard" title="关闭">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
         <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
           <!-- 未选择文件 -->
           <div v-if="!importPreview && !importLoading" class="space-y-3">
-            <p class="text-[#9ca3af] leading-snug">选择 Notion 的「Markdown &amp; CSV」导出 <code class="text-[#00f0ff] font-['JetBrains_Mono',monospace]">.zip</code>（<span class="text-[#00f0ff]">可一次多选多个</span>，按文件分组预览），解析后会列出将创建的页面，确认再导入（不会改动你已有的内容）。<span class="text-[#ffb000]">同名页面默认不勾选（含多个文件间的同名，仅保留第一份），需要创建副本时手动勾选即可。</span></p>
-            <button @click="importFileInput?.click()" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#00f0ff] hover:border-[#00f0ff] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace]">选择 ZIP 文件（可多选）</button>
+            <p class="text-muted leading-snug">选择 Notion 的「Markdown &amp; CSV」导出 <code class="text-accent font-['JetBrains_Mono',monospace]">.zip</code>（<span class="text-accent">可一次多选多个</span>，按文件分组预览），解析后会列出将创建的页面，确认再导入（不会改动你已有的内容）。<span class="text-warn">同名页面默认不勾选（含多个文件间的同名，仅保留第一份），需要创建副本时手动勾选即可。</span></p>
+            <button @click="importFileInput?.click()" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-surface border border-line text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">选择 ZIP 文件（可多选）</button>
           </div>
           <!-- 解析中 -->
-          <div v-else-if="importLoading && !importPreview" class="py-10 text-center text-[#6b7280] font-['JetBrains_Mono',monospace]">正在解析 ZIP…</div>
+          <div v-else-if="importLoading && !importPreview" class="py-10 text-center text-dim font-['JetBrains_Mono',monospace]">正在解析 ZIP…</div>
           <!-- 预览页面树（多文件按来源分组） -->
           <div v-else-if="importPreview" class="space-y-2">
             <div class="flex items-center justify-between">
-              <span class="text-xs text-[#6b7280]">将导入 {{ importSelected.size }} / {{ importPreview.pages.length }} 个页面<template v-if="importPreview.sources.filter(s => s.count > 0).length > 1">（来自 {{ importPreview.sources.filter(s => s.count > 0).length }} 个文件）</template><template v-if="importPreview.imageFailures">，{{ importPreview.imageFailures }} 张图片待后台下载</template></span>
-              <button @click="toggleImportSelectAll" class="text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace]">{{ importSelected.size === importPreview.pages.length ? '全不选' : '全选' }}</button>
+              <span class="text-xs text-dim">将导入 {{ importSelected.size }} / {{ importPreview.pages.length }} 个页面<template v-if="importPreview.sources.filter(s => s.count > 0).length > 1">（来自 {{ importPreview.sources.filter(s => s.count > 0).length }} 个文件）</template><template v-if="importPreview.imageFailures">，{{ importPreview.imageFailures }} 张图片待后台下载</template></span>
+              <button @click="toggleImportSelectAll" class="text-xs text-accent font-['JetBrains_Mono',monospace]">{{ importSelected.size === importPreview.pages.length ? '全不选' : '全选' }}</button>
             </div>
             <div class="space-y-3">
               <div v-for="g in importGroups" :key="g.file">
                 <!-- 多文件或该文件解析出错时显示来源标题；单文件成功则保持简洁不显示 -->
                 <div v-if="importGroups.length > 1 || g.error" class="flex items-center justify-between px-1 mb-1 gap-2">
-                  <span class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] truncate">{{ g.file }}</span>
-                  <span v-if="g.error" class="text-[10px] text-[#ff2a2a] font-['JetBrains_Mono',monospace] shrink-0">{{ g.error }}</span>
-                  <span v-else class="text-[10px] text-[#6b7280] font-['JetBrains_Mono',monospace] shrink-0">{{ g.pages.length }} 页</span>
+                  <span class="text-[11px] font-['JetBrains_Mono',monospace] text-dim truncate">{{ g.file }}</span>
+                  <span v-if="g.error" class="text-[10px] text-danger font-['JetBrains_Mono',monospace] shrink-0">{{ g.error }}</span>
+                  <span v-else class="text-[10px] text-dim font-['JetBrains_Mono',monospace] shrink-0">{{ g.pages.length }} 页</span>
                 </div>
                 <div class="space-y-0.5">
                   <div v-for="p in g.pages" :key="p.id" @click="toggleImportSelect(p.id)"
                        class="flex items-center gap-2 px-2 py-1.5 rounded-sm cursor-pointer transition-colors"
-                       :class="importSelected.has(p.id) ? 'bg-[#1e2126]/60' : 'hover:bg-[#1e2126]/30'"
+                       :class="importSelected.has(p.id) ? 'bg-panel/60' : 'hover:bg-panel/30'"
                        :style="{ paddingLeft: `${importDepth(p) * 0.75 + 0.5}rem` }">
                     <span class="w-4 h-4 shrink-0 flex items-center justify-center border rounded-sm"
-                          :class="importSelected.has(p.id) ? 'bg-[#00f0ff] border-[#00f0ff]' : 'border-[#6b7280]'">
-                      <svg v-if="importSelected.has(p.id)" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#090a0c" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                          :class="importSelected.has(p.id) ? 'bg-accent border-accent text-onaccent' : 'border-dim'">
+                      <svg v-if="importSelected.has(p.id)" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
                     </span>
-                    <span class="text-sm text-[#e5e7eb] truncate">{{ p.title || '无标题' }}</span>
-                    <span v-if="importConflictIds.has(p.id)" class="text-[10px] text-[#ffb000] font-['JetBrains_Mono',monospace] shrink-0">已存在</span>
-                    <span class="text-[10px] text-[#6b7280] font-['JetBrains_Mono',monospace] shrink-0">{{ (p.tasks?.length ?? 0) }} 块</span>
+                    <span class="text-sm text-display truncate">{{ p.title || '无标题' }}</span>
+                    <span v-if="importConflictIds.has(p.id)" class="text-[10px] text-warn font-['JetBrains_Mono',monospace] shrink-0">已存在</span>
+                    <span class="text-[10px] text-dim font-['JetBrains_Mono',monospace] shrink-0">{{ (p.tasks?.length ?? 0) }} 块</span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
-          <p v-if="importWizardMsg" class="mt-3 text-xs font-['JetBrains_Mono',monospace]" :class="importLoading ? 'text-[#6b7280]' : 'text-[#ffb000]'">{{ importWizardMsg }}</p>
+          <p v-if="importWizardMsg" class="mt-3 text-xs font-['JetBrains_Mono',monospace]" :class="importLoading ? 'text-dim' : 'text-warn'">{{ importWizardMsg }}</p>
           <input ref="importFileInput" type="file" accept=".zip,application/zip" multiple class="hidden" @change="onImportFilePicked" />
         </div>
-        <div v-if="importPreview" class="flex items-center gap-2 px-4 py-3 border-t border-[#1e2126] shrink-0">
+        <div v-if="importPreview" class="flex items-center gap-2 px-4 py-3 border-t border-line shrink-0">
           <button @click="confirmNotionImport" :disabled="importLoading || importSelected.size === 0"
-                  class="flex-1 h-11 md:h-9 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#00f0ff] text-[#00f0ff] hover:bg-[#1e2126] active:bg-[#1e2126] transition-colors text-xs font-['JetBrains_Mono',monospace] disabled:opacity-40">
+                  class="flex-1 h-11 md:h-9 flex items-center justify-center rounded-sm bg-surface border border-accent text-accent hover:bg-panel active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace] disabled:opacity-40">
             导入所选 ({{ importSelected.size }})
           </button>
-          <button @click="closeNotionImportWizard" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#6b7280] hover:text-[#e5e7eb] transition-colors text-xs font-['JetBrains_Mono',monospace]">取消</button>
+          <button @click="closeNotionImportWizard" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-surface border border-line text-dim hover:text-display transition-colors text-xs font-['JetBrains_Mono',monospace]">取消</button>
         </div>
       </div>
     </div>
@@ -824,30 +824,30 @@
     <!-- 回收站面板：恢复 / 彻底删除已删除页面。复用 bottom sheet / 弹窗双形态 -->
     <div v-if="trashOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
       <div class="absolute inset-0 bg-black/70" @click="closeTrash"></div>
-      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+      <div class="relative w-full md:w-[480px] bg-void border border-line shadow-2xl flex flex-col"
            :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[80vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[75vh]'">
-        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
-        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
-          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">回收站</span>
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-dim/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-line shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-display tracking-wider">回收站</span>
           <div class="flex items-center gap-2">
-            <button v-if="trashedPages.length" @click="emptyTrash" class="text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">清空</button>
-            <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closeTrash" title="关闭">
+            <button v-if="trashedPages.length" @click="emptyTrash" class="text-xs text-danger font-['JetBrains_Mono',monospace] hover:underline">清空</button>
+            <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim hover:text-display hover:bg-panel transition-colors" @click="closeTrash" title="关闭">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
             </button>
           </div>
         </div>
         <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
-          <div v-if="trashedPages.length === 0" class="py-10 text-center text-[#6b7280]">回收站为空</div>
+          <div v-if="trashedPages.length === 0" class="py-10 text-center text-dim">回收站为空</div>
           <div v-else class="space-y-1">
-            <div v-for="p in trashedPages" :key="p.id" class="flex items-center justify-between gap-2 px-2 py-2 rounded-sm hover:bg-[#1e2126]/40">
+            <div v-for="p in trashedPages" :key="p.id" class="flex items-center justify-between gap-2 px-2 py-2 rounded-sm hover:bg-panel/40">
               <div class="flex items-center gap-2 min-w-0">
                 <span v-if="p.icon" class="shrink-0">{{ p.icon }}</span>
-                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                <span class="text-sm text-[#e5e7eb] truncate">{{ p.title || '无标题' }}</span>
+                <svg v-else class="w-4 h-4 shrink-0 text-dim" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span class="text-sm text-display truncate">{{ p.title || '无标题' }}</span>
               </div>
               <div class="flex items-center gap-1 shrink-0">
-                <button @click="restorePage(p.id)" class="px-2 py-1 text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace] hover:underline">恢复</button>
-                <button @click="purgePage(p.id)" class="px-2 py-1 text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">彻底删除</button>
+                <button @click="restorePage(p.id)" class="px-2 py-1 text-xs text-accent font-['JetBrains_Mono',monospace] hover:underline">恢复</button>
+                <button @click="purgePage(p.id)" class="px-2 py-1 text-xs text-danger font-['JetBrains_Mono',monospace] hover:underline">彻底删除</button>
               </div>
             </div>
           </div>
@@ -858,26 +858,26 @@
     <!-- 反向链接面板：哪些页面引用了当前页（复用 backlinks computed）。bottom sheet / 弹窗双形态 -->
     <div v-if="backlinksOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
       <div class="absolute inset-0 bg-black/70" @click="closeBacklinks"></div>
-      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+      <div class="relative w-full md:w-[480px] bg-void border border-line shadow-2xl flex flex-col"
            :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[80vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[75vh]'">
-        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
-        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
-          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">反向链接</span>
-          <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closeBacklinks" title="关闭">
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-dim/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-line shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-display tracking-wider">反向链接</span>
+          <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim hover:text-display hover:bg-panel transition-colors" @click="closeBacklinks" title="关闭">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
         <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
-          <div v-if="backlinks.length === 0" class="py-10 text-center text-[#6b7280]">没有被其它页面链接到</div>
+          <div v-if="backlinks.length === 0" class="py-10 text-center text-dim">没有被其它页面链接到</div>
           <div v-else class="space-y-1">
             <div v-for="b in backlinks" :key="b.page.id" @click="selectPage(b.page.id); closeBacklinks()"
-                 class="px-2 py-2 rounded-sm cursor-pointer hover:bg-[#1e2126]/50 transition-colors">
+                 class="px-2 py-2 rounded-sm cursor-pointer hover:bg-panel/50 transition-colors">
               <div class="flex items-center gap-2">
                 <span v-if="b.page.icon" class="shrink-0">{{ b.page.icon }}</span>
-                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                <span class="text-sm text-[#e5e7eb] truncate">{{ b.page.title || '无标题' }}</span>
+                <svg v-else class="w-4 h-4 shrink-0 text-dim" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span class="text-sm text-display truncate">{{ b.page.title || '无标题' }}</span>
               </div>
-              <div class="text-xs text-[#6b7280] truncate pl-6 mt-0.5">{{ b.excerpt }}</div>
+              <div class="text-xs text-dim truncate pl-6 mt-0.5">{{ b.excerpt }}</div>
             </div>
           </div>
         </div>
@@ -887,29 +887,29 @@
     <!-- 页面历史版本面板：本地快照，可恢复 / 删除。bottom sheet / 弹窗双形态 -->
     <div v-if="historyOpen" class="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
       <div class="absolute inset-0 bg-black/70" @click="closePageHistory"></div>
-      <div class="relative w-full md:w-[480px] bg-[#090a0c] border border-[#1e2126] shadow-2xl flex flex-col"
+      <div class="relative w-full md:w-[480px] bg-void border border-line shadow-2xl flex flex-col"
            :class="isCoarsePointer ? 'rounded-t-xl border-b-0 max-h-[80vh] pb-[env(safe-area-inset-bottom,0px)]' : 'rounded-md max-h-[75vh]'">
-        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-[#6b7280]/60"></div></div>
-        <div class="flex items-center justify-between px-4 py-3 border-b border-[#1e2126] shrink-0">
-          <span class="font-['JetBrains_Mono',monospace] text-sm text-[#e5e7eb] tracking-wider">历史版本</span>
+        <div v-if="isCoarsePointer" class="flex justify-center pt-2 pb-1 shrink-0"><div class="w-10 h-1 rounded-full bg-dim/60"></div></div>
+        <div class="flex items-center justify-between px-4 py-3 border-b border-line shrink-0">
+          <span class="font-['JetBrains_Mono',monospace] text-sm text-display tracking-wider">历史版本</span>
           <div class="flex items-center gap-2">
-            <button v-if="pageVersions.length" @click="clearHistory" class="text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">清空</button>
-            <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-[#6b7280] hover:text-[#e5e7eb] hover:bg-[#1e2126] transition-colors" @click="closePageHistory" title="关闭">
+            <button v-if="pageVersions.length" @click="clearHistory" class="text-xs text-danger font-['JetBrains_Mono',monospace] hover:underline">清空</button>
+            <button class="w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim hover:text-display hover:bg-panel transition-colors" @click="closePageHistory" title="关闭">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
             </button>
           </div>
         </div>
         <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
-          <div v-if="pageVersions.length === 0" class="py-10 text-center text-[#6b7280]">暂无历史版本<br><span class="text-xs">编辑页面后会自动定时存档</span></div>
+          <div v-if="pageVersions.length === 0" class="py-10 text-center text-dim">暂无历史版本<br><span class="text-xs">编辑页面后会自动定时存档</span></div>
           <div v-else class="space-y-1">
-            <div v-for="(v, i) in [...pageVersions].reverse()" :key="v.ts" class="flex items-center justify-between gap-2 px-2 py-2 rounded-sm hover:bg-[#1e2126]/40">
+            <div v-for="(v, i) in [...pageVersions].reverse()" :key="v.ts" class="flex items-center justify-between gap-2 px-2 py-2 rounded-sm hover:bg-panel/40">
               <div class="min-w-0">
-                <div class="text-sm text-[#e5e7eb] truncate">{{ v.title || '无标题' }}</div>
-                <div class="text-xs text-[#6b7280] font-['JetBrains_Mono',monospace]">{{ formatVersionTime(v.ts) }} · {{ v.tasks?.length ?? 0 }} 块<template v-if="i === 0"> · 最新</template></div>
+                <div class="text-sm text-display truncate">{{ v.title || '无标题' }}</div>
+                <div class="text-xs text-dim font-['JetBrains_Mono',monospace]">{{ formatVersionTime(v.ts) }} · {{ v.tasks?.length ?? 0 }} 块<template v-if="i === 0"> · 最新</template></div>
               </div>
               <div class="flex items-center gap-1 shrink-0">
-                <button @click="restoreVersion(v)" class="px-2 py-1 text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace] hover:underline">恢复</button>
-                <button @click="deleteVersion(v.ts)" class="px-2 py-1 text-xs text-[#ff2a2a] font-['JetBrains_Mono',monospace] hover:underline">删除</button>
+                <button @click="restoreVersion(v)" class="px-2 py-1 text-xs text-accent font-['JetBrains_Mono',monospace] hover:underline">恢复</button>
+                <button @click="deleteVersion(v.ts)" class="px-2 py-1 text-xs text-danger font-['JetBrains_Mono',monospace] hover:underline">删除</button>
               </div>
             </div>
           </div>
@@ -1028,7 +1028,7 @@ const searchResults = computed<SearchHit[]>(() => {
       hits.push({
         page,
         isTitleHit: true,
-        snippet: `${escapeHtml(title.slice(0, idx))}<mark style="background-color:#ffb000;color:#090a0c;padding:0 1px;border-radius:2px;">${escapeHtml(title.slice(idx, idx + q.length))}</mark>${escapeHtml(title.slice(idx + q.length))}`,
+        snippet: `${escapeHtml(title.slice(0, idx))}<mark style="background-color:rgb(var(--warn));color:rgb(var(--onaccent));padding:0 1px;border-radius:2px;">${escapeHtml(title.slice(idx, idx + q.length))}</mark>${escapeHtml(title.slice(idx + q.length))}`,
       });
       continue;
     }
@@ -1045,7 +1045,7 @@ const searchResults = computed<SearchHit[]>(() => {
       hits.push({
         page,
         isTitleHit: false,
-        snippet: `${from > 0 ? '…' : ''}${before}<mark style="background-color:#ffb000;color:#090a0c;padding:0 1px;border-radius:2px;">${hit}</mark>${after}${to < text.length ? '…' : ''}`,
+        snippet: `${from > 0 ? '…' : ''}${before}<mark style="background-color:rgb(var(--warn));color:rgb(var(--onaccent));padding:0 1px;border-radius:2px;">${hit}</mark>${after}${to < text.length ? '…' : ''}`,
       });
       break; // 每个页面只取第一个匹配块，避免结果冗长
     }
@@ -2417,7 +2417,7 @@ const coverTouched = ref(false); // 触屏：点击封面上浮操作条
 const coverStyle = (cover: string) => {
   if (cover.startsWith('gradient:')) {
     const g = COVER_GRADIENTS.find((x) => x.id === cover.slice('gradient:'.length));
-    return { background: g ? g.css : '#1e2126' };
+    return { background: g ? g.css : 'rgb(var(--panel))' };
   }
   // object-position 的 y 由 coverPos 驱动（0=顶部 100=底部），x 固定居中。
   // 默认 35 而非 50：竖构图人像的主体（脸部）通常位于画面上部，
@@ -3482,13 +3482,13 @@ const handleActionCommand = (type: string) => {
 
 // 样式与提示
 const getTextClass = (task: Task) => {
-  if (task.type === 'h1') return 'text-2xl font-bold font-["Rajdhani",sans-serif] text-[#00f0ff]/90';
-  if (task.type === 'h2') return 'text-xl font-bold font-["Rajdhani",sans-serif] text-[#e5e7eb]';
-  if (task.type === 'h3') return 'text-lg font-bold font-["Rajdhani",sans-serif] text-[#6b7280]';
-  if (task.type === 'quote') return 'italic text-[#ffb000]/90';
-  if (task.type === 'toggle') return 'text-[15px] font-medium text-[#00f0ff]/80';
-  if (task.completed && task.type === 'todo') return 'text-[15px] line-through text-[#6b7280]';
-  return 'text-[15px] text-[#e5e7eb]';
+  if (task.type === 'h1') return 'text-2xl font-bold font-["Rajdhani",sans-serif] text-accent/90';
+  if (task.type === 'h2') return 'text-xl font-bold font-["Rajdhani",sans-serif] text-display';
+  if (task.type === 'h3') return 'text-lg font-bold font-["Rajdhani",sans-serif] text-dim';
+  if (task.type === 'quote') return 'italic text-warn/90';
+  if (task.type === 'toggle') return 'text-[15px] font-medium text-accent/80';
+  if (task.completed && task.type === 'todo') return 'text-[15px] line-through text-dim';
+  return 'text-[15px] text-display';
 };
 const getPlaceholder = (type: string) => { if (type === 'h1') return '标题 1'; if (type === 'h2') return '标题 2'; if (type === 'h3') return '标题 3'; if (type === 'callout') return '写点提示…'; if (type === 'text') return "输入 '/' 唤出命令菜单..."; return '...'; };
 
@@ -3508,10 +3508,12 @@ defineExpose({ exportMarkdown });
 </script>
 
 <style scoped>
-.ce-block b, .ce-block strong { color: #00f0ff; font-weight: 700; text-shadow: 0 0 4px rgba(0, 240, 255, 0.3); }
-.ce-block i, .ce-block em { font-style: italic; color: #ffb000; }
-.ce-block u { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(0, 240, 255, 0.6); }
-.ce-block strike, .ce-block del { text-decoration: line-through; color: #6b7280; opacity: 0.8; }
+/* 主题化：这里全部走语义变量（定义在 src/style.css 的 [data-theme]），
+   不要再写死 hex，否则换肤后这些富文本样式会「留在旧主题里」。 */
+.ce-block b, .ce-block strong { color: rgb(var(--accent)); font-weight: 700; text-shadow: 0 0 var(--accent-glow-radius, 4px) rgb(var(--accent) / var(--accent-glow, 0.3)); }
+.ce-block i, .ce-block em { font-style: italic; color: rgb(var(--warn)); }
+.ce-block u { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(var(--accent) / 0.6); }
+.ce-block strike, .ce-block del { text-decoration: line-through; color: rgb(var(--dim)); opacity: 0.8; }
 /* 左槽控制手柄（+号 / 拖拽点）可见性。
    用媒体查询区分设备能力，而非 JS 判断，好处是零运行时开销、且不依赖 UA 嗅探：
    - 支持真实 hover 的设备（桌面）：只跟随鼠标所在行。光标停在哪一行完全不显示，
@@ -3529,25 +3531,25 @@ defineExpose({ exportMarkdown });
 }
 
 /* 浮动格式工具栏 */
-.ft-btn { display: flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 2px; color: #e5e7eb; font-size: 13px; transition: all 0.15s; }
-.ft-btn:hover { background: #1e2126; color: #00f0ff; }
+.ft-btn { display: flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 2px; color: rgb(var(--display)); font-size: 13px; transition: all 0.15s; }
+.ft-btn:hover { background: rgb(var(--panel)); color: rgb(var(--accent)); }
 /* 触屏：格式工具条吸底后按钮扩到 44px 触摸目标（Material 48dp / Apple 44pt 量级） */
 .format-toolbar--touch .ft-btn { min-width: 44px; height: 44px; font-size: 15px; }
 .format-toolbar--touch .color-swatch { width: 36px; height: 36px; }
 /* 触屏：块操作菜单走底部面板，菜单项同样放大触摸目标 */
 .action-menu-sheet > button { padding-top: 12px; padding-bottom: 12px; font-size: 15px; }
-.ce-block a { color: #00f0ff; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; transition: all 0.2s; }
-.ce-block a:hover { text-shadow: 0 0 8px rgba(0, 240, 255, 0.6); }
-.ce-block code { background: rgba(0, 240, 255, 0.08); color: #00f0ff; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; border: 1px solid rgba(0, 240, 255, 0.15); }
-.ce-block kbd { background: #1e2126; border: 1px solid #374151; border-bottom: 2px solid #111827; padding: 2px 6px; border-radius: 3px; font-size: 0.85em; color: #e5e7eb; font-family: 'JetBrains Mono', monospace; }
+.ce-block a { color: rgb(var(--accent)); text-decoration: underline; text-underline-offset: 4px; cursor: pointer; transition: all 0.2s; }
+.ce-block a:hover { text-shadow: 0 0 8px rgb(var(--accent) / var(--accent-glow, 0.3)); }
+.ce-block code { background: rgb(var(--accent) / 0.08); color: rgb(var(--accent)); padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; border: 1px solid rgb(var(--accent) / 0.15); }
+.ce-block kbd { background: rgb(var(--panel)); border: 1px solid rgb(var(--line)); border-bottom: 2px solid rgb(var(--line)); padding: 2px 6px; border-radius: 3px; font-size: 0.85em; color: rgb(var(--display)); font-family: 'JetBrains Mono', monospace; }
 /* 页内页面链接（[[ 插入） */
-.ce-block a[data-page-id] { color: #00f0ff; text-decoration: none; border-bottom: 1px solid rgba(0, 240, 255, 0.35); transition: all 0.2s; }
-.ce-block a[data-page-id]:hover { background: rgba(0, 240, 255, 0.1); border-bottom-color: #00f0ff; }
+.ce-block a[data-page-id] { color: rgb(var(--accent)); text-decoration: none; border-bottom: 1px solid rgb(var(--accent) / 0.35); transition: all 0.2s; }
+.ce-block a[data-page-id]:hover { background: rgb(var(--accent) / 0.1); border-bottom-color: rgb(var(--accent)); }
 /* Notion 行为：占位提示只在「当前编辑的空块」或「鼠标悬停的空块」上出现，避免整页刷屏 */
 .ce-block.show-placeholder:empty::before,
-.task-item-container:hover .ce-block:empty::before { content: attr(data-placeholder); color: rgba(107, 114, 128, 0.45); pointer-events: none; display: block; }
+.task-item-container:hover .ce-block:empty::before { content: attr(data-placeholder); color: rgb(var(--dim) / 0.45); pointer-events: none; display: block; }
 .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
-.custom-scrollbar::-webkit-scrollbar-track { background: rgba(30, 33, 38, 0.3); }
-.custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0, 240, 255, 0.3); border-radius: 2px; }
-.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(0, 240, 255, 0.6); }
+.custom-scrollbar::-webkit-scrollbar-track { background: rgb(var(--panel) / 0.3); }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: rgb(var(--accent) / 0.3); border-radius: 2px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgb(var(--accent) / 0.6); }
 </style>
