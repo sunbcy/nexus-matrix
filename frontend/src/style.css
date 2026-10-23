@@ -104,15 +104,11 @@
   background: rgba(0, 240, 255, 0.6);
 }
 
-/* ContentEditable 空白时的占位提示符 (Placeholder) 逻辑 */
-[contenteditable]:empty::before {
-  content: attr(data-placeholder);
-  color: rgba(107, 114, 128, 0.45);
-  pointer-events: none;
-  font-style: normal;
-  font-weight: normal;
-  display: block;
-}
+/* ContentEditable 空白时的占位提示符 (Placeholder) 逻辑。
+   注意：这里【不能】写全局的 [contenteditable]:empty::before 规则——
+   那会让页面上所有空块同时显示占位符（对齐 Notion：提示只出现在
+   光标所在的那一个空块上）。精确的显示时机由 NexusTaskMatrix1.vue
+   组件内样式控制：焦点块（.show-placeholder）或鼠标悬停块。 */
 
 /* -------------------------------------------------------------
    富文本渲染细化样式（针对 ce-block 富文本编辑器内部标签定制）

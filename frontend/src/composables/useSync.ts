@@ -203,10 +203,14 @@ const pageFingerprint = (p: Page): string =>
 const pageStampCache = new Map<string, string>();
 const blockStampCache = new Map<string, string>();
 
-const stampUpdated = (pages: Page[]): string[] => {
+// onlyIds：只指纹这些页（调用方已明确知道哪些页动过）。
+// 不给时按全量处理（结构变化等低频场景）。
+const stampUpdated = (pages: Page[], onlyIds?: string[]): string[] => {
   const now = Date.now();
   const changed: string[] = [];
+  const filter = onlyIds ? new Set(onlyIds) : null;
   for (const p of pages) {
+    if (filter && !filter.has(p.id)) continue;
     const fp = pageFingerprint(p);
     if (pageStampCache.get(p.id) === fp) continue;   // 内容没变 → 不打戳
     pageStampCache.set(p.id, fp);
@@ -338,6 +342,60 @@ let remoteApplying = false;   // 标记：正在应用远端数据，避免回�
 let stopWatch: (() => void) | null = null;  // 页面订阅的取消函数，closeSync 时清理，防 HMR 重复订阅
 let currentPagesRef: Ref<Page[]> | null = null;
 
+/**
+ * 数据变更计数：任何页面的内容或结构变化都会 +1。
+ * 上层（撤销栈等）用**浅** watch 观察它即可感知「有东西变了」，
+ * 无需自己对整个 pages 做 deep watch —— 那是击键卡顿的另一半来源。
+ */
+export const dataVersion = ref(0);
+
+// === 变更订阅：按页订阅，避免「改一个字就 traverse 全库」 ===
+const pageWatchStops = new Map<string, { obj: Page; stop: () => void }>();
+let dirtyPageIds = new Set<string>();   // 自上次提交以来动过的页
+let structureDirty = false;             // 发生了结构变化（增删页 / 整表替换），需按全量处理
+
+const watchPages = (pagesRef: Ref<Page[]>): (() => void) => {
+  const onChange = (id?: string) => {
+    dataVersion.value++;                       // 供上层浅 watch 感知
+    if (id) dirtyPageIds.add(id); else structureDirty = true;
+    if (remoteApplying) return;                // 远端应用期间不回推，避免无限回环
+    debouncedCommit(pagesRef.value);
+  };
+
+  // 让「每页一个 deep watch」的集合与当前 pages 保持一致：
+  // 新增页补订阅、删除页退订、整表替换（撤销/导入）时按对象身份重建。
+  const syncPageWatchers = () => {
+    const pages = pagesRef.value ?? [];
+    const alive = new Set<string>();
+    for (const p of pages) {
+      alive.add(p.id);
+      const cur = pageWatchStops.get(p.id);
+      if (cur && cur.obj === p) continue;      // 仍是同一个对象，保留已有订阅
+      if (cur) cur.stop();
+      const stop = watch(() => p, () => onChange(p.id), { deep: true });
+      pageWatchStops.set(p.id, { obj: p, stop });
+    }
+    for (const [id, rec] of [...pageWatchStops]) {
+      if (!alive.has(id)) { rec.stop(); pageWatchStops.delete(id); }
+    }
+  };
+  syncPageWatchers();
+
+  // 结构变化：数组被整体替换、push/pop/splice（length 变化）时重建订阅并按全量提交
+  const stopStructure = watch(
+    () => [pagesRef.value, pagesRef.value?.length],
+    () => { syncPageWatchers(); onChange(); },
+  );
+
+  return () => {
+    stopStructure();
+    for (const rec of pageWatchStops.values()) rec.stop();
+    pageWatchStops.clear();
+    dirtyPageIds.clear();
+    structureDirty = false;
+  };
+};
+
 // === 阶段二 2.1/2.2：上传队列 + 增量游标 ===
 // lastSyncCursor：服务端已确认的高水位（ms）。持久化到 kv，下次启动用它作
 //   fetchRemotePages(since=cursor) 的增量基准，断线期间错过的变更得以补齐。
@@ -423,8 +481,25 @@ function debounce<T extends (...args: any[]) => void>(fn: T, wait: number) {
   return debounced;
 }
 
+// 一次提交的完整动作：打戳 -> 页面历史 -> 本地落盘 + 远端上推。
+// 只有真的发生了内容变化的页才会被打戳并返回其 id。
+const commitPages = (pages: Page[]): void => {
+  // 结构变化（新增/删除/整表替换）时按全量处理；否则只处理被标记过的页
+  const onlyIds = structureDirty ? undefined : [...dirtyPageIds];
+  dirtyPageIds.clear();
+  structureDirty = false;
+  const changed = stampUpdated(pages, onlyIds);
+  // 没有任何内容变化（例如仅焦点 / UI 态触发的响应式抖动）就不做无意义的全量写与推送
+  if (changed.length === 0) return;
+  void snapshotPages(pages, changed);          // 页面历史：对变化页节流存档
+  void persistPages(pages, changed);
+};
+const debouncedCommit = debounce(commitPages, 500);
+
 // 防抖持久化：本地写入 + 远端推送（写入时打 updatedAt，供后端 LWW）
-const persistPages = async (pages: Page[]) => {
+// changedIds 存在时只上推**变化的那几页**：后端 CLIENT_UPDATE 走的是 merge 语义，
+// 增量推送完全安全，却能把全量序列化（120 页）从每次保存里省掉。
+const persistPages = async (pages: Page[], changedIds?: string[]) => {
   // 【阶段一修复】不再 pages.map(p => ({...p, updatedAt: Date.now()}))。
   // 无条件给**每一页**刷成当前时间，配合后端 `inc_ts >= cur_ts` 的整页 LWW，
   // 会让「最后推送的一方」所有页面全部获胜——于是 App 每次启动（initSync 会 pushAll）
@@ -436,8 +511,10 @@ const persistPages = async (pages: Page[]) => {
     clientSeq += 1;
     outboxSeq = clientSeq;
     outboxPages = pages;
+    const changedSet = changedIds && changedIds.length ? new Set(changedIds) : null;
+    const payload = changedSet ? pages.filter((p) => changedSet.has(p.id)) : pages;
     try {
-      sendWS({ type: 'CLIENT_UPDATE', data: pages, clientSeq });
+      sendWS({ type: 'CLIENT_UPDATE', data: payload, clientSeq });
     } catch (e) { /* 发送瞬间断线：留在 outbox，onopen 会补发 */ }
   } else {
     // 阶段二 2.1：离线时把最新快照压入 outbox（累积，不丢）。
@@ -445,14 +522,13 @@ const persistPages = async (pages: Page[]) => {
     outboxPages = pages;
   }
 };
-const debouncedPersist = debounce(persistPages, 500);
 
 /**
  * 立即把挂起的改动落盘。在页面隐藏（切后台、切 App）与卸载时调用。
  * 这是「最后 500ms 必丢」的兜底。
  */
 export const flushPendingSave = (): void => {
-  debouncedPersist.flush();
+  debouncedCommit.flush();
 };
 
 // === REST 客户端 ===
@@ -864,13 +940,17 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   } else if (local && remote) {
     // 本地与远端都有：增量合并远端（since 之后的变更），再把本地上推到服务端，
     // 让服务端对齐最新（避免陈旧种子），同时补齐本端离线期间其它端的改动。
+    //
+    // 【性能/健壮性】上推改为**不等待**（void）：WS 不可用时会退化成逐页 REST
+    // （156 页 = 156 个串行请求），一旦 await 在这里，第 3 步的订阅注册就被拖住，
+    // 表现为「编辑半天不落盘」。本地订阅必须先于任何网络动作建立。
     const merged = mergePages(pagesRef.value, sanitizeLoadedPages(remote));
     pagesRef.value = orderPages(merged);
     await saveLocal(pagesRef.value);
-    await pushAll(pagesRef.value);
+    void pushAll(pagesRef.value);
   } else if (local && !remote) {
-    // 后端不可用或为空：保持本地并尝试上推
-    await pushAll(pagesRef.value);
+    // 后端不可用或为空：保持本地并尝试上推（同样不阻塞）
+    void pushAll(pagesRef.value);
   } else if (!local && !remote) {
     // 本地与远端都无数据：创建初始默认页（仅首次装机）
     const seed: Page[] = [{
@@ -892,14 +972,16 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   }
 
   // 3) 本地持久化 + 变更广播（防抖 500ms，降低写入频率）
-  stopWatch = watch(pagesRef, (newVal) => {
-    // 远端应用期间的变更不回推，避免无限回环
-    if (remoteApplying) return;
-    // 标记被修改的页面，供 LWW 与未来的 CRDT 合并判定先后
-    const changed = stampUpdated(newVal);
-    if (changed.length > 0) void snapshotPages(newVal, changed);  // 页面历史：对变化页节流存档
-    debouncedPersist(newVal);
-  }, { deep: true });
+  //
+  // 【性能】这里刻意**不用** `watch(pagesRef, cb, { deep: true })`。
+  // deep watch 的代价不在回调，而在「每次触发都要 traverse 整棵数据树」：
+  // 156 个页面 × 各页的块，实测一次击键触发约 27 万次属性读取 ≈ 170ms 的同步卡顿。
+  // 改成**按页订阅**：每页各自一个 deep watch，改动哪一页就只 traverse 那一页
+  // （成本从「全库」降到「一页」，约两个数量级），并只把这一页标记为待提交。
+  //
+  // 同时 stampUpdated 也不再在每次触发时跑：它要给每页算内容指纹（JSON.stringify 全页
+  // blocks），同样与全库规模成正比。现在合并进防抖，并且只指纹被标记的那些页。
+  stopWatch = watchPages(pagesRef);
 
   // 4) 建立 WebSocket
   connectWS(pagesRef);

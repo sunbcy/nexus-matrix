@@ -585,10 +585,6 @@
 
           </div>
           
-          <div v-if="activePage.tasks.length === 0" class="text-[#6b7280]/50 font-['JetBrains_Mono',monospace] text-sm py-4 select-none pointer-events-none">
-            [ 按 Enter 或点击此处开始编码你的矩阵... ]
-          </div>
-
           <!-- 反向链接（Backlinks）：自动聚合引用本页的页面 -->
           <div v-if="backlinks.length > 0" class="mt-12 pt-4 border-t border-[#1e2126]">
             <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] uppercase tracking-wider font-bold mb-2">
@@ -947,6 +943,7 @@ import {
   closeSync,
   commitImportPages,
   createRemotePage,
+  dataVersion,
   deletePageVersion,
   flushPendingSave,
   getPageHistory,
@@ -1428,8 +1425,11 @@ onMounted(async () => {
   // 撤销栈基线：初始矩阵入栈，保证第一次 Ctrl+Z 有可回退的状态
   commitHistory();
 
-  // 任何数据变更都记入历史（防抖合并连续输入）；回退期间的变更不入栈
-  watch(pages, () => { if (isRestoring) return; debouncedCommit(); }, { deep: true });
+  // 任何数据变更都记入历史（防抖合并连续输入）；回退期间的变更不入栈。
+  // 【性能】这里原本是 watch(pages, ..., { deep: true })，每次击键都要 traverse
+  // 全部 156 个页面（实测一次 flush 约 27 万次属性读取）。改为观察 useSync 的
+  // dataVersion 计数器：它由「按页订阅」在真正发生变化时递增，零遍历成本。
+  watch(dataVersion, () => { if (isRestoring) return; debouncedCommit(); });
 
   // === 跨行鼠标选区支持（自建逻辑选区，不依赖浏览器跨宿主行为） ===
   // 原则：绝不主动 focus()（会清掉选区），只重建 Range；焦点交给浏览器随 mousedown 自然处理。
