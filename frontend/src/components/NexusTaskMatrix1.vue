@@ -67,10 +67,27 @@
         </div>
       </div>
 
-      <div class="flex-1 overflow-y-auto py-4 space-y-6 custom-scrollbar">
+      <div class="flex-1 py-4 space-y-6 custom-scrollbar" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'">
+        <!-- 最近访问（Notion 的 Recent）：本地记录、按访问倒序 -->
+        <div v-if="recentPages.length > 0">
+          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">最近</div>
+          <div class="space-y-0.5 px-2">
+            <div v-for="page in recentPages" :key="'recent-'+page.id"
+                 @click="selectPage(page.id)"
+                 class="group flex items-center justify-between px-2 py-1.5 rounded-md cursor-pointer transition-colors"
+                 :class="activePageId === page.id ? 'bg-[#1e2126] text-[#00f0ff]' : 'text-[#6b7280] hover:bg-[#1e2126]/50'">
+              <div class="flex items-center gap-2 truncate">
+                <span v-if="page.icon" class="shrink-0">{{ page.icon }}</span>
+                <svg v-else class="w-4 h-4 shrink-0 text-[#6b7280]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                <span class="text-sm truncate font-medium">{{ page.title || '无标题' }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 收藏的子程序 -->
         <div v-if="favoritePages.length > 0">
-          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">收藏的子程序</div>
+          <div class="text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold">最爱</div>
           <div class="space-y-0.5 px-2">
             <div v-for="page in favoritePages" :key="'fav-'+page.id"
                  @click="selectPage(page.id)"
@@ -109,7 +126,7 @@
         <!-- 私人空间树状视图 -->
         <div>
           <div class="flex items-center justify-between text-[11px] font-['JetBrains_Mono',monospace] text-[#6b7280] mb-1 px-4 uppercase tracking-wider font-bold group">
-            <span>私人空间网络</span>
+            <span>私人</span>
             <!-- 新建根页面：桌面端 hover 才浮出；触屏无 hover，必须常驻可见 -->
             <button @click="createPage(null)" class="opacity-100 md:opacity-0 md:group-hover:opacity-100 active:text-[#00f0ff] transition-all p-2 md:p-0 -mr-2 md:mr-0" title="新建根页面" aria-label="新建根页面">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
@@ -188,7 +205,7 @@
 
     <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
     <Transition name="page-fade" mode="out-in">
-    <main class="flex-1 overflow-y-auto relative custom-scrollbar flex flex-col" :key="activePage ? activePage.id : 'none'" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
+    <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
       <div class="w-full h-1 bg-[#00f0ff] shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
@@ -378,16 +395,10 @@
                 </div>
 
                 <!-- 块类型标记：与手柄同容器，故同样对齐文字首行中线。
-                     w-5 固定宽度，保证各类型的文字起点严格一致 -->
-                <div v-if="task.type === 'todo'" class="relative w-5 h-5 flex items-center justify-center">
-                  <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
-                         class="peer appearance-none w-5 h-5 border-2 border-[#1e2126] bg-[#090a0c] checked:border-[#00f0ff] checked:bg-[#00f0ff]/20 cursor-pointer transition-all rounded-none outline-none"
-                         style="clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px)" />
-                  <svg class="absolute w-3.5 h-3.5 text-[#00f0ff] pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                    <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <div v-else-if="task.type === 'bullet'" class="w-5 flex items-center justify-center">
+                     w-5 固定宽度，保证各类型的文字起点严格一致。
+                     例外：todo 的复选框不在槽内 —— Notion 的复选框与其它行文字左缘平齐、
+                     文字跟在其后，故渲染在正文流内（见下方 EDITABLE_TYPES 前）。 -->
+                <div v-if="task.type === 'bullet'" class="w-5 flex items-center justify-center">
                   <div class="w-1.5 h-1.5 rounded-full bg-[#00f0ff]/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
                 </div>
                 <div v-else-if="task.type === 'numbered'" class="w-5 flex items-center justify-end">
@@ -408,6 +419,20 @@
 
             <!-- 引用竖线：装饰元素，贴在文字左侧（quote 的 flex-1 有 pl-4 让出空间） -->
             <div v-if="task.type === 'quote'" class="absolute -left-4 top-2 bottom-2 w-0.5 bg-[#ffb000] rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
+
+            <!-- todo 复选框：正文流内、压在正文左缘（对齐 Notion——复选框与其它行文字平齐，
+                 待办文字跟在复选框右侧）。垂直对齐复用手柄槽的同款方案：
+                 mt-[2px] 抵消 ce-block 的 py-0.5，h-[1lh] 锚定首行行高中线。 -->
+            <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-relaxed" :class="getFontSizeClass(task)">
+              <div class="relative w-5 h-5 flex items-center justify-center">
+                <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
+                       class="peer appearance-none w-5 h-5 border-2 border-[#1e2126] bg-[#090a0c] checked:border-[#00f0ff] checked:bg-[#00f0ff]/20 cursor-pointer transition-all rounded-none outline-none"
+                       style="clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px)" />
+                <svg class="absolute w-3.5 h-3.5 text-[#00f0ff] pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                  <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+            </div>
 
             <template v-if="EDITABLE_TYPES.includes(task.type)">
               <!-- ContentEditable 富文本 -->
@@ -594,7 +619,7 @@
     </div>
 
     <!-- 设置面板：入口在侧边栏右上角齿轮（原生底部 Tab 已移除） -->
-    <SettingsPanel :visible="settingsOpen" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" />
+    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" />
 
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
@@ -701,7 +726,7 @@
     <!-- 页面「···」菜单：触屏 bottom sheet / 桌面 popover（复用块菜单双形态范式）。
          收拢页面级操作——导出 / 收藏 / 新建子页 / 重命名 / 删除。 -->
     <div v-if="pageMenuConfig.isOpen" class="fixed inset-0 z-40" :class="isCoarsePointer ? 'bg-black/60' : 'bg-transparent'" @click="closePageMenu"></div>
-    <div v-if="pageMenuConfig.isOpen"
+    <div v-if="pageMenuConfig.isOpen && activePage"
          class="fixed z-50 bg-[#090a0c] text-sm overflow-y-auto custom-scrollbar"
          :class="isCoarsePointer
             ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-[#1e2126] shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
@@ -937,6 +962,7 @@ import {
 } from '../composables/useSync';
 import {installNativeBridge} from '../composables/nativeBridge';
 import {useMobileInput} from '../composables/useMobileInput';
+import {hasNotionIdSuffix, stripNotionId} from '../composables/zipImport';
 import {newBlockId, newPageId} from '../composables/ids';
 import {randomEmoji} from '../composables/emoji';
 import SettingsPanel from './SettingsPanel.vue';
@@ -982,6 +1008,7 @@ const sidebarOpen = ref(false);
 // 抽屉内导航的统一出口：切页即关抽屉，避免遮层留在屏幕上
 const selectPage = (id: string) => {
   activePageId.value = id;
+  rememberRecentPage(id);   // 记录最近访问（Notion 的 Recent）
   sidebarOpen.value = false;
 };
 
@@ -1331,6 +1358,7 @@ onMounted(async () => {
   // 直接覆盖上次会话存进去的新数据 —— 表现为「重开 App 数据回到旧版本/丢失」。
   // 首屏多等几十毫秒远不如数据正确性重要。
   await initStorage();
+  loadRecentPages();   // 载入「最近访问」列表（本地 localStorage）
 
   // LocalFirst: 读本地 -> 远端握手对齐 -> 建立 WebSocket -> 变更自动持久化+广播
   await initSync(pages as any);
@@ -1513,6 +1541,24 @@ onUnmounted(() => { closeSync(); });
 // === Sidebar 树状逻辑 ===
 // 墓碑页（deletedAt 非空）从侧边栏隐藏：用户删除后在 UI 上立即消失，
 // 但墓碑仍保留在 pages 数组里随同步上推，待其它端消化后再从本地彻底移除。
+// 最近访问（Notion 的 Recent）：本地 localStorage 记录、按访问倒序，不同步
+const RECENT_PAGES_KEY = 'nexus_recent_pages';
+const RECENT_PAGES_MAX = 12;
+const recentPageIds = ref<string[]>([]);
+const loadRecentPages = () => {
+  try {
+    const arr = JSON.parse(localStorage.getItem(RECENT_PAGES_KEY) || '[]');
+    recentPageIds.value = Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : [];
+  } catch { recentPageIds.value = []; }
+};
+const rememberRecentPage = (id: string) => {
+  const next = [id, ...recentPageIds.value.filter((x) => x !== id)].slice(0, RECENT_PAGES_MAX);
+  recentPageIds.value = next;
+  try { localStorage.setItem(RECENT_PAGES_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+};
+const recentPages = computed(() =>
+  recentPageIds.value.map((id) => pages.value.find((p) => p.id === id && !p.deletedAt)).filter((p): p is Page => !!p)
+);
 const favoritePages = computed(() => pages.value.filter(p => p.isFavorite && !p.deletedAt));
 // 回收站：已打墓碑的页面，按删除时间倒序（最新删除在上）
 const trashedPages = computed(() => pages.value.filter(p => p.deletedAt).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0)));
@@ -2146,6 +2192,22 @@ const iconPicker = ref<{ pageId: string; anchorEl: HTMLElement | null } | null>(
 const settingsOpen = ref(false);
 const openSettings = (_e?: MouseEvent) => { settingsOpen.value = true; };
 
+// === 历史脏标题清理 ===
+// 早先版本导入 Notion ZIP 时把文件名尾部的 32 位 id 一起当成了标题，
+// 已导入的页面不会自动受益于新的导入逻辑，这里提供一次性体检 + 清理。
+const notionIdTitleCount = computed(
+  () => pages.value.filter((p) => !p.deletedAt && hasNotionIdSuffix(p.title ?? '')).length,
+);
+const cleanNotionIdTitles = () => {
+  let n = 0;
+  for (const p of pages.value) {
+    if (p.deletedAt || !hasNotionIdSuffix(p.title ?? '')) continue;
+    p.title = stripNotionId(p.title);
+    n++;
+  }
+  return n;   // 就地改 title，经 pages 的 deep watch -> stampUpdated + 上推同步
+};
+
 // === 页面级「···」菜单（对齐 Notion：页面操作收敛到内容页右上角） ===
 const pageMenuConfig = ref<{ isOpen: boolean; x: number; y: number }>({ isOpen: false, x: 0, y: 0 });
 const openPageMenu = (e: MouseEvent) => {
@@ -2171,6 +2233,18 @@ const openPageHistory = async () => {
   historyOpen.value = true;
 };
 const closePageHistory = () => { historyOpen.value = false; };
+// 任一「菜单 / 模态」浮层打开时，锁定背景（主编辑区 + 侧边栏）滚动，
+// 避免鼠标在浮层外滚轮时背景跟着滑（对齐 Notion：弹出菜单后背景不滚动）。
+// 浮层自身是 fixed 独立容器、自带滚动，不受影响；小下拉（slash/mention/格式栏）不纳入，避免影响编辑滚动。
+const overlayOpen = computed(() =>
+  actionMenuConfig.value.isOpen ||
+  pageMenuConfig.value.isOpen ||
+  settingsOpen.value ||
+  importWizardOpen.value ||
+  trashOpen.value ||
+  historyOpen.value ||
+  backlinksOpen.value
+);
 // 用历史快照覆盖当前页（深拷贝，触发 watch -> stampUpdated -> 上推同步）
 const restoreVersion = (v: PageVersion) => {
   if (!activePage.value) return;
@@ -2400,7 +2474,9 @@ const startCoverDrag = (e: { clientY: number }) => {
     const y = 'touches' in ev && ev.touches.length > 0 ? ev.touches[0].clientY : (ev as MouseEvent).clientY;
     const dy = y - coverDragStart.y;
     // 120px 拖拽 = 全范围，兼顾精细与效率
-    const next = Math.max(0, Math.min(100, coverDragStart.pos + (dy / 120) * 100));
+    // 方向：向下拖(dy>0) 图片跟手向下移 → 露出更上部 → coverPos 减小（0=顶 100=底）。
+    // 修复：原先用 +，导致向下拖图片反而上移，与「按住图片拖动」的手势相反。
+    const next = Math.max(0, Math.min(100, coverDragStart.pos - (dy / 120) * 100));
     if (activePage.value) activePage.value.coverPos = Math.round(next);
   };
   const onUp = () => {
@@ -3359,26 +3435,44 @@ const insertTask = (targetId: string, position: 'above' | 'below' = 'below') => 
   focusConfig.value = { id: newId, pos: 'start' };
 };
 
-const openActionMenu = (e: MouseEvent, taskId: string) => { e.stopPropagation(); actionMenuConfig.value = { isOpen: true, x: (e.currentTarget as HTMLElement).getBoundingClientRect().left, y: (e.currentTarget as HTMLElement).getBoundingClientRect().bottom + 4, taskId }; };
-// 触屏：由 touch 坐标直接定位菜单（e.currentTarget 在 touch 事件里拿不到可靠元素）
+// 菜单视口自适应：菜单是 fixed 浮层，靠近边缘（尤其底部/右缘）会画出可视区。
+// 打开后下一帧量到真实宽高再夹取到视口内；传入 anchor（触发元素 rect）时，
+// 下溢出优先翻到锚点上方（对齐 Notion：菜单完整落在界面内、不溢出、尽量不遮触发块）。
+const clampActionMenuIntoViewport = (anchor?: { top: number; left: number; right: number; bottom: number }) => {
+  nextTick(() => {
+    const el = document.querySelector('.action-menu-popup') as HTMLElement | null;
+    if (!el || !actionMenuConfig.value.isOpen) return;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const m = 8;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let { x, y } = actionMenuConfig.value;
+    // 水平：右溢出 → 菜单右缘贴锚点右缘；再不行夹取到视口内
+    if (x + w > vw - m && anchor) x = anchor.right - w;
+    x = Math.max(m, Math.min(x, vw - w - m));
+    // 垂直：下溢出 → 锚点上方放得下就翻上去；否则夹取到视口底部内
+    if (y + h > vh - m) {
+      const above = anchor ? anchor.top - h - 4 : -Infinity;
+      y = above >= m ? above : Math.max(m, Math.min(y, vh - h - m));
+    } else {
+      y = Math.max(m, Math.min(y, vh - h - m));
+    }
+    actionMenuConfig.value = { ...actionMenuConfig.value, x: Math.round(x), y: Math.round(y) };
+  });
+};
+// 桌面：鼠标点六点，以手柄为锚点定位，并做视口自适应（flip + clamp）
+const openActionMenu = (e: MouseEvent, taskId: string) => {
+  e.stopPropagation();
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  actionMenuConfig.value = { isOpen: true, x: rect.left, y: rect.bottom + 4, taskId };
+  clampActionMenuIntoViewport({ top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom });
+};
+// 触屏：由 touch 坐标直接定位菜单（e.currentTarget 在 touch 事件里拿不到可靠元素），无锚点仅夹取
 const openActionMenuAtTouch = (taskId: string, e: TouchEvent) => {
   e.stopPropagation();
   const t = e.touches[0] || (e.changedTouches && e.changedTouches[0]);
   if (!t) return;
   actionMenuConfig.value = { isOpen: true, x: Math.round(t.clientX), y: Math.round(t.clientY), taskId };
-  // 触屏防越界：菜单是 fixed 定位，点击位置靠近屏幕边缘（尤其底部）时会画出可视区。
-  // 先用触摸点定位，下一帧量到真实宽高后再夹取到视口内（桌面端鼠标触发同样受益）。
-  nextTick(() => {
-    const el = document.querySelector('.action-menu-popup') as HTMLElement | null;
-    if (!el || !actionMenuConfig.value.isOpen) return;
-    const w = el.offsetWidth, h = el.offsetHeight;
-    const maxX = window.innerWidth - w - 8, maxY = window.innerHeight - h - 8;
-    actionMenuConfig.value = {
-      ...actionMenuConfig.value,
-      x: Math.max(8, Math.min(actionMenuConfig.value.x, maxX)),
-      y: Math.max(8, Math.min(actionMenuConfig.value.y, maxY)),
-    };
-  });
+  clampActionMenuIntoViewport();
 };
 const actionMenuTask = computed(() => activePage.value?.tasks.find((t: Task) => t.id === actionMenuConfig.value.taskId) ?? null);
 const handleActionCommand = (type: string) => {

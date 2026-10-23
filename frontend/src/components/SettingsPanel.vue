@@ -28,8 +28,13 @@ import {
 } from '../composables/useSync';
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
 
-const props = defineProps<{ visible: boolean }>();
-const emit = defineEmits<{ (e: 'close'): void; (e: 'export-md'): void; (e: 'open-notion-import'): void }>();
+const props = defineProps<{ visible: boolean; dirtyTitleCount?: number }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  (e: 'export-md'): void;
+  (e: 'open-notion-import'): void;
+  (e: 'clean-titles'): void;
+}>();
 
 const { isCoarsePointer } = useMobileInput();
 
@@ -127,6 +132,13 @@ async function onMdImport(e: Event) {
   if (!file) return;
   const res = await importMarkdown(file); flashDataMsg(res.message, 5000); input.value = '';
 }
+// 早期导入把 Notion 的内部 id 留在了标题尾部，这里一键还原（数量由父组件统计后传入）
+const onCleanTitles = () => {
+  const n = props.dirtyTitleCount ?? 0;
+  if (n === 0) return;
+  emit('clean-titles');
+  flashDataMsg(`已清理 ${n} 个标题尾部的 Notion ID`);
+};
 </script>
 
 <template>
@@ -235,7 +247,13 @@ async function onMdImport(e: Event) {
               导入 Notion ZIP
             </button>
           </div>
-          <p class="text-xs text-[#6b7280] mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。</p>
+          <div class="mt-2">
+            <button @click="onCleanTitles" :disabled="!dirtyTitleCount"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-[#14161a] border border-[#1e2126] text-[#9ca3af] enabled:hover:text-[#00f0ff] enabled:hover:border-[#00f0ff] enabled:active:bg-[#1e2126] disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              清理标题里的 Notion ID<template v-if="dirtyTitleCount">（{{ dirtyTitleCount }}）</template>
+            </button>
+          </div>
+          <p class="text-xs text-[#6b7280] mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID 可用上面的按钮一键清理。</p>
           <p v-if="dataMsg" class="mt-2 text-xs text-[#00f0ff] font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
           <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />
           <input ref="mdInput" type="file" accept=".md,.markdown,text/markdown" class="hidden" @change="onMdImport" />

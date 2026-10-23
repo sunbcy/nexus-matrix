@@ -10,9 +10,9 @@
 // 另外要处理 Notion 的图片第二种形态：S3 预签名外链（带 X-Amz-Signature），
 // 签名过期后会 403。这里同样在导入时立即下载转 Base64，不留外链。
 
-import type { Page } from './useSync';
-import { newBlockId, newPageId } from './ids';
-import { saveImageAsset } from './assets';
+import type {Page} from './useSync';
+import {newBlockId, newPageId} from './ids';
+import {saveImageAsset} from './assets';
 
 export interface ZipImportResult {
   pages: Page[];
@@ -41,6 +41,24 @@ const mimeOf = (name: string): string => {
 };
 
 const isImageName = (name: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name);
+
+// Notion 导出的 .md 文件名末尾会追加一个内部页面 id（如「会议记录 1a2b…5o6p.md」）。
+// 它是 Notion 的标识、不属于标题，导入时必须去掉才能还原原标题。
+// 形制：空格或下划线 + 32 位十六进制（少数导出为带连字符的 UUID 形式）。
+const NOTION_ID_SUFFIX =
+  /[\s_]+(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\s*$/i;
+
+// 去掉标题尾部的 Notion id。边界：若整串只剩 id（标题本身就是 id），保持原样不做清空。
+export const stripNotionId = (s: string): string => {
+  const src = s ?? '';
+  const m = NOTION_ID_SUFFIX.exec(src);
+  if (!m) return src.trim();
+  const head = src.slice(0, m.index).trim();
+  return head || src.trim();
+};
+
+// 是否还残留 Notion id（用于历史数据的批量体检与清理）
+export const hasNotionIdSuffix = (s: string): boolean => stripNotionId(s ?? '') !== (s ?? '').trim();
 
 // 远程图片下载为 Blob（S3 预签名等）。失败返回 null，由调用方降级保留原 URL。
 const fetchAsBlob = async (url: string): Promise<Blob | null> => {
@@ -165,8 +183,9 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
 
     // 标题：优先取文件名；若正文首块是 h1 且更具体，用 h1
     const firstH1 = blocks.find((b) => b.type === 'h1');
-    const fromName = entry.base.replace(/\.md$/i, '').trim();
-    const title = fromName || (firstH1?.content.replace(/<[^>]+>/g, '') || '导入的文档');
+    // 文件名与 H1 兜底都清理，避免 id 以另一条路径渗进标题
+    const fromName = stripNotionId(entry.base.replace(/\.md$/i, ''));
+    const title = fromName || (stripNotionId(firstH1?.content.replace(/<[^>]+>/g, '') || '') || '导入的文档');
 
     // 层级：所在目录的拥有者即父页面
     const parentPath = ownerMdOfDir(entry.dir, entry.path);
