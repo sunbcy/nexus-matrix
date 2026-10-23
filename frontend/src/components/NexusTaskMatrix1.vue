@@ -305,7 +305,8 @@
                @keydown="handleTitleKeyDown"
                class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-5xl font-bold tracking-tight text-display placeholder-dim/30 mb-10 pb-4 border-b border-line" />
 
-        <div class="flex-1 relative pb-32" @click="handleEmptyClick">
+        <div class="flex-1 relative pb-32" @click="onContentClick" @mouseover="onLinkHover" @mouseleave="hideLinkChip"
+             @touchstart.passive="onLinkTouchStart" @touchmove.passive="onLinkTouchMove" @touchend="onLinkTouchEnd" @touchcancel="onLinkTouchEnd" @contextmenu="onLinkContextMenu">
           
           <!-- 任务行循环渲染 (含层级缩进与多媒体类型) -->
           <div v-for="(task, index) in visibleTasks" :key="task.id" :data-block-id="task.id"
@@ -615,7 +616,7 @@
     </div>
 
     <!-- 设置面板：入口在侧边栏右上角齿轮（原生底部 Tab 已移除） -->
-    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" />
+    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" :dead-link-count="deadLinkCount" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" @clean-links="cleanDeadLinks" />
 
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
@@ -655,7 +656,7 @@
       <div class="w-[420px] bg-void border border-line shadow-2xl rounded-md overflow-hidden">
         <div class="px-4 py-3 border-b border-line/60 flex items-center gap-2">
           <svg class="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-          <span class="text-sm font-bold tracking-wide text-display">添加链接</span>
+          <span class="text-sm font-bold tracking-wide text-display">{{ linkDialog.editEl ? '编辑链接' : '添加链接' }}</span>
         </div>
         <div class="p-4 space-y-3">
           <div>
@@ -666,7 +667,7 @@
                    @keydown.esc.prevent="closeLinkDialog"
                    class="w-full bg-void border border-line focus:border-accent outline-none px-3 py-2 text-sm text-display rounded-sm transition-colors" />
           </div>
-          <div v-if="linkDialog.selectedText" class="text-xs text-dim truncate">
+          <div v-if="linkDialog.selectedText && !linkDialog.editEl" class="text-xs text-dim truncate">
             将链接应用到：<span class="text-accent">{{ linkDialog.selectedText }}</span>
           </div>
         </div>
@@ -674,6 +675,50 @@
           <button @click="closeLinkDialog" class="px-3 py-1.5 text-sm text-dim hover:text-display transition-colors">取消</button>
           <button @click="confirmLink" class="px-4 py-1.5 text-sm font-bold text-onaccent bg-accent hover:bg-accent2 rounded-sm transition-colors">确认</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 链接预览卡（Notion 式）：桌面端 hover 浮出小气泡；触屏无 hover，长按弹出底部菜单。
+         两者复用同一份 linkChip 状态，内容均为「预览 + 打开/复制/编辑/移除」。 -->
+    <!-- 桌面气泡 -->
+    <div v-if="linkChip.visible && !isCoarsePointer"
+         class="fixed z-[60] flex flex-col gap-1.5 px-2.5 py-2 rounded-md bg-panel border border-line shadow-xl max-w-[86vw]"
+         :style="{ left: `${linkChip.x}px`, top: `${linkChip.y}px` }"
+         @mouseenter="keepLinkChip" @mouseleave="hideLinkChip">
+      <div class="flex items-center gap-1.5 min-w-0">
+        <img v-if="linkChip.favicon" :src="linkChip.favicon" @error="linkChip.favicon = ''" class="w-3.5 h-3.5 rounded-sm shrink-0" alt="" />
+        <span class="text-xs font-semibold text-display truncate">{{ linkChip.previewTitle || (linkChip.pageId ? '页内链接' : linkChip.href) }}</span>
+      </div>
+      <div v-if="linkChip.previewSnippet" class="text-[11px] text-dim truncate max-w-[260px]">{{ linkChip.previewSnippet }}</div>
+      <div v-if="linkChip.copied" class="text-[11px] text-accent font-['JetBrains_Mono',monospace]">已复制 ✓</div>
+      <template v-else>
+        <div class="flex items-center gap-1 flex-wrap">
+          <button class="shrink-0 text-[11px] font-['JetBrains_Mono',monospace] text-accent hover:underline" @click.stop="openLinkChip">打开 ↗</button>
+          <button class="shrink-0 text-[11px] font-['JetBrains_Mono',monospace] text-dim hover:text-display" @click.stop="copyLinkChip">复制</button>
+          <button class="shrink-0 text-[11px] font-['JetBrains_Mono',monospace] text-dim hover:text-display" @click.stop="editLinkChip">编辑</button>
+          <button class="shrink-0 text-[11px] font-['JetBrains_Mono',monospace] text-dim hover:text-danger" @click.stop="unlinkChip">移除</button>
+        </div>
+      </template>
+    </div>
+    <!-- 移动端底部菜单 -->
+    <div v-if="linkChip.visible && isCoarsePointer"
+         class="fixed inset-0 z-[60] flex items-end justify-center bg-black/50" @click.self="hideLinkChip">
+      <div class="w-full max-w-[480px] bg-void border-t border-line rounded-t-xl pb-[env(safe-area-inset-bottom,0px)]">
+        <div class="w-10 h-1 rounded-full bg-dim/60 mx-auto my-2"></div>
+        <div class="px-4 py-2 border-b border-line/60">
+          <div class="flex items-center gap-2 min-w-0">
+            <img v-if="linkChip.favicon" :src="linkChip.favicon" @error="linkChip.favicon = ''" class="w-4 h-4 rounded-sm shrink-0" alt="" />
+            <span class="text-sm font-semibold text-display truncate">{{ linkChip.previewTitle || (linkChip.pageId ? '页内链接' : linkChip.href) }}</span>
+          </div>
+          <div v-if="linkChip.previewSnippet" class="text-xs text-dim truncate mt-0.5">{{ linkChip.previewSnippet }}</div>
+        </div>
+        <div v-if="linkChip.copied" class="px-4 py-3 text-sm text-accent">已复制 ✓</div>
+        <template v-else>
+          <button class="w-full text-left px-4 py-3 text-sm text-display hover:bg-panel/40 transition-colors" @click.stop="openLinkChip">打开 ↗</button>
+          <button class="w-full text-left px-4 py-3 text-sm text-display hover:bg-panel/40 transition-colors" @click.stop="copyLinkChip">复制链接</button>
+          <button class="w-full text-left px-4 py-3 text-sm text-display hover:bg-panel/40 transition-colors" @click.stop="editLinkChip">编辑链接</button>
+          <button class="w-full text-left px-4 py-3 text-sm text-danger hover:bg-danger/10 transition-colors" @click.stop="unlinkChip">移除链接</button>
+        </template>
       </div>
     </div>
 
@@ -1362,12 +1407,22 @@ onMounted(async () => {
   // 原生壳（Android Compose）只读桥：查询页面/同步状态、反向打开页面
   installNativeBridge(pages as any, activePageId);
   const hash = window.location.hash.slice(1);
-  if (hash && pages.value.find(p => p.id === hash)) activePageId.value = hash;
-  else if (pages.value.length > 0) {
-    // 跳过已删除（墓碑）页面，避免首屏默认选中墓碑页导致主编辑区空白
-    const live = pages.value.find(p => !p.deletedAt) || pages.value[0];
-    activePageId.value = live.id;
-    window.history.replaceState(null, '', `#${activePageId.value}`);
+  // 刷新后用 hash 恢复「上次选中的页」。若 hash 指向的页此刻尚未就绪（例如仅经 WS 同步稍后到达，
+  // 或数据异步加载完成前），不要急着跳到第一篇，而是等它出现再恢复——否则会表现为
+  // 「刷新后内容变成另一篇文档」。
+  const restoreFromHash = (): boolean => {
+    if (hash && pages.value.find(p => p.id === hash)) { activePageId.value = hash; return true; }
+    return false;
+  };
+  if (!restoreFromHash()) {
+    if (!hash && pages.value.length > 0) {
+      // 跳过已删除（墓碑）页面，避免首屏默认选中墓碑页导致主编辑区空白
+      const live = pages.value.find(p => !p.deletedAt) || pages.value[0];
+      activePageId.value = live.id;
+      window.history.replaceState(null, '', `#${activePageId.value}`);
+    }
+    // 本地/初始数据里还没目标页：等 pages 就绪（含 WS 同步到达）再恢复一次
+    const stop = watch(pages, () => { if (restoreFromHash()) stop(); }, { flush: 'post' });
   }
   window.addEventListener('hashchange', () => {
      const newHash = window.location.hash.slice(1);
@@ -1530,8 +1585,15 @@ onMounted(async () => {
 watch(activePageId, (newId) => { if(window.location.hash.slice(1) !== newId) window.location.hash = newId; });
 // 兜底：激活页无效时（打开了已删除/不存在的页面锚点，或数据异步加载完成前 hash 指向失效），
 // 回退到第一个可用页，避免主编辑区空白（移动端侧边栏是默认隐藏的抽屉，空白会更明显）。
+// 兜底：激活页无效时（打开了已删除/不存在的页面锚点，或数据异步加载完成前 hash 指向失效），
+// 回退到第一个可用页，避免主编辑区空白（移动端侧边栏是默认隐藏的抽屉，空白会更明显）。
+// 注意：仅当「当前选中的页确实失效」才回退；不能因 activePage 在数据加载 / 同步替换 pages
+// 数组的瞬间短暂为 undefined 就回退，否则会把用户选中的页（含刷新后由 hash 恢复的页）冲掉，
+// 表现为「刷新后内容变成另一篇文档」。
 watch(activePage, (ap) => {
   if (ap) return;
+  const cur = activePageId.value;
+  if (cur && pages.value.some((p) => p.id === cur && !p.deletedAt)) return;
   const live = pages.value.find((p) => !p.deletedAt) || pages.value[0];
   if (live) { activePageId.value = live.id; window.history.replaceState(null, '', `#${live.id}`); }
 });
@@ -1762,32 +1824,66 @@ const applyColor = (value: string) => {
 // 3) 观感与整体工业风割裂。
 // 关键实现点：打开时把 Range 克隆保存，确认时先恢复选区再 execCommand。
 const linkInputRef = ref<HTMLInputElement | null>(null);
-const linkDialog = ref({ visible: false, url: '', selectedText: '' });
+// editEl 非空 = 编辑已有链接；为空 = 由选区新建链接
+const linkDialog = ref<{ visible: boolean; url: string; selectedText: string; editEl: HTMLAnchorElement | null }>({ visible: false, url: '', selectedText: '', editEl: null });
 let savedLinkRange: Range | null = null;
+
+// 无协议时补 https://，避免生成相对链接
+const normalizeHref = (raw: string): string =>
+  /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith('/') || raw.startsWith('#') ? raw : `https://${raw}`;
 
 const openLinkDialog = () => {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
   savedLinkRange = sel.getRangeAt(0).cloneRange();
-  linkDialog.value = { visible: true, url: '', selectedText: sel.toString().slice(0, 40) };
+  linkDialog.value = { visible: true, url: '', selectedText: sel.toString().slice(0, 40), editEl: null };
+  nextTick(() => linkInputRef.value?.focus());
+};
+// 从 hover 气泡「编辑」进入：预填当前链接的 href，确认时就地更新而非新建
+const openEditLinkDialog = (el: HTMLAnchorElement) => {
+  linkDialog.value = { visible: true, url: el.getAttribute('href') || '', selectedText: (el.textContent || '').trim(), editEl: el };
   nextTick(() => linkInputRef.value?.focus());
 };
 const closeLinkDialog = () => { linkDialog.value.visible = false; savedLinkRange = null; hideFormatToolbar(); };
 const confirmLink = () => {
-  const url = linkDialog.value.url.trim();
-  if (!url || !savedLinkRange) { closeLinkDialog(); return; }
-  // 无协议时补 https://，避免生成相对链接
-  const href = /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || url.startsWith('/') || url.startsWith('#') ? url : `https://${url}`;
+  const raw = linkDialog.value.url.trim();
+  const editEl = linkDialog.value.editEl;
+  if (!raw || (!editEl && !savedLinkRange)) { closeLinkDialog(); return; }
+  const href = normalizeHref(raw);
 
-  // 恢复弹窗前保存的选区，否则 createLink 作用在错误的位置
+  // 编辑已有链接：就地更新该 <a>，不再新建
+  if (editEl) {
+    const external = /^https?:\/\//i.test(href) || (href.startsWith('/') && !href.startsWith('#'));
+    if (external) {
+      // 改成外链：去掉页内标记，补上新标签打开所需的属性
+      editEl.removeAttribute('data-page-id');
+      editEl.setAttribute('target', '_blank');
+      editEl.setAttribute('rel', 'noopener noreferrer');
+    }
+    editEl.setAttribute('href', href);
+    const blockEl = editEl.closest('.ce-block') as HTMLElement | null;
+    if (blockEl?.dataset.taskId) updateTask(blockEl.dataset.taskId, { content: blockEl.innerHTML });
+    closeLinkDialog();
+    return;
+  }
+
+  // 由选区新建链接（原有逻辑）
   const sel = window.getSelection();
-  if (sel) { sel.removeAllRanges(); sel.addRange(savedLinkRange); }
+  if (sel) { sel.removeAllRanges(); sel.addRange(savedLinkRange!); }
   document.execCommand('createLink', false, href);
 
   // 同步回数据模型
   const n = sel?.anchorNode;
   const blockEl = ((n && n.nodeType === 3 ? n.parentElement : n as HTMLElement) ?? null)?.closest('.ce-block') as HTMLElement | null;
-  if (blockEl?.dataset.taskId) updateTask(blockEl.dataset.taskId, { content: blockEl.innerHTML });
+  if (blockEl) {
+    // execCommand 只给裸 <a href>，补上 target/rel：导出、分享、以及将来
+    // 任何脱离本组件的渲染都能保持「新标签打开 + 防 tabnabbing」。
+    for (const a of Array.from(blockEl.querySelectorAll(`a[href="${href.replace(/"/g, '\\"')}"]`))) {
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+    }
+    if (blockEl.dataset.taskId) updateTask(blockEl.dataset.taskId, { content: blockEl.innerHTML });
+  }
   closeLinkDialog();
 };
 
@@ -2206,6 +2302,53 @@ const cleanNotionIdTitles = () => {
     n++;
   }
   return n;   // 就地改 title，经 pages 的 deep watch -> stampUpdated + 上推同步
+};
+
+// === 历史死链修复 ===
+// 早期 Notion 导入把页内链接压成了 href="#" 死链（点开是空白页）。
+// 这里按「链接文字 → 页面标题」做模糊匹配，把能认出来的还原成真正的页内链接
+// （data-page-id），还原的点进来即可在应用内跳转；认不出 / 指向自己的保持原样。
+const DEAD_LINK_RE = /<a\b([^>]*?)\bhref\s*=\s*["']#?["']([^>]*?)>([\s\S]*?)<\/a>/gi;
+const normalizeTitle = (s: string): string => stripNotionId((s ?? '').trim().toLowerCase());
+
+const deadLinkCount = computed(() => {
+  let n = 0;
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    for (const t of p.tasks ?? []) {
+      if (!t.content) continue;
+      DEAD_LINK_RE.lastIndex = 0;
+      while (DEAD_LINK_RE.exec(t.content)) n++;
+    }
+  }
+  return n;
+});
+
+const cleanDeadLinks = () => {
+  // 标题（已去除 Notion id、转小写）-> 页面 id（同标题取第一个）
+  const byTitle = new Map<string, string>();
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    const key = normalizeTitle(p.title ?? '');
+    if (key && !byTitle.has(key)) byTitle.set(key, p.id);
+  }
+  let fixed = 0;
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    for (const t of p.tasks ?? []) {
+      if (!t.content) continue;
+      DEAD_LINK_RE.lastIndex = 0;
+      const next = t.content.replace(DEAD_LINK_RE, (_tag, _pre, _post, inner) => {
+        const text = inner.replace(/<[^>]+>/g, '').trim();
+        const target = byTitle.get(normalizeTitle(text));
+        if (!target || target === p.id) return _tag; // 认不出或指向自己则不动
+        fixed++;
+        return `<a data-page-id="${target}" href="#${target}">${inner}</a>`;
+      });
+      if (next !== t.content) t.content = next;
+    }
+  }
+  return fixed;   // 就地改 content，经 pages 的 deep watch -> stampUpdated + 上推同步
 };
 
 // === 页面级「···」菜单（对齐 Notion：页面操作收敛到内容页右上角） ===
@@ -3385,6 +3528,197 @@ const addKanbanCard = (e: Event, _task: Task, col: any) => {
 };
 const deleteKanbanCard = (_task: Task, col: any, cardIdx: number) => {
    col.cards.splice(cardIdx, 1);
+};
+
+// === 文档内链接（对齐 Notion：点击即访问） ===
+//
+// 背景：块是 contenteditable，浏览器在编辑区内点击 <a> 只会放光标、不跳转，
+// 所以「点链接打开」在富文本编辑器里必须自己做。规则（与 Notion 一致）：
+//   1) 页内链接（[[ 插入的 a[data-page-id]）→ 应用内跳转到该页；
+//   2) 外链 → 新标签打开（noopener，防 tabnabbing）；
+//   3) **编辑态也「点即打开」**——要改链接文字，用方向键 / 点链接旁的空白把光标移进去，
+//      而不是靠「点链接不打开」。这是 Notion 的行为，也是用户确认的对齐方式。
+//   4) hover 链接浮出 Notion 式气泡：打开 / 复制链接 / 编辑 / 移除（见 linkChip）。
+const openExternal = (href: string) => {
+  // 优先 window.open 新标签打开；noopener 同时避免新页拿到 window.opener（防 tabnabbing）。
+  // 若被环境拦截（WebView / 弹窗拦截器常在用户手势之外或 WebView 内拦掉），
+  // 退化为「点击 target=_blank 的 <a>`」——多数 WebView 会委派系统浏览器打开，
+  // 且绝不会让当前应用页跳走。严禁退化为 window.location.href（会把整个应用冲掉）。
+  const w = window.open(href, '_blank', 'noopener,noreferrer');
+  if (w) return;
+  const a = document.createElement('a');
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.style.position = 'fixed';
+  a.style.left = '-9999px';
+  a.style.top = '-9999px';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
+
+// 悬停预览卡 / 移动端长按菜单（Notion 式链接卡）：提供 打开 / 复制链接 / 编辑 / 移除，
+// 桌面端 hover 浮出小气泡，触屏无 hover 改成长按弹出底部菜单（见模板里的两套渲染）。
+const linkChip = ref<{
+  visible: boolean; x: number; y: number; href: string; pageId: string | null;
+  text: string; copied: boolean; previewTitle: string; previewSnippet: string; domain: string; favicon: string;
+}>({
+  visible: false, x: 0, y: 0, href: '', pageId: null, text: '', copied: false,
+  previewTitle: '', previewSnippet: '', domain: '', favicon: '',
+});
+// 当前 hover / 长按到的 <a>（非响应式，仅动作时读取），避免把 DOM 节点塞进响应式状态
+let linkChipEl: HTMLAnchorElement | null = null;
+// 迟一点再隐藏：鼠标从链接移到气泡上时不该立刻消失，否则按钮点不到
+let linkChipTimer: number | null = null;
+const hideLinkChip = () => {
+  if (linkChipTimer) clearTimeout(linkChipTimer);
+  linkChipTimer = window.setTimeout(() => {
+    linkChip.value.visible = false;
+    linkChip.value.copied = false;
+    linkChipEl = null;
+  }, 160);
+};
+const keepLinkChip = () => { if (linkChipTimer) { clearTimeout(linkChipTimer); linkChipTimer = null; } };
+// 滚动后气泡位置就失效了，直接收起（capture：内容区/侧边栏滚动都能收到）
+window.addEventListener('scroll', hideLinkChip, true);
+
+// 预览卡内容：页内链接取目标页标题 + 首段文字；外链取域名 + favicon（浏览器直连站点自己的
+// /favicon.ico，无需后端；取不到则回退到域名文字）。真实 OG 元信息（标题/描述/封面图）需要
+// 后端代理抓取，这里不做，留给后续。
+const stripHtml = (s: string): string => (s || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const resolvePreview = (a: HTMLAnchorElement) => {
+  const pageId = a.getAttribute('data-page-id');
+  if (pageId) {
+    const p = pages.value.find((pg) => pg.id === pageId && !pg.deletedAt);
+    if (p) {
+      const firstText = (p.tasks || [])
+        .map((t) => stripHtml(t.content || ''))
+        .find((s) => s.length > 0) || '';
+      return { previewTitle: p.title || '无标题', previewSnippet: firstText.slice(0, 90), domain: '', favicon: '' };
+    }
+    return { previewTitle: '链接的页面已不存在', previewSnippet: '', domain: '', favicon: '' };
+  }
+  const href = a.getAttribute('href') || '';
+  try {
+    const u = new URL(href);
+    const host = u.hostname.replace(/^www\./, '');
+    return { previewTitle: host, previewSnippet: href, domain: host, favicon: `https://${u.hostname}/favicon.ico` };
+  } catch {
+    return { previewTitle: href, previewSnippet: '', domain: '', favicon: '' };
+  }
+};
+const showLinkChipFor = (a: HTMLAnchorElement) => {
+  const r = a.getBoundingClientRect();
+  linkChipEl = a;
+  linkChip.value = {
+    visible: true,
+    x: Math.round(r.left),
+    y: Math.round(r.bottom + 4),
+    href: a.getAttribute('href') || '',
+    pageId: a.getAttribute('data-page-id'),
+    text: (a.textContent || '').trim(),
+    copied: false,
+    ...resolvePreview(a),
+  };
+};
+const onLinkHover = (e: MouseEvent) => {
+  const a = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null;
+  if (!a || isCoarsePointer.value) { hideLinkChip(); return; }
+  // href="#" 是导入时没能解析的死链（早期版本的 Notion ZIP 导入会这样），
+  // 点了只会开一个空白页，索性不提示。
+  if (!a.getAttribute('data-page-id') && !(a.getAttribute('href') || '').replace('#', '')) { hideLinkChip(); return; }
+  showLinkChipFor(a);
+};
+
+// === 移动端长按链接菜单 ===
+// 触屏没有 hover，否则 复制/编辑/移除 在手机上完全无法触达。长按（~480ms、未滚动）即弹出
+// 与桌面 hover 气泡相同的操作菜单；长按期间若发生位移视为滚动，取消。
+let longPressTimer: number | null = null;
+let longPressStart: { x: number; y: number } | null = null;
+let suppressClickUntil = 0;   // 长按菜单弹出后，吞掉紧随其后的合成 click（限时，避免误开链接）
+const onLinkTouchStart = (e: TouchEvent) => {
+  if (!isCoarsePointer.value) return;
+  const t = e.touches[0];
+  const a = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null;
+  if (!a) return;
+  if (!a.getAttribute('data-page-id') && !(a.getAttribute('href') || '').replace('#', '')) return;
+  longPressStart = { x: t.clientX, y: t.clientY };
+  if (longPressTimer) clearTimeout(longPressTimer);
+  longPressTimer = window.setTimeout(() => {
+    suppressClickUntil = Date.now() + 700;
+    showLinkChipFor(a);
+  }, 480);
+};
+const onLinkTouchMove = (e: TouchEvent) => {
+  if (!longPressStart || !longPressTimer) return;
+  const t = e.touches[0];
+  if (Math.abs(t.clientX - longPressStart.x) > 10 || Math.abs(t.clientY - longPressStart.y) > 10) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+    longPressStart = null;
+  }
+};
+const onLinkTouchEnd = () => {
+  if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  longPressStart = null;
+};
+// 长按原生会触发 contextmenu，阻止默认右键菜单 / 文字选择气泡
+const onLinkContextMenu = (e: MouseEvent) => {
+  const a = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null;
+  if (a && isCoarsePointer.value) e.preventDefault();
+};
+const openLinkChip = () => {
+  if (linkChip.value.pageId) { selectPage(linkChip.value.pageId); hideLinkChip(); return; }
+  if (linkChip.value.href) openExternal(linkChip.value.href);
+  hideLinkChip();
+};
+// 复制链接：页内链接复制「应用地址 + #pageId」，外链复制原始 href
+const copyLinkChip = async () => {
+  const url = linkChip.value.pageId
+    ? `${location.origin}${location.pathname}#${linkChip.value.pageId}`
+    : linkChip.value.href;
+  try { await navigator.clipboard.writeText(url); } catch { /* 隐私模式可能失败，忽略 */ }
+  linkChip.value.copied = true;
+  if (linkChipTimer) clearTimeout(linkChipTimer);
+  linkChipTimer = window.setTimeout(() => {
+    linkChip.value.visible = false;
+    linkChip.value.copied = false;
+    linkChipEl = null;
+  }, 1200);
+};
+// 编辑已有链接的 URL（行内小框，非居中大弹窗）—— 见 openEditLinkDialog
+const editLinkChip = () => {
+  const el = linkChipEl;
+  if (!el) return;
+  hideLinkChip();
+  openEditLinkDialog(el);
+};
+// 移除链接：保留文字、去掉 <a> 包裹（与 Notion「取消链接」一致）
+const unlinkChip = () => {
+  const el = linkChipEl;
+  if (!el) return;
+  const blockEl = el.closest('.ce-block') as HTMLElement | null;
+  el.replaceWith(document.createTextNode(el.textContent || ''));
+  if (blockEl?.dataset.taskId) updateTask(blockEl.dataset.taskId, { content: blockEl.innerHTML });
+  hideLinkChip();
+};
+
+const onContentClick = (e: MouseEvent) => {
+  // 移动端长按菜单刚弹出时，系统会补发一个合成 click，吞掉它以免误开链接
+  if (Date.now() < suppressClickUntil) return;
+  const a = (e.target as HTMLElement | null)?.closest?.('a') as HTMLAnchorElement | null;
+  if (a) {
+    const pageId = a.getAttribute('data-page-id');
+    // 与 Notion 一致：单击链接即打开（编辑态也开），改链接文字用方向键 / 相邻点击移入光标。
+    e.preventDefault();
+    e.stopPropagation();
+    if (pageId) { selectPage(pageId); hideLinkChip(); return; }
+    const href = a.getAttribute('href');
+    // '#'/空 = 死链（早期 ZIP 导入把 Notion 页内链接压成了 #），点了只会开空白页，不动
+    if (href && href !== '#') { openExternal(href); hideLinkChip(); return; }
+  }
+  handleEmptyClick(e);
 };
 
 const handleEmptyClick = (e: MouseEvent) => {

@@ -41,6 +41,19 @@ const escapeHtml = (s: string) =>
   s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
 
 /** 把 Markdown 行内语法转成块内 HTML */
+/**
+ * 链接安全过滤：放行无协议的相对路径与 http/https/mailto，
+ * 其余（javascript:、data:、vbscript:、file: …）一律降级为 `#`。
+ *
+ * 判定方式是「有协议就校验协议」，而不是「前缀白名单」——后者会误杀
+ * Notion 导出的裸相对文件名链接（见下方 inlineToHtml 里的说明）。
+ */
+const isSafeHref = (href: string): boolean => {
+  const m = /^([a-z][a-z0-9+.-]*):/i.exec(href);
+  if (!m) return true;                          // 无协议：相对路径 / 锚点
+  return /^(https?|mailto):$/i.test(m[1]);
+};
+
 export const inlineToHtml = (text: string): string => {
   // 先转义，再把识别出的语法替换成标签，避免用户内容里的 < > 破坏结构
   let out = escapeHtml(text);
@@ -54,8 +67,13 @@ export const inlineToHtml = (text: string): string => {
   // 否则 URL 里的 * _ ~ 会被误当行内格式（如 https://a.com/x_y_z）。
   // 负向回顾排除 `![...](...)`，避免把段内图片误判成链接。
   out = out.replace(/(?<!!)\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, label, href) => {
-    // 安全过滤：只允许 http/https/mailto/相对路径，挡掉 javascript: 等危险协议
-    const safe = /^(https?:\/\/|mailto:|\/|\.\/|#)/i.test(href) ? href : '#';
+    // 安全过滤：挡掉 javascript: / data: / file: 等危险协议，其余一律保留。
+    //
+    // 为什么不再用「白名单前缀」：Notion 导出的**页内链接**是裸相对文件名
+    // （`[Why We Can](Why%20We%20Can%201a2b…5o6p.md)`），既不以 / 也不以 ./ 开头，
+    // 旧规则会把它们一律压成 href="#" —— 导入后整页链接全变成死链。
+    // 这里放行后，ZIP 导入会在下一步把它解析成真正的页内链接（见 zipImport）。
+    const safe = isSafeHref(href) ? href : '#';
     return keep(`<a href="${safe}" target="_blank" rel="noopener">${label}</a>`);
   });
 

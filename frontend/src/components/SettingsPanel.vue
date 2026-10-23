@@ -29,12 +29,13 @@ import {
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
 import {applyTheme, currentThemeId, type ThemeId, THEMES} from '../composables/theme';
 
-const props = defineProps<{ visible: boolean; dirtyTitleCount?: number }>();
+const props = defineProps<{ visible: boolean; dirtyTitleCount?: number; deadLinkCount?: number }>();
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'export-md'): void;
   (e: 'open-notion-import'): void;
   (e: 'clean-titles'): void;
+  (e: 'clean-links'): void;
 }>();
 
 const { isCoarsePointer } = useMobileInput();
@@ -144,6 +145,13 @@ const onCleanTitles = () => {
   emit('clean-titles');
   flashDataMsg(`已清理 ${n} 个标题尾部的 Notion ID`);
 };
+// 早期 Notion 导入把页内链接压成 href="#" 死链，这里按链接文字匹配页面标题还原
+const onCleanLinks = () => {
+  const n = props.deadLinkCount ?? 0;
+  if (n === 0) return;
+  emit('clean-links');
+  flashDataMsg(`已修复 ${n} 个文档死链为页内链接`);
+};
 </script>
 
 <template>
@@ -183,7 +191,7 @@ const onCleanTitles = () => {
                       :style="{ background: c }"></span>
                 <span class="ml-auto text-[10px] font-['JetBrains_Mono',monospace]"
                       :class="currentThemeId === t.id ? 'text-accent' : 'text-dim'">
-                  {{ t.mode === 'light' ? '浅色' : '深色' }}{{ currentThemeId === t.id ? ' · 使用中' : '' }}
+                  {{ t.mode === 'auto' ? '自动' : (t.mode === 'light' ? '浅色' : '深色') }}{{ currentThemeId === t.id ? ' · 使用中' : '' }}
                 </span>
               </div>
               <div class="text-xs text-display">{{ t.name }}</div>
@@ -281,7 +289,13 @@ const onCleanTitles = () => {
               清理标题里的 Notion ID<template v-if="dirtyTitleCount">（{{ dirtyTitleCount }}）</template>
             </button>
           </div>
-          <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID 可用上面的按钮一键清理。</p>
+          <div class="mt-2">
+            <button @click="onCleanLinks" :disabled="!deadLinkCount"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-accent enabled:hover:border-accent enabled:active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              修复文档里的死链<template v-if="deadLinkCount">（{{ deadLinkCount }}）</template><template v-else>（无）</template>
+            </button>
+          </div>
+          <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID、与变成 `href="#"` 的页内死链，可分别用上面的按钮一键修复。</p>
           <p v-if="dataMsg" class="mt-2 text-xs text-accent font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
           <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />
           <input ref="mdInput" type="file" accept=".md,.markdown,text/markdown" class="hidden" @change="onMdImport" />

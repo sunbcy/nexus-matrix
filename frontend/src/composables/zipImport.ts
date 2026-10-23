@@ -216,7 +216,57 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
     report.push({ title, blocks: blocks.length, images, downgraded });
   }
 
+  // 第二步：把 md 里的「指向另一个导出页面的相对链接」解析成页内链接。
+  // Notion 导出时，A 页面里指向 B 页面的链接写作 [标题](相对路径/B%20标题%20<32位id>.md)。
+  // 直接留着就是一个永远打不开的 .md 文件路径；解析成 data-page-id 后
+  // 点击即在应用内跳转到导入后的 B 页面（与 [[ 插入的页内链接同款）。
+  resolveImportedPageLinks(pages, pageIdByPath);
+
   return { pages, report, imageFailures };
+};
+
+/**
+ * 把导入页面正文里指向「同批导入页面」的 md 链接改写成页内链接。
+ *
+ * 匹配用归一化键：URL 解码 → 去 .md → 去尾部 Notion id。
+ * 同时按「完整路径」与「basename」两种键查表：Notion 的链接有时带目录前缀，
+ * 有时不带（取决于导出设置），只认一种会漏。
+ */
+const linkKey = (raw: string): string => {
+  let s = raw.trim().replace(/^["']|["']$/g, '');
+  try { s = decodeURIComponent(s); } catch { /* 非合法百分号编码时保持原样 */ }
+  s = s.replace(/\.md$/i, '').replace(/^\.\//, '').replace(/^\//, '');
+  return stripNotionId(s).toLowerCase();
+};
+
+const resolveImportedPageLinks = (pages: Page[], pageIdByPath: Map<string, string>) => {
+  // 路径键 -> 页面 id（完整路径 + basename 都能命中）
+  const byKey = new Map<string, string>();
+  for (const [path, id] of pageIdByPath) {
+    byKey.set(linkKey(path), id);
+    const base = path.slice(path.lastIndexOf('/') + 1);
+    if (!byKey.has(linkKey(base))) byKey.set(linkKey(base), id);
+  }
+  if (byKey.size === 0) return;
+
+  const re = /<a\s+[^>]*href="([^"]+)"[^>]*>/gi;
+  for (const p of pages) {
+    for (const t of p.tasks ?? []) {
+      if (!t.content || !t.content.includes('<a ')) continue;
+      let changed = false;
+      const next = t.content.replace(re, (tag, href: string) => {
+        // 只处理指向 .md 的相对链接；外链保持原样（点击走新标签打开）
+        if (/^(https?:|mailto:)/i.test(href) || !/\.md($|[?#])/i.test(href)) return tag;
+        const key = linkKey(href.split(/[?#]/)[0]);
+        const targetId = byKey.get(key);
+        if (!targetId || targetId === p.id) return tag;
+        changed = true;
+        const label = />([^<]*)<\/a>/i.exec(tag)?.[1] ?? '';
+        return `<a data-page-id="${targetId}" href="#${targetId}">${label}</a>`;
+      });
+      if (changed) t.content = next;
+    }
+  }
 };
 
 // 解析相对路径：把 ./ 与 ../ 归一到 ZIP 内的绝对路径
