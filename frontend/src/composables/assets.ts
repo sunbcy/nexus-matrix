@@ -36,15 +36,23 @@ const openDB = openNexusDB;
 /** 存入 Blob，返回 asset:<id> 引用 */
 export const saveAsset = async (blob: Blob): Promise<string> => {
   const id = newId();
+  const ref = `${ASSET_PREFIX}${id}`;
   const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
+  const put = () => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(ASSET_STORE, 'readwrite');
     tx.objectStore(ASSET_STORE).put(blob, id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('保存图片资产失败'));
     tx.onabort = () => reject(tx.error ?? new Error('保存图片资产被中止'));
   });
-  return `${ASSET_PREFIX}${id}`;
+  // 落库校验：写入后立即读回，确认真的存住了。历史出现过「引用(asset:)生成了、但 blob 没落库」，
+  // 本地与后端都取不到 → 破图（ZIP 导入篇正是此问题）。同一 id 重试最多 3 次，仍读不回就抛错，
+  // 让调用方知道没存上（而不是静默返回一个取不到的死引用）。
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await put();
+    if (await getAsset(ref)) return ref;
+  }
+  throw new Error('图片写入本地存储后校验失败');
 };
 
 export const getAsset = async (ref: string): Promise<Blob | null> => {

@@ -838,6 +838,14 @@
               <span class="text-xs text-dim">将导入 {{ importSelected.size }} / {{ importPreview.pages.length }} 个页面<template v-if="importPreview.sources.filter(s => s.count > 0).length > 1">（来自 {{ importPreview.sources.filter(s => s.count > 0).length }} 个文件）</template><template v-if="importPreview.imageFailures">，{{ importPreview.imageFailures }} 张图片待后台下载</template></span>
               <button @click="toggleImportSelectAll" class="text-xs text-accent font-['JetBrains_Mono',monospace]">{{ importSelected.size === importPreview.pages.length ? '全不选' : '全选' }}</button>
             </div>
+            <!-- 图片落库校验失败告警：明确告诉用户哪几张没存上，避免导入后破图却不自知 -->
+            <div v-if="importPreview.imageVerifyFailures > 0" class="rounded-sm bg-danger/10 border border-danger/40 text-danger text-xs leading-snug px-3 py-2">
+              <div class="font-bold">⚠ {{ importPreview.imageVerifyFailures }} 张图片没能存入本地存储，刷新后会丢失（破图）。</div>
+              <div class="mt-1 text-danger/90">建议：重新导入该 ZIP；若仍失败，请检查浏览器存储空间 / 是否开启了"退出时清除数据"、或换了非无痕窗口再试。</div>
+              <div v-if="importPreview.verifyFailures.length" class="mt-1 font-['JetBrains_Mono',monospace] text-danger/80 break-all">
+                涉及：{{ importPreview.verifyFailures.slice(0, 6).map(v => `《${v.title || '无标题'}》第${v.block}块`).join('、') }}<template v-if="importPreview.verifyFailures.length > 6"> 等{{ importPreview.verifyFailures.length }}处</template>
+              </div>
+            </div>
             <div class="space-y-3">
               <div v-for="g in importGroups" :key="g.file">
                 <!-- 多文件或该文件解析出错时显示来源标题；单文件成功则保持简洁不显示 -->
@@ -2675,7 +2683,7 @@ const formatVersionTime = (ts: number): string => {
 // === Notion 导入向导（预览式：先解析展示页面树，勾选确认后再导入） ===
 const importWizardOpen = ref(false);
 const importFileInput = ref<HTMLInputElement | null>(null);
-const importPreview = ref<{ pages: Page[]; report: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures: number; sources: Array<{ file: string; count: number; error?: string }> } | null>(null);
+const importPreview = ref<{ pages: Page[]; report: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures: number; imageVerifyFailures: number; verifyFailures: Array<{ title: string; block: number }>; sources: Array<{ file: string; count: number; error?: string }> } | null>(null);
 const importGroups = ref<Array<{ file: string; pages: Page[]; error?: string }>>([]);  // 多文件按来源分组预览
 const importLoading = ref(false);
 const importWizardMsg = ref('');
@@ -2707,11 +2715,15 @@ const onImportFilePicked = async (e: Event) => {
   // 逐个解析（支持一次多选多个 Notion 导出 zip），按来源分组；单个失败不影响其余
   const groups: Array<{ file: string; pages: Page[]; error?: string }> = [];
   let imageFailures = 0;
+  let imageVerifyFailures = 0;
+  const verifyFailures: Array<{ title: string; block: number }> = [];
   for (const file of files) {
     const res = await previewNotionZip(file);
     if (res.ok && res.pages && res.pages.length > 0) {
       groups.push({ file: file.name, pages: res.pages });
       imageFailures += res.imageFailures ?? 0;
+      imageVerifyFailures += res.imageVerifyFailures ?? 0;
+      if (res.verifyFailures) verifyFailures.push(...res.verifyFailures);
     } else {
       groups.push({ file: file.name, pages: [], error: res.message || '未找到可导入内容' });
     }
@@ -2728,6 +2740,8 @@ const onImportFilePicked = async (e: Event) => {
     pages: allPages,
     report: [],
     imageFailures,
+    imageVerifyFailures,
+    verifyFailures,
     sources: groups.map((g) => ({ file: g.file, count: g.pages.length, error: g.error })),
   };
   importGroups.value = groups;

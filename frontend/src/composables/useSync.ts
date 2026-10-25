@@ -928,14 +928,14 @@ export const importNotionZip = async (
 // 只解析、不修改 currentPagesRef、不上推，供预览面板展示页面树与层级。
 export const previewNotionZip = async (
   file: File,
-): Promise<{ ok: boolean; message?: string; pages?: Page[]; report?: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures?: number }> => {
+): Promise<{ ok: boolean; message?: string; pages?: Page[]; report?: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures?: number; imageVerifyFailures?: number; verifyFailures?: Array<{ title: string; block: number }> }> => {
   try {
     const { importZip } = await import('./zipImport');
     const result = await importZip(file);
     if (!result || result.pages.length === 0) {
       return { ok: false, message: 'ZIP 中未找到可导入的 Markdown 文件' };
     }
-    return { ok: true, pages: result.pages, report: result.report, imageFailures: result.imageFailures };
+    return { ok: true, pages: result.pages, report: result.report, imageFailures: result.imageFailures, imageVerifyFailures: result.imageVerifyFailures, verifyFailures: result.verifyFailures };
   } catch (e) {
     return { ok: false, message: 'ZIP 解析失败：' + (e as Error).message };
   }

@@ -12,7 +12,7 @@
 
 import type {Page} from './useSync';
 import {newBlockId, newPageId} from './ids';
-import {saveImageAsset} from './assets';
+import {saveImageAsset, getAsset} from './assets';
 
 export interface ZipImportResult {
   pages: Page[];
@@ -20,6 +20,10 @@ export interface ZipImportResult {
   report: Array<{ title: string; blocks: number; images: number; downgraded: number }>;
   /** 下载失败的图片数（网络问题等），不影响其余内容导入 */
   imageFailures: number;
+  /** 落库校验失败的图片数（写进本地 store 后读不回） */
+  imageVerifyFailures: number;
+  /** 具体哪些没存上：[{ 页面标题, 第几个块 }]，用于明确提示「第 N 张图没存上」 */
+  verifyFailures: Array<{ title: string; block: number }>;
 }
 
 const decoder = new TextDecoder();
@@ -129,6 +133,7 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
   const pageIdByPath = new Map<string, string>();
   const report: ZipImportResult['report'] = [];
   let imageFailures = 0;
+  const verifyFailures: Array<{ title: string; block: number }> = [];
 
   // 先按路径深度排序，保证父页面先创建（parentId 引用时已存在）
   const sorted = [...mdByPath.values()].sort((a, b) => a.path.split('/').length - b.path.split('/').length);
@@ -142,10 +147,17 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
     const { parseMarkdown } = await import('./markdownImport');
     const { blocks, downgraded } = parseMarkdown(md);
 
+    // 标题（下面的图片失败提示也要用到，故先算）：优先取文件名；若正文首块是 h1 且更具体，用 h1
+    const firstH1 = blocks.find((b) => b.type === 'h1');
+    // 文件名与 H1 兜底都清理，避免 id 以另一条路径渗进标题
+    const fromName = stripNotionId(entry.base.replace(/\.md$/i, ''));
+    const title = fromName || (stripNotionId(firstH1?.content.replace(/<[^>]+>/g, '') || '') || '导入的文档');
+
     // 图片处理：包内相对路径与远程 URL 都转为**独立资产**，页面只留 asset: 引用。
     // （此前是转 Base64 内联进 payload.url，会让整页广播与存储配额暴涨。）
     let images = 0;
-    for (const b of blocks) {
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const b = blocks[bi];
       if (b.type !== 'image') continue;
       const url = String(b.payload?.url ?? '').trim();
       if (!url || /^(data:|blob:|asset:)/.test(url)) { images++; continue; }
@@ -169,23 +181,25 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
       }
 
       if (blob) {
-        const ref = await saveImageAsset(blob);
-        // 必须显式清掉 pendingDownload：parseMarkdown 会预置该标记，
-        // 只覆盖 url 会让它残留为 true，导致编辑器仍把它当作待下载的外链
-        b.payload = { ...b.payload, url: ref, alt: b.payload?.alt ?? '', pendingDownload: false };
-        images++;
+        try {
+          // saveImageAsset 内部已「写入→读回校验→同 id 重试」，真正没落库会抛错
+          const ref = await saveImageAsset(blob);
+          // 必须显式清掉 pendingDownload：parseMarkdown 会预置该标记，
+          // 只覆盖 url 会让它残留为 true，导致编辑器仍把它当作待下载的外链
+          b.payload = { ...b.payload, url: ref, alt: b.payload?.alt ?? '', pendingDownload: false };
+          images++;
+        } catch {
+          // 落库校验失败：保留原 URL + 标记待下载（内容不丢），并记录以便明确提示「第 N 张没存上」
+          b.payload = { ...b.payload, pendingDownload: true };
+          imageFailures++;
+          verifyFailures.push({ title, block: bi + 1 });
+        }
       } else {
         // 下载/查找失败：保留原 URL 并标记，至少内容不丢
         b.payload = { ...b.payload, pendingDownload: true };
         imageFailures++;
       }
     }
-
-    // 标题：优先取文件名；若正文首块是 h1 且更具体，用 h1
-    const firstH1 = blocks.find((b) => b.type === 'h1');
-    // 文件名与 H1 兜底都清理，避免 id 以另一条路径渗进标题
-    const fromName = stripNotionId(entry.base.replace(/\.md$/i, ''));
-    const title = fromName || (stripNotionId(firstH1?.content.replace(/<[^>]+>/g, '') || '') || '导入的文档');
 
     // 层级：所在目录的拥有者即父页面
     const parentPath = ownerMdOfDir(entry.dir, entry.path);
@@ -222,7 +236,22 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
   // 点击即在应用内跳转到导入后的 B 页面（与 [[ 插入的页内链接同款）。
   resolveImportedPageLinks(pages, pageIdByPath);
 
-  return { pages, report, imageFailures };
+  // 落库终检：对每个 asset: 引用读回校验，捕捉「保存时成功、之后又丢」的罕见情况。
+  // 保存时已 3 次重试，这里只是导入结束前的兜底确认；读不回就记录下来明确提示，绝不静默留下死引用。
+  for (const p of pages) {
+    const tasks = p.tasks ?? [];
+    for (let ti = 0; ti < tasks.length; ti++) {
+      const t = tasks[ti];
+      const refs: string[] = [];
+      if (t.type === 'image' && typeof t.payload?.url === 'string' && t.payload.url.startsWith('asset:')) refs.push(t.payload.url);
+      if (t.content) { const m = t.content.match(/asset:[0-9a-fA-F-]+/g); if (m) refs.push(...m); }
+      for (const ref of [...new Set(refs)]) {
+        if (!(await getAsset(ref))) verifyFailures.push({ title: p.title, block: ti + 1 });
+      }
+    }
+  }
+
+  return { pages, report, imageFailures, imageVerifyFailures: verifyFailures.length, verifyFailures };
 };
 
 /**

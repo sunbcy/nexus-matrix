@@ -6,7 +6,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 
 /**
  * 把 Capacitor 的 WebView 实例嵌入 Compose。
@@ -14,17 +13,15 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
  * 实例由 MainActivity 创建（Capacitor Bridge 持有），此处只负责挂载/卸载，
  * 不重复创建——否则会丢掉 Capacitor 的 JS Bridge 与页面状态。
  *
- * onRefresh 非空时套一层 SwipeRefreshLayout 提供下拉刷新（Notion 移动端交互）。
- * 为什么不用 Compose 的 PullToRefreshBox：WebView 不实现 NestedScrollingChild，
- * 拖动事件不会进入 Compose 嵌套滚动体系，PullToRefreshBox 收不到手势；
- * View 层的 SwipeRefreshLayout 用 canChildScrollUp 判断，对 WebView 有效。
+ * 不再套原生 SwipeRefreshLayout 做下拉刷新：WebView 内部滚动容器（而非根文档）承载滚动，
+ * 导致 SwipeRefreshLayout 的 canChildScrollUp 永远为 false，于是「任何界面下滑都触发整页
+ * reload」、且与安卓手势导航（顶部下滑=通知栏）冲突。数据本身本地持久化 + WebSocket 自动
+ * 同步，无需整页刷新；手动重连走 Web 侧同步指示器即可。
  */
 @Composable
 fun AndroidWebView(
     webView: WebView,
     modifier: Modifier = Modifier,
-    onRefresh: (() -> Unit)? = null,
-    isRefreshing: Boolean = false,
 ) {
     DisposableEffect(webView) {
         onDispose {
@@ -34,27 +31,7 @@ fun AndroidWebView(
         }
     }
     AndroidView(
-        factory = { context ->
-            if (onRefresh == null) {
-                webView
-            } else {
-                SwipeRefreshLayout(context).apply {
-                    setOnRefreshListener { onRefresh() }
-                    // 品牌色：青色进度条 + 深色轨道（对齐 Web 端 cyan-glow / nexus-surface）
-                    setColorSchemeColors(0xFF00F0FF.toInt())
-                    setProgressBackgroundColorSchemeColor(0xFF14161A.toInt())
-                    (webView.parent as? ViewGroup)?.removeView(webView)
-                    webView.layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                    )
-                    addView(webView)
-                }
-            }
-        },
-        update = { view ->
-            if (view is SwipeRefreshLayout) view.isRefreshing = isRefreshing
-        },
+        factory = { webView },
         modifier = modifier,
     )
 }
