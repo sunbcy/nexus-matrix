@@ -172,13 +172,22 @@ export const isPersisted = async (): Promise<boolean> => {
  */
 const PROBE_KEY = '__nexus_probe__';
 export const probeIdb = async (): Promise<boolean> => {
+  // 探针键必须**每次唯一**：HMR 重挂载 / 多实例会并发调用本函数。若共用同一键，
+  // 后一次写入会覆盖前一次的 marker，前一次读回「别人的值」→ 误判失败，
+  // 表现为「刷新 / HMR 后 IndexedDB 探针偶发失败、回退 localStorage」。
+  const probeKey = `${PROBE_KEY}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const marker = String(Date.now());
   try {
-    const marker = String(Date.now());
-    await idbStore.set(PROBE_KEY, marker);
-    const back = await idbStore.get(PROBE_KEY);
+    await idbStore.set(probeKey, marker);
+    const back = await idbStore.get(probeKey);
     return back === marker;
-  } catch {
+  } catch (e) {
+    const err = e as { name?: string; message?: string };
+    console.warn('[NEXUS][probeIdb] 失败:', (err?.name ?? '') + ': ' + (err?.message ?? String(e)));
     return false;
+  } finally {
+    // 清理本次探针键，避免堆积
+    void idbStore.remove(probeKey).catch(() => { /* 清理失败无碍 */ });
   }
 };
 

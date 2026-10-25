@@ -1,12 +1,19 @@
 <template>
   <div class="flex h-viewport w-full bg-void text-display font-sans overflow-hidden" @drop="handleGlobalDrop" @dragover.prevent>
 
-    <!-- 左侧边栏 (Sidebar - Tree & Routing)
-         移动端（<768px）变为浮层抽屉：默认移出屏幕，汉堡按钮/遮罩控制开合。
-         桌面端保持常驻（md: 断点恢复 static 定位与 translate-x-0）。
-         注意：抽屉内所有导航点击都要顺手关抽屉（见 selectPage 系列调用）。 -->
-    <aside class="fixed inset-y-0 left-0 z-40 w-[min(280px,85vw)] bg-surface border-r border-line flex flex-col shrink-0 transition-transform duration-200 md:relative md:inset-auto md:z-10 md:w-[280px] md:translate-x-0"
-           :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full'">
+    <!-- 启动加载遮罩：数据载入、目标页就绪前覆盖全屏，避免刷新时闪一下空白或默认/种子文档 -->
+    <div v-if="showOverlay" data-booting="1" class="fixed inset-0 z-[200] flex flex-col items-center justify-center bg-void gap-3">
+      <span class="w-2.5 h-2.5 bg-accent rounded-sm shadow-[0_0_10px_rgba(0,240,255,0.7)] animate-pulse"></span>
+      <span class="font-['Rajdhani',sans-serif] font-bold tracking-widest text-dim text-sm">NEXUS MATRIX</span>
+    </div>
+
+    <!-- 左侧边栏 / 移动端「文档列表页」
+         桌面端(md: ≥768px)：常驻分栏侧边栏。
+         移动端(<768px)：作为独立的全屏「列表页」，与内容页互斥显示（Notion 式页面栈），
+         不再用左侧浮层抽屉。内容页通过顶部返回箭头 / 系统返回键切回本列表页。 -->
+    <aside v-show="!isMobile || mobileView === 'list'"
+           class="bg-surface border-r border-line flex flex-col shrink-0 md:relative md:inset-auto md:z-10 md:w-[280px]"
+           :class="isMobile && mobileView === 'list' ? 'fixed inset-y-0 left-0 z-50 w-full max-w-full' : ''">
       <!-- pt-safe：原生壳边到边时抽屉从状态栏底下开始，头部避开状态栏；
            非边到边时 env() 恒为 0，无副作用。h-14 改 min-h-14 防止 padding 撑破固定高 -->
       <div class="min-h-14 pt-safe px-4 flex items-center justify-between border-b border-line shadow-sm shrink-0">
@@ -200,12 +207,9 @@
       </button>
     </aside>
 
-    <!-- 抽屉遮罩（仅移动端）：点击关闭。放在 main 之下、抽屉之上 -->
-    <div v-if="sidebarOpen" class="fixed inset-0 z-30 bg-black/60 md:hidden" @click="sidebarOpen = false"></div>
-
     <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
     <Transition name="page-fade" mode="out-in">
-    <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage" @scroll="hideFormatToolbar(); closeCoverPicker()">
+    <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage && (!isMobile || mobileView === 'content')" :ref="onMainRef" @scroll="onEditorScroll">
       <div class="w-full h-1 bg-accent shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
@@ -256,11 +260,11 @@
              移动端左侧放汉堡按钮唤出抽屉（桌面端隐藏，侧边栏常驻） -->
         <div class="flex items-start justify-between gap-4 mb-6 md:mb-8">
           <div class="flex items-center gap-1 md:gap-2 text-xs font-['JetBrains_Mono',monospace] text-dim min-w-0">
-            <!-- 汉堡按钮：44px 触摸目标；only 移动端显示。
-                 -ml-2 已移除：旧 pl-16(64px) 边距下的光学补偿，现 pl-4(16px) 满幅布局不需要 -->
+            <!-- 返回箭头：移动端内容页左上角，点击返回文档列表页（Notion 式页面栈）。
+                 仅移动端显示（桌面端侧边栏常驻，无需此按钮）。 -->
             <button class="md:hidden shrink-0 w-11 h-11 flex items-center justify-center rounded-sm text-dim active:text-accent active:bg-panel transition-colors"
-                    @click="sidebarOpen = true" title="打开页面列表" aria-label="打开页面列表">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                    @click="goToList" title="返回文档列表" aria-label="返回文档列表">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
             </button>
             <template v-if="activePageBreadcrumbs.length > 0">
              <template v-for="(crumb, idx) in activePageBreadcrumbs" :key="crumb.id">
@@ -308,8 +312,11 @@
         <div class="flex-1 relative pb-32" @click="onContentClick" @mouseover="onLinkHover" @mouseleave="hideLinkChip"
              @touchstart.passive="onLinkTouchStart" @touchmove.passive="onLinkTouchMove" @touchend="onLinkTouchEnd" @touchcancel="onLinkTouchEnd" @contextmenu="onLinkContextMenu">
           
+          <!-- 虚拟滚动：上 spacer（视口上方未渲染块的高度占位） -->
+          <div v-if="showSpacers" :style="{ height: vTop + 'px', flexShrink: '0' }" aria-hidden="true"></div>
+
           <!-- 任务行循环渲染 (含层级缩进与多媒体类型) -->
-          <div v-for="(task, index) in visibleTasks" :key="task.id" :data-block-id="task.id"
+          <div v-for="(task, index) in displayTasks" :key="task.id" :data-block-id="task.id"
                class="task-item-container group relative flex items-start py-2 pr-2 my-1 rounded-sm transition-all duration-150"
                :style="{ marginLeft: `${(task.indentLevel || 0) * 1.5}rem` }"
                :class="{ 
@@ -585,7 +592,10 @@
             </div>
 
           </div>
-          
+
+          <!-- 虚拟滚动：下 spacer（视口下方未渲染块的高度占位） -->
+          <div v-if="showSpacers" :style="{ height: vBottom + 'px', flexShrink: '0' }" aria-hidden="true"></div>
+
           <!-- 反向链接（Backlinks）：自动聚合引用本页的页面 -->
           <div v-if="backlinks.length > 0" class="mt-12 pt-4 border-t border-line">
             <div class="text-[11px] font-['JetBrains_Mono',monospace] text-dim uppercase tracking-wider font-bold mb-2">
@@ -993,10 +1003,12 @@ import {
   flushPendingSave,
   getPageHistory,
   initSync,
+  markDirty,
   onlineDevices,
   type PageVersion,
   previewNotionZip,
   retrySync,
+  setReconcilePage,
   setStorageWarning,
   syncStatus,
   writePagePrevIds,
@@ -1028,30 +1040,57 @@ interface Page { id: string; title: string; tasks: Task[]; parentId: string | nu
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
 
 // === 全局状态与持久化 (LocalFirst + 远端同步由 useSync 统一托管) ===
-const pages = ref<Page[]>([
-  {
-    id: 'default-page', title: 'NEXUS 协议指南', parentId: null, isFavorite: true, isExpanded: true,
-    tasks: [
-      { id: '1', type: 'h1', content: '欢迎使用 NEXUS MATRIX', completed: false, indentLevel: 0 },
-      { id: '2', type: 'text', content: '现在，它已经进化为了全功能的“六边形战士”：', completed: false, indentLevel: 0 },
-      { id: '3', type: 'bullet', content: '尝试在行首按下 <kbd>Tab</kbd> 键进行层级缩进，按 <kbd>Backspace</kbd> 退格恢复。', completed: false, indentLevel: 1 },
-      { id: '4', type: 'bullet', content: '输入 <kbd>/code</kbd> 生成带有多语言下拉框的代码块。', completed: false, indentLevel: 1 },
-      { id: '5', type: 'bullet', content: '输入 <kbd>/kanban</kbd> 体验可视化数据看板。', completed: false, indentLevel: 1 },
-      { id: '6', type: 'bullet', content: '直接把桌面上的图片 <b>拖拽</b> 到浏览器任意位置，瞬间完成解析！', completed: false, indentLevel: 1 },
-    ]
-  }
-]);
+// 初始为空数组：首启种子由 initSync 的「本地+远端都无数据」分支创建。
+// 之前在这里预置一份种子页，会导致每次刷新第一帧先渲染种子文档、数据加载完再跳转
+// ——表现为刷新时闪一下「NEXUS 协议指南」。置空后首帧无内容，加载完直接呈现正确页面。
+const pages = ref<Page[]>([]);
 
-const activePageId = ref<string>('default-page');
+// 初值取当前 hash：刷新时第一帧就瞄准要恢复的页，避免先渲染默认/种子页再跳转；
+// 无 hash（首启）才回落 'default-page'（initSync 会建出该种子页）。
+const activePageId = ref<string>(window.location.hash.slice(1) || 'default-page');
 const activePage = computed(() => pages.value.find(p => p.id === activePageId.value));
 
-// 移动端抽屉开合（桌面端侧边栏常驻，此状态无效——CSS md: 断点忽略 translate）
-const sidebarOpen = ref(false);
-// 抽屉内导航的统一出口：切页即关抽屉，避免遮层留在屏幕上
+// 启动加载态：数据(async initSync)载入、目标页(activePage)就绪前显示加载遮罩，
+// 避免首帧空白/闪烁。目标页一就绪即撤下遮罩，直接呈现正确页面。
+const booting = ref(true);
+const showOverlay = ref(false);
+watch(activePage, (ap) => { if (ap) { booting.value = false; showOverlay.value = false; } }, { immediate: true });
+// 加载遮罩仅在明显偏慢(>150ms)时浮现：快速加载直接呈现页面，不闪一下遮罩反而更突兀
+setTimeout(() => { if (booting.value) showOverlay.value = true; }, 150);
+// 兜底：initSync 异常/极慢导致 activePage 长时间不就绪，超时也撤下，避免永久卡在加载态
+setTimeout(() => { booting.value = false; showOverlay.value = false; }, 8000);
+
+// 移动端视图状态：列表页(list) 与 内容页(content) 分离，像 Notion 一样走页面栈返回。
+// 桌面端(md: 断点 ≥768px)仍是常驻侧边栏 + 主编辑区的分栏布局，此状态不参与。
+const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768);
+const mobileView = ref<'list' | 'content'>('list');
+
+// 进入内容页（仅移动端）：切到 content 并压一条 history，
+// 这样安卓系统/手势返回会先 pop 回列表页，而不是直接退出 App。
+const enterContent = () => {
+  if (!isMobile.value) return;
+  if (mobileView.value === 'content') return;   // 已在内容页则不再重复压栈
+  mobileView.value = 'content';
+  window.history.pushState({ nexusView: 'content' }, '');
+};
+// 从内容页返回列表（仅移动端）：优先走页面栈；系统/手势返回也会经 popstate 命中。
+const goToList = () => {
+  if (!isMobile.value) return;
+  if (mobileView.value === 'content') window.history.back();
+};
+
+// 切页统一出口：桌面端无副作用；移动端切到内容页（分离视图）。
 const selectPage = (id: string) => {
   activePageId.value = id;
   rememberRecentPage(id);   // 记录最近访问（Notion 的 Recent）
-  sidebarOpen.value = false;
+  enterContent();
+};
+
+// 移动端形态切换（与 Tailwind md: 断点一致）：宽度 <768 视为移动端。
+const updateIsMobile = () => { isMobile.value = window.innerWidth < 768; };
+// 系统/手势返回：移动端在内容页时先返回列表，而不是直接退出 App。
+const onPopState = () => {
+  if (isMobile.value && mobileView.value === 'content') mobileView.value = 'list';
 };
 
 // === 全局搜索 ===
@@ -1137,6 +1176,193 @@ const hiddenTaskIds = computed(() => {
   return hidden;
 });
 const visibleTasks = computed(() => (activePage.value?.tasks ?? []).filter((t: Task) => !hiddenTaskIds.value.has(t.id)));
+
+// P1 补充：块的「结构性变化」（增 / 删 / 拖拽重排 / 合并 / 拆分）都是直接改 tasks 数组
+// （splice 或整体重赋值），不经过 updateTask，因此不触发即时保存——过去只靠 4s 对账兜底，
+// 于是「删了空行/块，几秒内刷新」删除就丢了、空行回来（用户反馈的 bug）。
+// 这里监听 tasks 的 id 序列签名：结构一变立即 markDirty。内容编辑仍走 updateTask（id 序列不变、不重复触发），
+// 二者合一即覆盖全部改动路径，4s 对账退居纯安全网。
+watch(
+  () => activePage.value?.tasks.map((t: Task) => t.id).join(','),
+  () => { if (activePage.value) markDirty(activePage.value.id); }
+);
+
+// === P2 全虚拟滚动（变高） ===
+// 长文档即使首屏渐进，最终全部挂载也会让滚动/内存吃紧。P2 只渲染「视口 ± overscan」的块，上下用 spacer 占位。
+// 块高先按类型估算，挂载后实测校正；ResizeObserver 跟踪内容/图片导致的块高变化，并对「视口上方块的尺寸变化」
+// 补偿 scrollTop，避免滚动跳动。offsets 用「版本号缓存」：只有列表或某块高度变化才重算前缀和，滚动时 O(1) 命中。
+// 关键不变量：焦点块不能被卸载；键盘/跳转/搜索先把目标块滚进视口（纳入窗口并挂载）再聚焦（见 focusConfig watch）。
+// 开关 virtualScrolling=false → 退回 P3「渐进全挂载」，便于对照与回退。
+const virtualScrolling = ref(true);
+const VIRTUAL_OVERSCAN = 1;                 // 视口上下各多渲染 1 屏
+const scrollEl = ref<HTMLElement | null>(null);
+const blockHeights = ref<Record<string, number>>({});
+const vStart = ref(0);
+const vEnd = ref(0);
+const vTop = ref(0);
+const vBottom = ref(0);
+let listVersion = 0;
+let heightsVersion = 0;
+
+const estimateBlockHeight = (t: Task): number => {
+  switch (t.type) {
+    case 'divider': return 33;
+    case 'image': return 260;
+    case 'todo': return 40;
+    case 'h1': return 52;
+    case 'h2': return 44;
+    case 'h3': return 38;
+    case 'callout': return 72;
+    default: {
+      const len = (t.content || '').replace(/<[^>]*>/g, '').length;
+      return 24 + Math.max(0, Math.ceil(len / 60) - 1) * 26;
+    }
+  }
+};
+const heightOf = (t: Task): number => blockHeights.value[t.id] || estimateBlockHeight(t);
+
+// 前缀和 offsets（offsets[i]=前 i 块高度和），按 (listVersion, heightsVersion) 缓存
+let offsetsCache: { lv: number; hv: number; arr: number[] } | null = null;
+const buildOffsets = (): number[] => {
+  const lv = listVersion, hv = heightsVersion;
+  if (offsetsCache && offsetsCache.lv === lv && offsetsCache.hv === hv) return offsetsCache.arr;
+  const all = visibleTasks.value;
+  const arr = new Array<number>(all.length + 1);
+  arr[0] = 0;
+  for (let i = 0; i < all.length; i++) arr[i + 1] = arr[i] + heightOf(all[i]);
+  offsetsCache = { lv, hv, arr };
+  return arr;
+};
+
+const recomputeRange = () => {
+  if (!virtualScrolling.value) return;
+  const all = visibleTasks.value;
+  const el = scrollEl.value;
+  if (!el || all.length === 0) {
+    if (vStart.value !== 0 || vEnd.value !== all.length) { vStart.value = 0; vEnd.value = all.length; vTop.value = 0; vBottom.value = 0; }
+    return;
+  }
+  const offsets = buildOffsets();
+  const total = offsets[all.length];
+  const top = el.scrollTop;
+  const bottom = top + el.clientHeight;
+  const over = el.clientHeight * VIRTUAL_OVERSCAN;
+  // 第一个 bottom > top-over 的块
+  let lo = 0, hi = all.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (offsets[mid + 1] > top - over) hi = mid; else lo = mid + 1; }
+  const start = lo;
+  // 第一个 top >= bottom+over 的块
+  lo = start; hi = all.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (offsets[mid] < bottom + over) lo = mid + 1; else hi = mid; }
+  const end = Math.min(all.length, Math.max(lo, start + 1));
+  const t = offsets[start];
+  const b = Math.max(0, total - offsets[end]);
+  if (start !== vStart.value || end !== vEnd.value || t !== vTop.value || b !== vBottom.value) {
+    vStart.value = start; vEnd.value = end; vTop.value = t; vBottom.value = b;
+  }
+};
+
+// <main> 滚动容器 ref：挂载即算一次窗口（切页时 <main> 重挂载、scrollTop 归零）
+const onMainRef = (el: any) => { scrollEl.value = (el as HTMLElement) || null; if (el) recomputeRange(); };
+// 把某块滚进视口中上部（键盘/跳转/搜索用）；会把它纳入渲染窗口并挂载
+const scrollTaskIntoView = (id: string) => {
+  const all = visibleTasks.value;
+  const idx = all.findIndex((t) => t.id === id);
+  const el = scrollEl.value;
+  if (idx < 0 || !el) return;
+  const offsets = buildOffsets();
+  const blockTop = offsets[idx];
+  const blockH = heightOf(all[idx]);
+  const viewH = el.clientHeight;
+  let target = blockTop - Math.min(80, viewH * 0.2);
+  if (blockH > viewH) target = blockTop - 16;
+  const maxTop = Math.max(0, offsets[all.length] - viewH);
+  el.scrollTop = Math.max(0, Math.min(target, maxTop));
+  recomputeRange();
+};
+
+// 观测当前挂载块：尺寸变化更新高度，并对「视口上方」的变化补偿 scrollTop（防跳动）
+const blockRO = new ResizeObserver((entries) => {
+  const el = scrollEl.value;
+  if (!el) return;
+  const before = el.scrollTop;
+  const offsets = buildOffsets();
+  let delta = 0;
+  let changed = false;
+  for (const en of entries) {
+    const node = en.target as HTMLElement;
+    const id = node.getAttribute('data-block-id');
+    if (!id) continue;
+    const h = node.offsetHeight;
+    if (h <= 0) continue;
+    const old = blockHeights.value[id];
+    if (old === h) continue;
+    const idx = visibleTasks.value.findIndex((x) => x.id === id);
+    const oldH = old ?? (idx >= 0 ? estimateBlockHeight(visibleTasks.value[idx]) : h);
+    if (idx >= 0 && offsets[idx] + oldH <= before) delta += (h - oldH);
+    blockHeights.value[id] = h;
+    heightsVersion++;
+    changed = true;
+  }
+  if (!changed) return;
+  if (delta !== 0) el.scrollTop = before + delta;
+  recomputeRange();
+});
+const observeBlocks = () => {
+  nextTick(() => {
+    const el = scrollEl.value;
+    if (!el) return;
+    blockRO.disconnect();
+    el.querySelectorAll('[data-block-id]').forEach((n) => blockRO.observe(n));
+  });
+};
+
+const windowedTasks = computed(() => virtualScrolling.value ? visibleTasks.value.slice(vStart.value, vEnd.value) : visibleTasks.value);
+watch(windowedTasks, () => observeBlocks(), { flush: 'post' });
+// 列表/高度版本变化 → 让 offsets 缓存失效并重算窗口
+watch(visibleTasks, () => { listVersion++; nextTick(() => recomputeRange()); });
+// 切页：<main> 重挂载、scrollTop 归零，从顶部重建窗口
+watch(activePageId, () => { listVersion++; nextTick(() => recomputeRange()); });
+
+// === P3 渐进全挂载（virtualScrolling=false 时的回退形态）===
+const INITIAL_RENDER = 80;
+const RENDER_CHUNK = 80;
+const renderCount = ref(INITIAL_RENDER);
+const renderedTasks = computed(() => {
+  const all = visibleTasks.value;
+  return all.length <= renderCount.value ? all : all.slice(0, renderCount.value);
+});
+let renderIdleHandle: number | null = null;
+const scheduleRenderGrowth = () => {
+  if (virtualScrolling.value) return;
+  if (renderIdleHandle != null) return;
+  const step = () => {
+    renderIdleHandle = null;
+    const total = visibleTasks.value.length;
+    if (renderCount.value >= total) return;
+    renderCount.value = Math.min(renderCount.value + RENDER_CHUNK, total);
+    scheduleRenderGrowth();
+  };
+  const ric = (window as any).requestIdleCallback as undefined | ((cb: () => void, o?: { timeout: number }) => number);
+  renderIdleHandle = ric ? ric(step, { timeout: 1000 }) : (window.setTimeout(step, 150) as unknown as number);
+};
+watch(activePageId, () => { renderCount.value = INITIAL_RENDER; }, { immediate: true });
+watch(() => !virtualScrolling.value && renderCount.value < visibleTasks.value.length, (need) => { if (need) scheduleRenderGrowth(); }, { immediate: true });
+
+// 最终渲染列表 + 是否显示 spacer
+const displayTasks = computed(() => virtualScrolling.value ? windowedTasks.value : renderedTasks.value);
+const showSpacers = computed(() => virtualScrolling.value && visibleTasks.value.length > 0);
+
+// 滚动：虚拟模式重算窗口；回退模式按需补挂
+const onEditorScroll = (e: Event) => {
+  hideFormatToolbar();
+  closeCoverPicker();
+  if (virtualScrolling.value) { recomputeRange(); return; }
+  const el = e.currentTarget as HTMLElement | null;
+  if (el && el.scrollTop + el.clientHeight >= el.scrollHeight - 600 && renderCount.value < visibleTasks.value.length) {
+    renderCount.value = Math.min(renderCount.value + RENDER_CHUNK, visibleTasks.value.length);
+  }
+};
 // 渲染索引 ≠ 数据索引（折叠会跳过块），键盘逻辑必须使用数据索引
 const realIndexMap = computed(() => {
   const map = new Map<string, number>();
@@ -1391,7 +1617,17 @@ const initStorage = async (): Promise<void> => {
   }
 };
 
+// hash 恢复等待标记：刷新后若 URL 带 #pageId 但该页还没加载完，先按 hash 等着，
+// 期间禁止 activePage 兜底跳到第一篇（否则会把要恢复的页冲掉 → 「刷新后内容变成另一篇」）。
+let hashPending = false;
+
 onMounted(async () => {
+  // 先捕获原始 hash（在任何兜底/同步改写它之前），并标记「等待按 hash 恢复」。
+  // 必须早于 initSync：initSync 装载 pages 的瞬间，activePage 兜底 watch 会因 activePageId
+  // 仍是 'default-page' 而跳到第一篇并改写 hash——不提前置 hashPending 就会把要恢复的页冲掉
+  // （表现为「刷新后内容变成第一篇文档」）。
+  const hash = window.location.hash.slice(1);
+  if (hash) hashPending = true;
   // 【关键顺序】存储初始化**必须**在 initSync 之前完成并 await。
   //
   // 历史缺陷：迁移原本放在 initSync 之后「异步不阻塞首屏」，于是 initSync 里的
@@ -1406,28 +1642,47 @@ onMounted(async () => {
   await initSync(pages as any);
   // 原生壳（Android Compose）只读桥：查询页面/同步状态、反向打开页面
   installNativeBridge(pages as any, activePageId);
-  const hash = window.location.hash.slice(1);
-  // 刷新后用 hash 恢复「上次选中的页」。若 hash 指向的页此刻尚未就绪（例如仅经 WS 同步稍后到达，
-  // 或数据异步加载完成前），不要急着跳到第一篇，而是等它出现再恢复——否则会表现为
-  // 「刷新后内容变成另一篇文档」。
+  // 刷新后用 hash 恢复「上次选中的页」（hash 已在 onMounted 开头捕获）。若该页尚未就绪
+  // （仅经 WS 同步稍后到达），先等着，不跳第一篇——否则表现为「刷新后内容变成另一篇文档」。
   const restoreFromHash = (): boolean => {
-    if (hash && pages.value.find(p => p.id === hash)) { activePageId.value = hash; return true; }
+    if (hash && pages.value.find(p => p.id === hash)) { activePageId.value = hash; hashPending = false; return true; }
     return false;
   };
   if (!restoreFromHash()) {
-    if (!hash && pages.value.length > 0) {
-      // 跳过已删除（墓碑）页面，避免首屏默认选中墓碑页导致主编辑区空白
+    if (!hash) {
+      if (pages.value.length > 0) {
+        // 跳过已删除（墓碑）页面，避免首屏默认选中墓碑页导致主编辑区空白
+        const live = pages.value.find(p => !p.deletedAt) || pages.value[0];
+        activePageId.value = live.id;
+        window.history.replaceState(null, '', `#${activePageId.value}`);
+      }
+    } else if (pages.value.length > 0 && !pages.value.find(p => p.id === hash)) {
+      // hash 指向的页不存在/已删：放弃等待并显式回退第一篇（不能只靠兜底 watch——activePage 未变化它不会再触发）
+      hashPending = false;
       const live = pages.value.find(p => !p.deletedAt) || pages.value[0];
-      activePageId.value = live.id;
-      window.history.replaceState(null, '', `#${activePageId.value}`);
+      if (live) { activePageId.value = live.id; window.history.replaceState(null, '', `#${live.id}`); }
+    } else {
+      // 页还没装载：继续等它到达再恢复（hashPending 已在开头置 true）
+      const stop = watch(pages, () => {
+        if (restoreFromHash()) { hashPending = false; stop(); return; }
+        if (pages.value.length > 0 && !pages.value.find(p => p.id === hash)) {
+          hashPending = false; stop();
+          const live = pages.value.find(p => !p.deletedAt) || pages.value[0];
+          if (live) { activePageId.value = live.id; window.history.replaceState(null, '', `#${live.id}`); }
+        }
+      }, { flush: 'post' });
     }
-    // 本地/初始数据里还没目标页：等 pages 就绪（含 WS 同步到达）再恢复一次
-    const stop = watch(pages, () => { if (restoreFromHash()) stop(); }, { flush: 'post' });
   }
   window.addEventListener('hashchange', () => {
      const newHash = window.location.hash.slice(1);
      if (newHash && pages.value.find(p => p.id === newHash)) activePageId.value = newHash;
   });
+
+  // 移动端视图栈初始化：监听形态切换与系统返回，初始若已恢复出文档则直接进入内容页。
+  updateIsMobile();
+  window.addEventListener('resize', updateIsMobile);
+  window.addEventListener('popstate', onPopState);
+  if (isMobile.value && activePage.value) enterContent();
 
   // 离场落盘：防抖 500ms 意味着切走/杀进程会丢掉最后一批改动。
   // 移动端 App 切后台极易被回收，这里在隐藏与卸载时强制 flush。
@@ -1468,8 +1723,8 @@ onMounted(async () => {
   // Escape 键关闭浮窗
   const handleEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return;
-    // 抽屉优先：外接键盘/桌面窄窗口下 Esc 关抽屉是直觉操作
-    if (sidebarOpen.value) { sidebarOpen.value = false; return; }
+    // 移动端内容页优先：Esc 走「返回列表」（与系统返回一致）
+    if (isMobile.value && mobileView.value === 'content') { goToList(); return; }
     // 链接弹窗优先：它内部输入框已自行处理 Esc，这里兜底非输入焦点触发的情况
     if (linkDialog.value.visible) { closeLinkDialog(); return; }
     actionMenuConfig.value.isOpen = false;
@@ -1583,6 +1838,8 @@ onMounted(async () => {
 
 // 持久化与远端广播统一由 useSync 内部 watch 处理
 watch(activePageId, (newId) => { if(window.location.hash.slice(1) !== newId) window.location.hash = newId; });
+// P1：把激活页告知 useSync，供 4s 对账只扫这一页（防漏保存的过渡安全网）
+watch(activePageId, (id) => setReconcilePage(id), { immediate: true });
 // 兜底：激活页无效时（打开了已删除/不存在的页面锚点，或数据异步加载完成前 hash 指向失效），
 // 回退到第一个可用页，避免主编辑区空白（移动端侧边栏是默认隐藏的抽屉，空白会更明显）。
 // 兜底：激活页无效时（打开了已删除/不存在的页面锚点，或数据异步加载完成前 hash 指向失效），
@@ -1592,13 +1849,18 @@ watch(activePageId, (newId) => { if(window.location.hash.slice(1) !== newId) win
 // 表现为「刷新后内容变成另一篇文档」。
 watch(activePage, (ap) => {
   if (ap) return;
+  if (hashPending) return;   // 正在等 hash 页加载，别跳第一篇把要恢复的页冲掉
   const cur = activePageId.value;
   if (cur && pages.value.some((p) => p.id === cur && !p.deletedAt)) return;
   const live = pages.value.find((p) => !p.deletedAt) || pages.value[0];
   if (live) { activePageId.value = live.id; window.history.replaceState(null, '', `#${live.id}`); }
 });
 
-onUnmounted(() => { closeSync(); });
+onUnmounted(() => {
+  closeSync();
+  window.removeEventListener('resize', updateIsMobile);
+  window.removeEventListener('popstate', onPopState);
+});
 
 // === Sidebar 树状逻辑 ===
 // 墓碑页（deletedAt 非空）从侧边栏隐藏：用户删除后在 UI 上立即消失，
@@ -2928,11 +3190,36 @@ const setFocusConfig = (id: string | null, pos: any) => {
 };
 
 watch(focusConfig, (newVal) => {
-  if (newVal.id) { nextTick(() => { const el = inputRefs.value[newVal.id as string]; if (el && newVal.pos !== null) { el.focus(); setCaretPosition(el, newVal.pos); } }); }
+  if (!newVal.id) return;
+  const id = newVal.id;
+  const attempt = (): boolean => {
+    const el = inputRefs.value[id];
+    if (el) { el.focus(); if (newVal.pos !== null) setCaretPosition(el, newVal.pos); return true; }
+    return false;
+  };
+  nextTick(() => {
+    if (attempt()) return;
+    // 目标块未挂载：虚拟滚动先把它滚进视口（纳入窗口并挂载）；回退模式则扩大渲染范围
+    if (virtualScrolling.value) {
+      scrollTaskIntoView(id);
+    } else {
+      const all = visibleTasks.value;
+      const idx = all.findIndex((t: Task) => t.id === id);
+      if (idx >= renderCount.value) renderCount.value = Math.min(idx + 1 + RENDER_CHUNK, all.length);
+    }
+    nextTick(() => attempt());
+  });
 }, { deep: true });
 
 // === 高级交互逻辑 (Block CRUD & Nested & Multimedia) ===
-const updateTask = (id: string, updates: Partial<Task>) => { if (!activePage.value) return; const task = activePage.value.tasks.find((t: Task) => t.id === id); if (task) Object.assign(task, updates); };
+const updateTask = (id: string, updates: Partial<Task>) => {
+  if (!activePage.value) return;
+  const task = activePage.value.tasks.find((t: Task) => t.id === id);
+  if (task) {
+    Object.assign(task, updates);
+    markDirty(activePage.value.id);   // P1：显式标记本页为脏（替代原先每页 deep watch 的隐式触发）
+  }
+};
 const deleteTask = (id: string) => { if (!activePage.value) return; activePage.value.tasks = activePage.value.tasks.filter((t: Task) => t.id !== id); };
 
 // 当前「激活」的多媒体块（图片等）：用于触屏无 hover 时仍能显示操作浮层

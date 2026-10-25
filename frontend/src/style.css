@@ -1,4 +1,6 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;700&family=Rajdhani:wght@600;700&display=swap');
+/* 字体改为自托管：原先的 Google Fonts @import 在国内网络被拦（performance size=0，从未加载），
+   既拖慢首屏又刷 "Failed to load resource"。现改用 @fontsource/*（见 main.ts 顶部 import），
+   woff2 由 Vite 打进产物、无外部请求；中文回退系统字体（这三款不含 CJK）。 */
 
 @tailwind base;
 @tailwind components;

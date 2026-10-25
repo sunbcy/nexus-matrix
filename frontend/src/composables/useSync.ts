@@ -341,6 +341,7 @@ let reconnectAttempts = 0;
 let remoteApplying = false;   // 标记：正在应用远端数据，避免回环广播
 let stopWatch: (() => void) | null = null;  // 页面订阅的取消函数，closeSync 时清理，防 HMR 重复订阅
 let currentPagesRef: Ref<Page[]> | null = null;
+let backendReachable = false;   // 探测到确有后端（REST 探针成功或 WS 已连）才做网络推送；纯本地模式一律不推，杜绝 /api 404 噪音
 
 /**
  * 数据变更计数：任何页面的内容或结构变化都会 +1。
@@ -356,10 +357,8 @@ let structureDirty = false;             // 发生了结构变化（增删页 / �
 
 const watchPages = (pagesRef: Ref<Page[]>): (() => void) => {
   const onChange = (id?: string) => {
-    dataVersion.value++;                       // 供上层浅 watch 感知
-    if (id) dirtyPageIds.add(id); else structureDirty = true;
     if (remoteApplying) return;                // 远端应用期间不回推，避免无限回环
-    debouncedCommit(pagesRef.value);
+    requestCommit(id);
   };
 
   // 让「每页一个 deep watch」的集合与当前 pages 保持一致：
@@ -372,7 +371,7 @@ const watchPages = (pagesRef: Ref<Page[]>): (() => void) => {
       const cur = pageWatchStops.get(p.id);
       if (cur && cur.obj === p) continue;      // 仍是同一个对象，保留已有订阅
       if (cur) cur.stop();
-      const stop = watch(() => p, () => onChange(p.id), { deep: true });
+      const stop = watch(() => p, () => onChange(p.id));   // 浅订阅：只在页面对象整体替换时触发（字段改动走 markDirty，不再整页遍历）
       pageWatchStops.set(p.id, { obj: p, stop });
     }
     for (const [id, rec] of [...pageWatchStops]) {
@@ -481,6 +480,12 @@ function debounce<T extends (...args: any[]) => void>(fn: T, wait: number) {
   return debounced;
 }
 
+// P1 过渡期对账（防漏保存）：见下方 reconcile。只对账「当前激活页」，复用 pageFingerprint/pageStampCache，
+// 每 4s 跑一次、隐藏标签页跳过；确认显式标脏已覆盖全部路径后可整体移除（本段 + setReconcilePage + setInterval）。
+let reconcilePageId: string | null = null;
+export const setReconcilePage = (id: string | null): void => { reconcilePageId = id; };
+let reconTimer: ReturnType<typeof setInterval> | null = null;
+
 // 一次提交的完整动作：打戳 -> 页面历史 -> 本地落盘 + 远端上推。
 // 只有真的发生了内容变化的页才会被打戳并返回其 id。
 const commitPages = (pages: Page[]): void => {
@@ -495,6 +500,30 @@ const commitPages = (pages: Page[]): void => {
   void persistPages(pages, changed);
 };
 const debouncedCommit = debounce(commitPages, 500);
+
+// P1 块级隔离：显式标脏 + 触发防抖提交，取代「每页 deep watch 隐式触发整页遍历」。
+// 编辑器知道某页被改时调 markDirty(id)；浅 watch 只兜页面对象整体替换；4s 对账兜其余漏网。
+const requestCommit = (id?: string) => {
+  dataVersion.value++;
+  if (id) dirtyPageIds.add(id); else structureDirty = true;
+  if (currentPagesRef) debouncedCommit(currentPagesRef.value);
+};
+export const markDirty = (pageId: string) => {
+  if (remoteApplying) return;           // 远端应用期间不回推，避免回环广播
+  requestCommit(pageId);
+};
+const reconcile = () => {
+  const pages = currentPagesRef?.value;
+  if (!pages || !reconcilePageId || document.visibilityState === 'hidden') return;
+  const p = pages.find((x) => x.id === reconcilePageId);
+  if (!p) return;
+  // 激活页当前内容指纹 ≠ 上次提交时打的戳，且没被显式标脏 → 有漏网修改，补一次提交
+  if (pageFingerprint(p) !== pageStampCache.get(p.id) && !dirtyPageIds.has(p.id)) {
+    dataVersion.value++;
+    dirtyPageIds.add(p.id);
+    commitPages(pages);   // 直接提交（debouncedCommit.flush 仅在「有挂起调用」时才执行，这里没有，故直接调 commitPages）
+  }
+};
 
 // 防抖持久化：本地写入 + 远端推送（写入时打 updatedAt，供后端 LWW）
 // changedIds 存在时只上推**变化的那几页**：后端 CLIENT_UPDATE 走的是 merge 语义，
@@ -554,6 +583,8 @@ export const fetchRemotePages = async (since = 0): Promise<Page[] | null> => {
       lastSyncCursor.value = result.cursor;
       void saveCursor();
     }
+    // 后端有成功响应即视为可达（哪怕 data 为空）：决定后续是否值得推送/连 WS
+    if (result?.success) backendReachable = true;
     if (result?.success && Array.isArray(result.data) && result.data.length > 0) {
       return result.data;
     }
@@ -575,7 +606,11 @@ export const pushAll = async (pages: Page[]) => {
   try {
     await sendWS({ type: 'CLIENT_UPDATE', data: pages, clientSeq });
   } catch (e) {
-    // WS 不可用时降级为 REST 全量保存（尽力而为）
+    // WS 正在连接中：onopen 会补发 outbox，这里别再逐页 REST（否则每次启动都 121 个串行 PUT）。
+    if (socket && socket.readyState === WebSocket.CONNECTING) return;
+    // 后端不可达（未配置，或探测/连接都从没成功过）：跳过 REST，避免纯本地或后端下线时刷 404/错误。
+    if (!backendReachable) return;
+    // WS 已断开且无正在进行的连接 → 退化为 REST 全量保存（尽力而为）
     try {
       for (const p of pages) {
         await apiRequest(`/pages/${p.id}`, { method: 'PUT', body: JSON.stringify(p) });
@@ -585,6 +620,7 @@ export const pushAll = async (pages: Page[]) => {
 };
 
 export const createRemotePage = async (page: Page) => {
+  if (!SYNC_SERVER && !backendReachable) return null;   // 纯本地：无后端可推，跳过避免 404
   try {
     const r = await apiRequest('/pages', { method: 'POST', body: JSON.stringify(page) });
     return r?.success ? r.data : null;
@@ -592,10 +628,12 @@ export const createRemotePage = async (page: Page) => {
 };
 
 export const deleteRemotePage = async (id: string) => {
+  if (!SYNC_SERVER && !backendReachable) return;        // 纯本地：无后端可推，跳过避免 404
   try { await apiRequest(`/pages/${id}`, { method: 'DELETE' }); } catch (e) { /* ignore */ }
 };
 
 export const updateRemotePage = async (page: Page) => {
+  if (!SYNC_SERVER && !backendReachable) return;        // 纯本地：无后端可推，跳过避免 404
   try { await apiRequest(`/pages/${page.id}`, { method: 'PUT', body: JSON.stringify(page) }); } catch (e) { /* ignore */ }
 };
 
@@ -638,6 +676,7 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     // 代际守护：若已被更新的连接取代（HMR / 重连竞态），自关以防后端连接数虚高
     if (socket !== mySocket) { try { mySocket.close(); } catch { /* 忽略 */ } return; }
     syncStatus.value = 'online';
+    backendReachable = true;   // WS 连上即证明后端可达（后续 pushAll 的 REST 兜底因此放行）
     lastSyncError.value = '';
     reconnectAttempts = 0;
     // 阶段二 2.1：重连成功后补发离线期间累积的 outbox。
@@ -762,6 +801,7 @@ export const retrySync = async () => {
 
 export const closeSync = () => {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (reconTimer) { clearInterval(reconTimer); reconTimer = null; }
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   if (stopWatch) { stopWatch(); stopWatch = null; }
   syncStatus.value = 'offline';
@@ -934,6 +974,11 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   // 2) 远端握手（阶段二 2.2 增量）：带 lastSyncCursor 作 since，只拉断线期间
   //    其它端发生变更的页；无 cursor 时拉全量（首装/换设备）。
   const remote = await fetchRemotePages(lastSyncCursor.value);
+
+  // 先发起 WS 连接（后端可达时）：让下面的 pushAll 走 WS（open 后由 onopen 补发 outbox），
+  // 而不是在 socket 尚未 open 时退化成逐页 REST（121 页 = 121 个串行 PUT，每次启动都来一遍）。
+  if (backendReachable) connectWS(pagesRef);
+
   if (!local && remote) {
     pagesRef.value = sanitizeLoadedPages(remote);
     await saveLocal(pagesRef.value);
@@ -982,9 +1027,9 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   // 同时 stampUpdated 也不再在每次触发时跑：它要给每页算内容指纹（JSON.stringify 全页
   // blocks），同样与全库规模成正比。现在合并进防抖，并且只指纹被标记的那些页。
   stopWatch = watchPages(pagesRef);
-
-  // 4) 建立 WebSocket
-  connectWS(pagesRef);
+  // P1 过渡期对账：每 4s 用廉价指纹兜一次漏网修改（防漏保存），closeSync 时清理
+  if (reconTimer) clearInterval(reconTimer);
+  reconTimer = setInterval(reconcile, 4000);
 
   return !!remote;
 };

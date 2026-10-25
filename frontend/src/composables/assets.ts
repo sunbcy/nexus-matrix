@@ -99,12 +99,14 @@ export const uploadAssetToServer = async (ref: string, blob: Blob): Promise<void
  */
 export const fetchAssetFromServer = async (ref: string): Promise<Blob | null> => {
   if (!SYNC_SERVER) return null;
+  const id = ref.slice(ASSET_PREFIX.length);
   try {
-    const res = await fetch(`${ASSET_API_BASE}/assets/${ref.slice(ASSET_PREFIX.length)}`);
-    if (!res.ok) return null;
+    const res = await fetch(`${ASSET_API_BASE}/assets/${id}`);
+    // 明确 404：记入负缓存，后续不再对同一缺失资产反复回源（消除 404 刷屏）
+    if (res.status === 404) { markAssetMissing(ref); return null; }
+    if (!res.ok) return null; // 5xx 等瞬时错误：不记录，下次自重试
     const blob = await res.blob();
     // 落本地，避免每次渲染都跨网
-    const id = ref.slice(ASSET_PREFIX.length);
     const db = await openDB();
     await new Promise<void>((resolve) => {
       const tx = db.transaction(ASSET_STORE, 'readwrite');
@@ -127,16 +129,55 @@ export const isAssetRef = (url: unknown): url is string =>
 // 避免每次渲染都新建 URL 导致 <img> 反复刷新。
 const blobUrlCache = new Map<string, string>();
 
+// === 「查无此资产」负缓存（消除缺失图片的反复 404） ===
+// 页面引用了 asset:<id>，但本地 IDB 没有、后端也 404（多为 Notion 导入遗留 / 资产丢失）。
+// 不记负缓存的话，resolveAsset 每次被调用（渲染 / warmAssets）都会重新回源 → 反复 404 刷屏。
+// 只在**后端明确 404** 时记录；网络错误 / 5xx 视为瞬时故障，不记录，下次自重试。
+// 持久化到 localStorage 跨刷新生效，并带 TTL：万一资产后来补上传，到期会自动重新探测。
+const ASSET_MISS_KEY = 'nexus_asset_miss_v1';
+const ASSET_MISS_TTL = 7 * 24 * 60 * 60 * 1000; // 7 天
+const assetMissCache = new Set<string>();
+try {
+  const raw = localStorage.getItem(ASSET_MISS_KEY);
+  if (raw) {
+    const parsed = JSON.parse(raw) as { ts?: number; refs?: unknown };
+    if (parsed && typeof parsed.ts === 'number' && Date.now() - parsed.ts <= ASSET_MISS_TTL && Array.isArray(parsed.refs)) {
+      for (const r of parsed.refs) if (typeof r === 'string') assetMissCache.add(r);
+    } else {
+      localStorage.removeItem(ASSET_MISS_KEY); // 过期 / 损坏：清掉重来
+    }
+  }
+} catch { /* 读不到就当没有负缓存 */ }
+let assetMissSaveTimer: ReturnType<typeof setTimeout> | null = null;
+const persistAssetMiss = (): void => {
+  if (assetMissSaveTimer) clearTimeout(assetMissSaveTimer);
+  assetMissSaveTimer = setTimeout(() => {
+    try {
+      localStorage.setItem(ASSET_MISS_KEY, JSON.stringify({ ts: Date.now(), refs: [...assetMissCache] }));
+    } catch { /* 配额满等：仅本次不持久化，不影响使用 */ }
+  }, 800);
+};
+const markAssetMissing = (ref: string): void => {
+  if (assetMissCache.has(ref)) return;
+  assetMissCache.add(ref);
+  persistAssetMiss();
+};
+const clearAssetMissing = (ref: string): void => {
+  if (!assetMissCache.delete(ref)) return;
+  persistAssetMiss();
+};
+
 /** 把 asset: 引用还原成可直接用于 <img src> 的 URL */
 export const resolveAsset = async (ref: string): Promise<string> => {
   const cached = blobUrlCache.get(ref);
   if (cached) return cached;
   let blob = await getAsset(ref);
-  // 阶段二 2.3：本地 miss → 从后端回源（其它设备上传过的图片）
-  if (!blob) {
+  // 阶段二 2.3：本地 miss → 从后端回源；已知缺失（负缓存）的跳过，避免反复 404
+  if (!blob && !assetMissCache.has(ref)) {
     blob = await fetchAssetFromServer(ref);
   }
   if (!blob) return '';
+  clearAssetMissing(ref); // 找到了（含后来补上传的）：移出负缓存
   const url = URL.createObjectURL(blob);
   blobUrlCache.set(ref, url);
   return url;
