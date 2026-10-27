@@ -301,10 +301,11 @@
   }
 }
 
-/* 工业风超窄自定义滚动条 (Custom Scrollbar) */
+/* 自定义滚动条：宽度与圆角对齐 Notion（此前 4px 过窄，远细于 Notion，拖拽手感差）。
+   Notion 的滚动条约占 8px，滑块圆角约为宽度的一半；hover 时略加宽到 10px 便于抓取。 */
 .custom-scrollbar::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 12px;
+  height: 12px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
@@ -312,13 +313,19 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: rgb(var(--accent) / 0.3);
-  border-radius: 2px;
+  background: rgb(var(--accent) / 0.35);
+  border-radius: 6px;
   transition: background 0.2s ease-in-out;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--accent) / 0.6);
+  background: rgb(var(--accent) / 0.65);
+}
+
+/* hover 抓取区略加宽，便于精确拖拽 */
+.custom-scrollbar:hover::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
 }
 
 /* ContentEditable 空白时的占位提示符 (Placeholder) 逻辑。

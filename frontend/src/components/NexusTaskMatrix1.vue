@@ -12,8 +12,9 @@
          移动端(<768px)：作为独立的全屏「列表页」，与内容页互斥显示（Notion 式页面栈），
          不再用左侧浮层抽屉。内容页通过顶部返回箭头 / 系统返回键切回本列表页。 -->
     <aside v-show="!isMobile || mobileView === 'list'"
-           class="bg-surface border-r border-line flex flex-col shrink-0 md:relative md:inset-auto md:z-10 md:w-[280px]"
-           :class="isMobile && mobileView === 'list' ? 'fixed inset-y-0 left-0 z-50 w-full max-w-full' : ''">
+           class="bg-surface border-r border-line flex flex-col shrink-0 md:relative md:inset-auto md:z-10"
+           :class="isMobile && mobileView === 'list' ? 'fixed inset-y-0 left-0 z-50 w-full max-w-full' : ''"
+           :style="isMobile ? undefined : { width: sidebarWidth + 'px' }">
       <!-- pt-safe：原生壳边到边时抽屉从状态栏底下开始，头部避开状态栏；
            非边到边时 env() 恒为 0，无副作用。h-14 改 min-h-14 防止 padding 撑破固定高 -->
       <div class="min-h-14 pt-safe px-4 flex items-center justify-between border-b border-line shadow-sm shrink-0">
@@ -207,6 +208,12 @@
         </span>
         <span v-if="trashedPages.length" class="text-[10px] font-['JetBrains_Mono',monospace] text-dim">{{ trashedPages.length }}</span>
       </button>
+      <!-- 侧边栏宽度拖拽条（对齐 Notion：侧边栏可拖拽调宽，宽度会记住） -->
+      <div v-if="!isMobile"
+           class="absolute right-0 top-0 h-full w-1 cursor-col-resize z-30 transition-colors hover:bg-accent/50"
+           :class="resizingSidebar ? 'bg-accent/70' : ''"
+           @mousedown="startSidebarResize"
+           title="拖拽调整侧边栏宽度"></div>
     </aside>
 
     <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
@@ -1192,6 +1199,38 @@ const selectPage = (id: string) => {
 
 // 移动端形态切换（与 Tailwind md: 断点一致）：宽度 <768 视为移动端。
 const updateIsMobile = () => { isMobile.value = window.innerWidth < 768; };
+
+// === 侧边栏宽度：可拖拽调宽 + 记住（对齐 Notion，Notion 的侧边栏本就可拖拽）===
+// 默认 240px（Notion 默认值），范围 180~480px（与 Notion 的可调区间一致）。
+const SIDEBAR_W_KEY = 'nexus.sidebar.width';
+const sidebarWidth = ref<number>((() => {
+  try {
+    const v = parseInt(localStorage.getItem(SIDEBAR_W_KEY) || '', 10);
+    if (Number.isFinite(v) && v >= 180 && v <= 480) return v;
+  } catch { /* localStorage 不可用则用默认 */ }
+  return 240;
+})());
+const resizingSidebar = ref(false);
+const startSidebarResize = (e: MouseEvent) => {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = sidebarWidth.value;
+  resizingSidebar.value = true;
+  const prevSelect = document.body.style.userSelect;
+  document.body.style.userSelect = 'none'; // 拖拽时别选中文字
+  const onMove = (ev: MouseEvent) => {
+    sidebarWidth.value = Math.min(480, Math.max(180, startW + (ev.clientX - startX)));
+  };
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    document.body.style.userSelect = prevSelect;
+    resizingSidebar.value = false;
+    try { localStorage.setItem(SIDEBAR_W_KEY, String(Math.round(sidebarWidth.value))); } catch { /* 忽略 */ }
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+};
 // 安卓系统/手势返回（由 Capacitor App 插件的 backButton 事件驱动，见 onMounted）：
 // 任意浮层打开时先收起浮层；否则内容页 → 回列表页；列表页 → 退出 App。
 const onBackButton = () => {
@@ -1360,7 +1399,13 @@ watch(
 // 补偿 scrollTop，避免滚动跳动。offsets 用「版本号缓存」：只有列表或某块高度变化才重算前缀和，滚动时 O(1) 命中。
 // 关键不变量：焦点块不能被卸载；键盘/跳转/搜索先把目标块滚进视口（纳入窗口并挂载）再聚焦（见 focusConfig watch）。
 // 开关 virtualScrolling=false → 退回 P3「渐进全挂载」，便于对照与回退。
-const virtualScrolling = ref(true);
+// 关闭虚拟滚动，改为「整篇挂载」（渐进式，见 renderedTasks / scheduleRenderGrowth）。
+// 原因：虚拟滚动靠「估算未挂载块的高度」撑总高度，估算永远做不到精确（字体、图片、换行都会让它偏），
+// 偏了就表现为——滚不到真正的底部、拖到底疯狂跳、静止时抖动。为了修这些我们已经打了多层补丁
+// （锚点补偿 / 冻结模型 / 关原生锚定 / 收敛检测），代价高却仍不稳定。
+// 用户明确偏好「稳定可靠 > 速度」，且实测 Notion 长文档也是「先空白卡一下、之后长度精确、永远能触底」，
+// 那正是整篇挂载的形态。故改回整篇挂载：总高度 = 真实 DOM 高度，天然精确，不存在估算误差。
+const virtualScrolling = ref(false);
 const VIRTUAL_OVERSCAN = 2;                 // 视口上下各多渲染 2 屏（1 屏在快速滚动时会一帧跳过，出现空白闪现）
 const VIRTUAL_QUANT = 24;                   // 窗口按 N 块一档对齐，避免拖动滚动条时每帧都重渲染
 const scrollEl = ref<HTMLElement | null>(null);
@@ -1382,6 +1427,13 @@ const measureAll = ref(false);
 // 会形成自激振荡。量完之后高度模型已完整，再挪滚动位置没有收益，只会抖。
 // 用户明确偏好「稳定可靠 > 速度」，故此处宁可偶尔有一次内容位移，也不要持续抖动。
 const heightsFrozen = ref(false);
+// 已量过的页：量过的页再打开直接复用（秒开且稳）；resize（宽度变 → 文字重排）或字体就绪后清空重来。
+// 注意不能只靠「blockHeights 里有没有值」判断要不要量——高度是跨页持久的，
+// 若某页是在字体/图片就绪前量的，那份偏小的高度会一直被沿用，导致总高度被低估 → 滚不到底。
+const measuredPageIds = new Set<string>();
+// 收敛检测：RO 还在改高度就说明模型没稳定（字体刚生效、图片刚撑开），此时不能冻结。
+let roActivity = false;
+let settleFrames = 0;
 let listVersion = 0;
 let heightsVersion = 0;
 
@@ -1497,6 +1549,7 @@ const finishMeasure = () => {
   requestAnimationFrame(() => requestAnimationFrame(() => {
     measureAll.value = false;
     heightsFrozen.value = true; // 量完 → 冻结滚动补偿，此后不再因尺寸变化挪动滚动位置
+    measuredPageIds.add(activePageId.value); // 本页已量过：再打开直接复用
     recomputeRange();
   }));
 };
@@ -1514,20 +1567,35 @@ const stepMeasure = () => {
     measureRaf = requestAnimationFrame(stepMeasure);
     return;
   }
-  // 全篇已挂载过：等图片宽高比回填完再收尾。否则图片块此刻还没占位、被量成矮块，
-  // 之后图片加载又把它撑高 → 总高度再变一次，等于白量。最多等约 1 秒，避免死等。
+  // 全篇已挂载过：先等图片宽高比回填，再等高度模型「收敛」，最后才冻结。
+  // ①等图片：图片块此刻还没占位会被量成矮块，之后加载又撑高 → 总高度再变，等于白量（最多约 1 秒）。
   const pending = all.some((t) => t.type === 'image' && isAssetRef(t.payload?.url) && !imageDims[t.payload!.url as string]);
   if (pending && measureWait < 60) { measureWait++; measureRaf = requestAnimationFrame(stepMeasure); return; }
+  // ②等收敛：RO 还在改高度说明字体刚生效 / 图片刚撑开，模型没稳。
+  //   此时冻结会把「偏小的高度」固化下来 → 总高度被低估 → 表现为滚轮滚不到底、拖到底疯狂跳。
+  //   连续 3 帧没有高度变化才认为稳了（总帧数设上限，避免死等）。
+  if (roActivity) {
+    roActivity = false;
+    settleFrames = 0;
+    if (measureWait < 180) { measureWait++; measureRaf = requestAnimationFrame(stepMeasure); return; }
+  }
+  if (settleFrames < 3) { settleFrames++; measureRaf = requestAnimationFrame(stepMeasure); return; }
   finishMeasure();
 };
 const startMeasurePass = () => {
+  if (!virtualScrolling.value) { heightsFrozen.value = true; return; } // 整篇挂载模式没有 spacer，无需量高
   if (measureRaf != null) { cancelAnimationFrame(measureRaf); measureRaf = null; }
   const all = visibleTasks.value;
   if (all.length === 0) { measureAll.value = false; heightsFrozen.value = true; recomputeRange(); return; }
   measureAll.value = true;
-  heightsFrozen.value = false; // 量高期间允许补偿（此时高度模型还没定型）
+  heightsFrozen.value = false; // 量高期间允许测高（此时高度模型还没定型）
+  // 丢掉本页旧的实测高度：上一轮可能是在字体/图片就绪前量的，那份偏小的高度必须作废，
+  // 否则重新量也只是在旧值上「看着没变化」，错误模型照样被冻结沿用。
+  for (const t of all) delete blockHeights.value[t.id];
   measurePos = 0;
   measureWait = 0;
+  settleFrames = 0;
+  roActivity = false;
   measureRaf = requestAnimationFrame(stepMeasure);
 };
 
@@ -1537,6 +1605,7 @@ let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 const onWindowResize = () => {
   if (resizeTimer) clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
+    measuredPageIds.clear(); // 宽度变了 → 文字重排，所有页的高度都要重量
     heightsFrozen.value = false;
     startMeasurePass();
   }, 200);
@@ -1546,6 +1615,19 @@ onUnmounted(() => {
   window.removeEventListener('resize', onWindowResize);
   if (resizeTimer) clearTimeout(resizeTimer);
 });
+
+// 字体就绪会改变文字度量：若首轮量高发生在字体生效之前，量到的是回退字体的高度（通常偏小），
+// 冻结后总高度被低估 → 滚轮滚不到底。字体就绪后作废重来一次（只补一次）。
+const onFontsReady = () => {
+  if (measuredPageIds.size === 0) return; // 还没量过，正常流程会用就绪后的字体量，无需补
+  measuredPageIds.clear();
+  heightsFrozen.value = false;
+  startMeasurePass();
+};
+try {
+  const f = (document as any).fonts;
+  if (f && f.ready && typeof f.ready.then === 'function') f.ready.then(() => onFontsReady()).catch(() => {});
+} catch { /* 不支持 FontFaceSet 的浏览器忽略 */ }
 
 // <main> 滚动容器 ref：挂载即算一次窗口（切页时 <main> 重挂载、scrollTop 归零）
 const onMainRef = (el: any) => { scrollEl.value = (el as HTMLElement) || null; if (el) recomputeRange(); };
@@ -1589,6 +1671,7 @@ const blockRO = new ResizeObserver((entries) => {
     changed = true;
   }
   if (!changed) return;
+  roActivity = true; // 标记「模型还在变」，量高收尾要等它停下来才冻结
   heightsVersion++; // 整批一次，避免多次 O(n) 前缀和重建
   recomputeRange();
 });
@@ -1627,10 +1710,10 @@ watch(visibleTasks, (cur, prev) => {
 watch(activePageId, () => {
   listVersion++;
   nextTick(() => {
-    const all = visibleTasks.value;
-    const needMeasure = all.some((t) => blockHeights.value[t.id] == null);
-    if (needMeasure) startMeasurePass();
-    else { heightsFrozen.value = true; recomputeRange(); }
+    // 本页量过就直接复用（秒开且稳）；没量过才跑量高。
+    // 不用「blockHeights 有没有值」判断：高度跨页持久，字体就绪前量出来的偏小值会一直被复用。
+    if (measuredPageIds.has(activePageId.value)) { heightsFrozen.value = true; recomputeRange(); }
+    else startMeasurePass();
   });
 });
 
@@ -4911,14 +4994,12 @@ defineExpose({ exportMarkdown });
 </script>
 
 <style scoped>
-/* 关闭浏览器原生「滚动锚定」（scroll anchoring）。
-   原理：浏览器发现「视口上方内容高度变了」会自动挪 scrollTop 去补偿，让可见内容看起来不动。
-   这对普通网页是好事，但对虚拟滚动是灾难——本组件的 vTop spacer 会随窗口按 VIRTUAL_QUANT(24) 块
-   一档跳变（窗口对齐导致的正常现象），浏览器把它当成「上方内容变了」而反复补偿，形成闭环：
-     spacer 高度变 → 浏览器自动挪 scrollTop → 触发 scroll 事件 → 重算窗口 → spacer 又变 → …
-   表现就是「静止不动时文档仍持续部分抖动」。虚拟滚动必须显式关掉原生锚定，改由自己控制。 */
-main { overflow-anchor: none; }
-main :deep(*) { overflow-anchor: none; }
+/* 关于浏览器原生「滚动锚定」（scroll anchoring）：
+   它发现「视口上方内容高度变了」会自动挪 scrollTop，让可见内容看起来不动。
+   虚拟滚动模式下必须关掉（vTop spacer 会按 VIRTUAL_QUANT 整档跳变，被误判成「上方内容变了」，
+   于是反复补偿 → 静止时也持续抖动）。但当前已改为整篇挂载（virtualScrolling=false），
+   没有 spacer，原生锚定反而成了好事：图片延迟加载撑高时，它能自动稳住视口，不让内容跳动。
+   故这里不再写 overflow-anchor: none。若将来重新开启虚拟滚动，记得把这行加回来。 */
 /* 主题化：这里全部走语义变量（定义在 src/style.css 的 [data-theme]），
    不要再写死 hex，否则换肤后这些富文本样式会「留在旧主题里」。 */
 .ce-block b, .ce-block strong { color: rgb(var(--accent)); font-weight: 700; text-shadow: 0 0 var(--accent-glow-radius, 4px) rgb(var(--accent) / var(--accent-glow, 0.3)); }
