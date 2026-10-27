@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseMarkdown, inlineToHtml } from '../src/composables/markdownImport';
+import {describe, expect, it} from 'vitest';
+import {inlineToHtml, parseMarkdown} from '../src/composables/markdownImport';
 
 // 覆盖此前手工验证过的全部断言，防止编辑器逻辑回归。
 // 重点：category / type / indentLevel / completed 四个字段，
@@ -179,5 +179,48 @@ describe('parseMarkdown - 容错（内容绝不丢失）', () => {
     const r = parseMarkdown('A\n\n\n\nB');
     expect(r.blocks.length).toBe(2);
     expect(r.blocks.every((b) => b.content !== '')).toBe(true);
+  });
+});
+
+describe('段内图片（图文混排不丢图）', () => {
+  it('整行图片仍是独立 image 块', () => {
+    const r = parseMarkdown('![图](a.png)');
+    expect(r.blocks.length).toBe(1);
+    expect(r.blocks[0].type).toBe('image');
+    expect(r.blocks[0].payload.url).toBe('a.png');
+    expect(r.blocks[0].payload.pendingDownload).toBe(true);
+  });
+
+  it('段内图片拆成独立 image 块，不再退化成字面文本', () => {
+    const r = parseMarkdown('段落里有 ![图](a.png) 图片');
+    const img = r.blocks.find((b) => b.type === 'image');
+    expect(img).toBeTruthy();
+    expect(img!.payload.url).toBe('a.png');
+    // 关键回归：正文里不能再残留 ![...]() 的字面串
+    expect(r.blocks.some((b) => (b.content ?? '').includes('!['))).toBe(false);
+  });
+
+  it('前后文字各自保留', () => {
+    const r = parseMarkdown('前面 ![图](a.png) 后面');
+    const texts = r.blocks.filter((b) => b.type === 'text').map((b) => b.content).join('|');
+    expect(texts).toContain('前面');
+    expect(texts).toContain('后面');
+  });
+
+  it('一行多张图都拆出来', () => {
+    const r = parseMarkdown('![a](1.png) 和 ![b](2.png)');
+    expect(r.blocks.filter((b) => b.type === 'image').length).toBe(2);
+  });
+
+  it('段内 HTML <img> 也拆出来', () => {
+    const r = parseMarkdown('文字 <img src="x.png" alt="说明"> 结束');
+    const img = r.blocks.find((b) => b.type === 'image');
+    expect(img?.payload.url).toBe('x.png');
+    expect(img?.payload.alt).toBe('说明');
+  });
+
+  it('data: 图片不标待下载', () => {
+    const r = parseMarkdown('![x](data:image/png;base64,AAA)');
+    expect(r.blocks[0].payload.pendingDownload).toBe(false);
   });
 });

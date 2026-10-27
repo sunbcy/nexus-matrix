@@ -19,8 +19,8 @@ import androidx.compose.runtime.Composable
  * 需要原生的配置（如同步服务器地址）继续走 ShellPrefs + URL query 注入。
  */
 @Composable
-fun NexusApp(webView: WebView) {
+fun NexusApp(webView: WebView, controller: PullRefreshController) {
     // 直接铺满：不再用 Scaffold/NavigationBar，底部空间全部还给编辑器。
-    // EditorScreen 已内置下拉刷新与 WebView 常驻策略（不 destroy）。
-    EditorScreen(webView)
+    // EditorScreen 已内置受控下拉刷新与 WebView 常驻策略（不 destroy）。
+    EditorScreen(webView, controller)
 }

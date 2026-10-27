@@ -10,13 +10,14 @@ import androidx.compose.ui.Modifier
  *
  * 形态参考 Notion 移动端：
  * - 无原生顶栏，WebView 全屏边到边（状态栏区域由 Web 侧 safe-area CSS 兜底）；
- * - 不再做原生下拉刷新（SwipeRefreshLayout 会与安卓手势冲突、且触发整页 reload 丢失编辑态）；
- *   数据本地持久化 + WebSocket 自动同步，手动重连走 Web 侧同步指示器。
+ * - 下拉刷新改为「受控」：仅文档列表页顶部生效、内容编辑页禁用，
+ *   触发时走 Web 侧重新同步（window.__NEXUS_API__.triggerResync），不再整页 reload。
  */
 @Composable
-fun EditorScreen(webView: WebView) {
+fun EditorScreen(webView: WebView, controller: PullRefreshController) {
     AndroidWebView(
         webView = webView,
+        controller = controller,
         modifier = Modifier.fillMaxSize(),
     )
 }

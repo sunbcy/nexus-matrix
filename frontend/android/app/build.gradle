@@ -55,6 +55,10 @@ dependencies {
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
     implementation project(':capacitor-android')
 
+    // 受控下拉刷新：View 层的 SwipeRefreshLayout（WebView 不参与 Compose 嵌套滚动，
+    // 必须用 View 层；enable/atTop 由 Web 经 NexusNativeBridge 实时控制）。
+    implementation "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0"
+
     // === 原生壳（Compose）===
     implementation "androidx.activity:activity-compose:$androidxActivityVersion"
     implementation platform("androidx.compose:compose-bom:$composeBomVersion")

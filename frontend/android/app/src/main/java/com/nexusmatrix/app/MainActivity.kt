@@ -10,7 +10,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.ui.platform.ComposeView
 import com.getcapacitor.BridgeActivity
 import com.nexusmatrix.app.ui.NexusApp
+import com.nexusmatrix.app.ui.NexusJsBridge
 import com.nexusmatrix.app.ui.NexusTheme
+import com.nexusmatrix.app.ui.PullRefreshController
 
 /**
  * 原生壳入口（阶段 1）。
@@ -49,6 +51,15 @@ class MainActivity : BridgeActivity() {
             null
         } ?: return   // WebView 不可用：保留 Capacitor 默认布局（或错误页），不至于白屏
 
+        // 受控下拉刷新：Web 侧通过 NexusNativeBridge 推送「是否允许刷新 / 列表是否置顶」，
+        // 原生据此只在文档列表页顶部启用 SwipeRefreshLayout，触发时走 Web 侧重新同步。
+        val pullRefresh = PullRefreshController()
+        try {
+            webView.addJavascriptInterface(NexusJsBridge(pullRefresh), "NexusNativeBridge")
+        } catch (e: Throwable) {
+            Log.e(TAG, "注册 NexusNativeBridge 失败", e)
+        }
+
         // WebView 默认白底，冷启动/刷新时会闪一下白屏；改为品牌深色（与 Web 端 nexus-void 一致）
         webView.setBackgroundColor(0xFF090A0C.toInt())
 
@@ -78,7 +89,7 @@ class MainActivity : BridgeActivity() {
             try {
                 setContentView(ComposeView(this).apply {
                     setContent {
-                        NexusTheme { NexusApp(webView = webView) }
+                        NexusTheme { NexusApp(webView = webView, controller = pullRefresh) }
                     }
                 })
             } catch (e: Throwable) {
