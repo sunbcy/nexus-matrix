@@ -213,6 +213,57 @@
   }
 }
 
+/* -------------------------------------------------------------
+   移动端排版收紧（对齐 Notion 移动版）
+   -------------------------------------------------------------
+   症状：文档页像一块「画布」，竖屏下可以左右拖动。
+   成因是两件事叠加：
+   1) 滚动容器只写了 overflow-y: auto，另一轴保持 visible —— 但 CSS 规范规定
+      「一轴为 auto/scroll、另一轴 visible 时，visible 会按 auto 处理」，
+      于是容器悄悄长出了横向滚动区；
+   2) 富文本里存在会撑宽的内容（长 URL / 长代码行 / 不折行的行内元素），
+      把这块横向滚动区真的撑开。
+
+   所以两头都管：容器锁死横向滚动 + 内容强制折行。
+   ------------------------------------------------------------- */
+@media (max-width: 767px) {
+  html,
+  body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  /* 文档滚动容器：只允许纵向滚动 */
+  main,
+  .overflow-y-auto {
+    overflow-x: hidden !important;
+  }
+
+  /* 富文本：长单词 / URL / 代码行一律折行，绝不允许撑宽布局 */
+  .ce-block,
+  .ce-block * {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* 媒体与预格式化文本：等比收缩，不产生横向溢出 */
+  .ce-block img,
+  .ce-block video,
+  .ce-block pre,
+  .ce-block table {
+    max-width: 100% !important;
+  }
+
+  .ce-block pre,
+  .ce-block code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* 视口高度工具类：100vh 先行（旧 WebView 不支持 dvh 时保底），dvh 覆盖
    （软键盘弹出时 dvh 随布局视口收缩，vh 不缩 → 内容被键盘顶出屏幕）。
    Chrome 108+/Android System WebView 现代版本支持 dvh。 */

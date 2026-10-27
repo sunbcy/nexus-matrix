@@ -309,7 +309,7 @@
         <input ref="titleInputRef" type="text" v-model="activePage.title" 
                placeholder="无标题"
                @keydown="handleTitleKeyDown"
-               class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-5xl font-bold tracking-tight text-display placeholder-dim/30 mb-10 pb-4 border-b border-line" />
+               class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-3xl md:text-5xl font-bold leading-tight tracking-tight text-display placeholder-dim/30 mb-6 md:mb-10 pb-4 border-b border-line" />
 
         <div class="flex-1 relative pb-32" @click="onContentClick" @mouseover="onLinkHover" @mouseleave="hideLinkChip"
              @touchstart.passive="onLinkTouchStart" @touchmove.passive="onLinkTouchMove" @touchend="onLinkTouchEnd" @touchcancel="onLinkTouchEnd" @contextmenu="onLinkContextMenu">
@@ -503,6 +503,8 @@
                    注意不要加 max-h 之类的硬高度上限——竖版大图（如 3072×4096 的扫板书页）
                    会被压到几百像素高，正是「导入后看不清」的来源之一。 -->
               <img v-if="task.payload?.url" :src="resolveAssetUrl(task.payload?.url)"
+                   :style="imageStyle(task.payload?.url)"
+                   @load="onImgLoad(task.payload?.url, $event)"
                    class="max-w-full rounded-md border border-line shadow-sm object-contain block" />
               <!-- 图片操作浮层：放大 / 替换 / 删除。
                    desktop 靠 hover，触屏无 hover 故点击后（selectedMediaId）常驻显示 -->
@@ -644,7 +646,14 @@
     </div>
 
     <!-- 设置面板：入口在侧边栏右上角齿轮（原生底部 Tab 已移除） -->
-    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" :dead-link-count="deadLinkCount" :duplicate-block-count="duplicateBlockCount" :duplicate-doc-count="duplicateDocCount" :divergent-doc-count="divergentDocCount" :wrongly-killed-count="wronglyKilledCount" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" @clean-links="cleanDeadLinks" @clean-dup-blocks="dedupBlocks" @clean-dup-pages="dedupPages" @restore-killed-blocks="restoreWronglyKilledBlocks" />
+    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" :dead-link-count="deadLinkCount" :duplicate-block-count="duplicateBlockCount" :duplicate-doc-count="duplicateDocCount" :divergent-doc-count="divergentDocCount" :wrongly-killed-count="wronglyKilledCount" @close="settingsOpen = false" @export-md="exportMarkdown" @export-all-zip="exportAllMarkdownZip" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" @clean-links="cleanDeadLinks" @clean-dup-blocks="dedupBlocks" @clean-dup-pages="dedupPages" @restore-killed-blocks="restoreWronglyKilledBlocks" />
+
+    <!-- 轻提示（导出等异步操作的反馈） -->
+    <transition name="fade">
+      <div v-if="exportToast" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-[300] px-4 py-2 rounded-sm bg-void/95 border border-line text-xs font-['JetBrains_Mono',monospace] text-accent shadow-2xl">
+        {{ exportToast }}
+      </div>
+    </transition>
 
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
@@ -1082,39 +1091,15 @@
 </template>
 
 <script setup lang="ts">
-import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue';
-import {
-  clearPageHistory,
-  closeSync,
-  commitImportPages,
-  createRemotePage,
-  dataVersion,
-  deletePageVersion,
-  flushPendingSave,
-  getPageHistory,
-  initSync,
-  markDirty,
-  onlineDevices,
-  type PageVersion,
-  previewNotionZip,
-  retrySync,
-  setReconcilePage,
-  setStorageWarning,
-  syncStatus,
-  writePagePrevIds,
-  writePrevIds,
-} from '../composables/useSync';
-import {blockContentKey, docFingerprint, planDuplicatePages, planWronglyKilledBlocks} from '../composables/importMerge';
-import {installNativeBridge, setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
+import {computed, nextTick, onUnmounted, reactive, ref, watch} from 'vue';
+import {createRemotePage, dataVersion, markDirty, onlineDevices, syncStatus,} from '../composables/useSync';
+import {setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
 import {App} from '@capacitor/app';
-import {useMobileInput} from '../composables/useMobileInput';
-import {hasNotionIdSuffix, stripNotionId} from '../composables/zipImport';
-import {newBlockId, newPageId} from '../composables/ids';
-import {randomEmoji} from '../composables/emoji';
+import {newPageId} from '../composables/ids';
 import SettingsPanel from './SettingsPanel.vue';
-import {deleteAsset, isAssetRef, resolveAsset, saveImageAsset, warmAssets} from '../composables/assets';
+import {getAsset, isAssetRef} from '../composables/assets';
 import PageIconPicker from './PageIconPicker.vue';
-import PageCoverPicker, {COVER_GRADIENTS} from './PageCoverPicker.vue';
+import PageCoverPicker from './PageCoverPicker.vue';
 
 // === 数据结构 ===
 interface Task {
@@ -1380,10 +1365,23 @@ const VIRTUAL_OVERSCAN = 2;                 // 视口上下各多渲染 2 屏（
 const VIRTUAL_QUANT = 24;                   // 窗口按 N 块一档对齐，避免拖动滚动条时每帧都重渲染
 const scrollEl = ref<HTMLElement | null>(null);
 const blockHeights = ref<Record<string, number>>({});
+// 图片自然尺寸（按 asset 引用聚合，同一张图复用）。用于：①虚拟滚动的「估算高度」用真实宽高比，
+// 而非固定 520 → 滚动条总行程更接近真实值，解决「拖不到底」；②渲染时按宽高比预留占位，
+// 图片异步加载完成不再撑高重排（修 80% 处行抖动）。尺寸在「首次解析/加载」时写入，之后一直准确。
+const imageDims = reactive<Record<string, { w: number; h: number }>>({});
 const vStart = ref(0);
 const vEnd = ref(0);
 const vTop = ref(0);
 const vBottom = ref(0);
+// 「量高过程」标记：打开长文档时先把全篇逐块量一遍真实高度（见 startMeasurePass），
+// 期间窗口由量高逻辑直接控制，禁止滚动/RO 改窗口。量完后所有块高度都是实测值，总高度固定。
+const measureAll = ref(false);
+// 「滚动补偿冻结」：量高完成后置 true，此后**不再为了补偿而写 scrollTop**。
+// 这是修「不动滚轮时内容与滚动条一起上下抖」的关键：
+// 写 scrollTop → 触发 scroll 事件 → 重算窗口 → 新块挂载 → 测高 → 又写 scrollTop，
+// 会形成自激振荡。量完之后高度模型已完整，再挪滚动位置没有收益，只会抖。
+// 用户明确偏好「稳定可靠 > 速度」，故此处宁可偶尔有一次内容位移，也不要持续抖动。
+const heightsFrozen = ref(false);
 let listVersion = 0;
 let heightsVersion = 0;
 
@@ -1398,7 +1396,16 @@ const estimateBlockHeight = (t: Task): number => {
   let h = 0;
   switch (t.type) {
     case 'divider': h = 33; break;
-    case 'image': h = 520; break; // 图片按内容列宽显示后实际常达 700~900px，估 260 会让 spacer 严重偏短 → 上滑空白
+    case 'image': {
+      // 有真实尺寸时按「内容列宽 × 宽高比」估算（竖版大图不再被估成 520 而严重偏短）；否则回落到 520。
+      const ref = t.payload?.url as string | undefined;
+      const d = (t.payload?.width && t.payload?.height)
+        ? { w: t.payload.width, h: t.payload.height }
+        : (ref ? imageDims[ref] : null);
+      if (d && d.w > 0) { const CW = 760; const dw = Math.min(d.w, CW); h = Math.round(dw * d.h / d.w) + 10; }
+      else h = 520;
+      break;
+    }
     case 'todo': h = 40; break;
     case 'h1': h = 52; break;
     case 'h2': h = 44; break;
@@ -1441,6 +1448,7 @@ const onEditorScrollDir = (el: HTMLElement) => {
 
 const recomputeRange = () => {
   if (!virtualScrolling.value) return;
+  if (measureAll.value) return; // 量高中：窗口由 stepMeasure 直接控制，别被滚动/RO 打断
   const all = visibleTasks.value;
   const el = scrollEl.value;
   if (!el || all.length === 0) {
@@ -1472,6 +1480,73 @@ const recomputeRange = () => {
   }
 };
 
+// === Notion 式「先量全篇、后固定滚轮」===
+// 之前只有「视口内的块」是实测高度，视口外的全靠估算 → 滚动时估算不断被实测替换，
+// 总高度一直变 → 滚轮长度漂移、拖到哪内容就跟着抖（后半段尤其明显）。
+// 这里在打开长文档时用一个「滑动测量窗口」把全篇逐块量一遍：每帧挂载一档，量完滑走，
+// DOM 常驻数量恒定（不会一次挂载整篇），测得的真实高度留在 blockHeights 里永久生效。
+// 量完之后：总高度 = 全篇实测之和，不再变化 → 右侧滚轮长度固定，拖到哪就加载到哪；
+// 而渲染仍然只画视口那一档（窗口机制保留，滚动照样快）。
+const MEASURE_CHUNK = 200; // 每帧挂载的块数：够大则量得快，够小则单帧不卡死
+let measurePos = 0;
+let measureWait = 0;
+let measureRaf: number | null = null;
+const finishMeasure = () => {
+  measureRaf = null;
+  // 等最后一批 ResizeObserver 把实测高度收上来，再切回正常窗口
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    measureAll.value = false;
+    heightsFrozen.value = true; // 量完 → 冻结滚动补偿，此后不再因尺寸变化挪动滚动位置
+    recomputeRange();
+  }));
+};
+const stepMeasure = () => {
+  const all = visibleTasks.value;
+  if (all.length === 0) { finishMeasure(); return; }
+  if (measurePos < all.length) {
+    const end = Math.min(measurePos + MEASURE_CHUNK, all.length);
+    const offsets = buildOffsets();
+    vStart.value = measurePos;
+    vEnd.value = end;
+    vTop.value = offsets[measurePos];
+    vBottom.value = Math.max(0, offsets[all.length] - offsets[end]);
+    measurePos = end;
+    measureRaf = requestAnimationFrame(stepMeasure);
+    return;
+  }
+  // 全篇已挂载过：等图片宽高比回填完再收尾。否则图片块此刻还没占位、被量成矮块，
+  // 之后图片加载又把它撑高 → 总高度再变一次，等于白量。最多等约 1 秒，避免死等。
+  const pending = all.some((t) => t.type === 'image' && isAssetRef(t.payload?.url) && !imageDims[t.payload!.url as string]);
+  if (pending && measureWait < 60) { measureWait++; measureRaf = requestAnimationFrame(stepMeasure); return; }
+  finishMeasure();
+};
+const startMeasurePass = () => {
+  if (measureRaf != null) { cancelAnimationFrame(measureRaf); measureRaf = null; }
+  const all = visibleTasks.value;
+  if (all.length === 0) { measureAll.value = false; heightsFrozen.value = true; recomputeRange(); return; }
+  measureAll.value = true;
+  heightsFrozen.value = false; // 量高期间允许补偿（此时高度模型还没定型）
+  measurePos = 0;
+  measureWait = 0;
+  measureRaf = requestAnimationFrame(stepMeasure);
+};
+
+// 窗口尺寸变化 → 文字重排、块高全变，之前量好的高度模型失效：解冻并重跑一遍量高。
+// 防抖 200ms，避免拖拽窗口时反复触发。
+let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+const onWindowResize = () => {
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    heightsFrozen.value = false;
+    startMeasurePass();
+  }, 200);
+};
+window.addEventListener('resize', onWindowResize);
+onUnmounted(() => {
+  window.removeEventListener('resize', onWindowResize);
+  if (resizeTimer) clearTimeout(resizeTimer);
+});
+
 // <main> 滚动容器 ref：挂载即算一次窗口（切页时 <main> 重挂载、scrollTop 归零）
 const onMainRef = (el: any) => { scrollEl.value = (el as HTMLElement) || null; if (el) recomputeRange(); };
 // 把某块滚进视口中上部（键盘/跳转/搜索用）；会把它纳入渲染窗口并挂载
@@ -1491,13 +1566,17 @@ const scrollTaskIntoView = (id: string) => {
   recomputeRange();
 };
 
-// 观测当前挂载块：尺寸变化更新高度，并对「视口上方」的变化补偿 scrollTop（防跳动）
+// 观测当前挂载块：记录真实高度（量高阶段用），并把一批变化合并为一次 heightsVersion 自增 + 一次 recompute。
+//
+// 重要：这里**不再写 scrollTop**。此前为了「补偿」而写 scrollTop，与另一条链路闭环成自激振荡：
+//   写 scrollTop → 触发 scroll 事件 → 重算窗口 → 新块挂载 → 测高 → 高度变了 → 又写 scrollTop → …
+// 表现就是「不动滚轮时，内容和滚动条持续一起上下抖」。
+// 用户明确偏好稳定可靠 > 速度：宁可偶尔有一次内容位移，也不要无休止抖动。
+// 量高完成后（heightsFrozen）连高度更新也停掉：此时高度模型已完整，再接受 RO 更新只会让
+// offsets / 总高度反复微调 → 滚动条长度继续抖。需要重新适应时（切页 / 改窗口 / 结构性增删）再解冻。
 const blockRO = new ResizeObserver((entries) => {
-  const el = scrollEl.value;
-  if (!el) return;
-  const before = el.scrollTop;
-  const offsets = buildOffsets();
-  let delta = 0;
+  if (heightsFrozen.value) return; // 已量完：高度模型冻结，不再因为观测而改动任何东西
+  if (!scrollEl.value) return;
   let changed = false;
   for (const en of entries) {
     const node = en.target as HTMLElement;
@@ -1505,17 +1584,12 @@ const blockRO = new ResizeObserver((entries) => {
     if (!id) continue;
     const h = node.offsetHeight;
     if (h <= 0) continue;
-    const old = blockHeights.value[id];
-    if (old === h) continue;
-    const idx = visibleTasks.value.findIndex((x) => x.id === id);
-    const oldH = old ?? (idx >= 0 ? estimateBlockHeight(visibleTasks.value[idx]) : h);
-    if (idx >= 0 && offsets[idx] + oldH <= before) delta += (h - oldH);
+    if (blockHeights.value[id] === h) continue;
     blockHeights.value[id] = h;
-    heightsVersion++;
     changed = true;
   }
   if (!changed) return;
-  if (delta !== 0) el.scrollTop = before + delta;
+  heightsVersion++; // 整批一次，避免多次 O(n) 前缀和重建
   recomputeRange();
 });
 const observedIds = new Set<string>();
@@ -1540,9 +1614,25 @@ const observeBlocks = () => {
 const windowedTasks = computed(() => virtualScrolling.value ? visibleTasks.value.slice(vStart.value, vEnd.value) : visibleTasks.value);
 watch(windowedTasks, () => observeBlocks(), { flush: 'post' });
 // 列表/高度版本变化 → 让 offsets 缓存失效并重算窗口
-watch(visibleTasks, () => { listVersion++; nextTick(() => recomputeRange()); });
-// 切页：<main> 重挂载、scrollTop 归零，从顶部重建窗口
-watch(activePageId, () => { listVersion++; nextTick(() => recomputeRange()); });
+watch(visibleTasks, (cur, prev) => {
+  listVersion++;
+  // 结构性增删（新建/删除块）：解冻高度模型，让新块能被量到。
+  // 纯打字不改变块数，保持冻结 —— 否则每敲一个字都可能触发一轮「测高 → 偏移变 → 窗口动」的抖动。
+  if (!prev || cur.length !== prev.length) heightsFrozen.value = false;
+  nextTick(() => recomputeRange());
+});
+// 切页：<main> 重挂载、scrollTop 归零，从顶部重建窗口。
+// 若本页还有没量过真实高度的块，先跑一遍「量全篇」，把总高度固定下来（滚轮长度不再变）；
+// 已经全量过的页（回头再看）直接建窗口，秒开且不抖动。
+watch(activePageId, () => {
+  listVersion++;
+  nextTick(() => {
+    const all = visibleTasks.value;
+    const needMeasure = all.some((t) => blockHeights.value[t.id] == null);
+    if (needMeasure) startMeasurePass();
+    else { heightsFrozen.value = true; recomputeRange(); }
+  });
+});
 
 // === P3 渐进全挂载（virtualScrolling=false 时的回退形态）===
 const INITIAL_RENDER = 80;
@@ -1770,6 +1860,119 @@ const exportMarkdown = () => {
   a.download = `${(page.title || 'untitled').replace(/[\\/:*?"<>|]/g, '_')}.md`;
   a.click();
   URL.revokeObjectURL(url);
+};
+
+// === 整库导出为 ZIP（Notion 风格：每篇一个 .md + 图片二进制放进 images/）===
+let exportingZip = false;
+const exportToast = ref('');
+let exportToastTimer: ReturnType<typeof setTimeout> | null = null;
+const flashDataMsg = (m: string) => {
+  exportToast.value = m;
+  if (exportToastTimer) clearTimeout(exportToastTimer);
+  exportToastTimer = setTimeout(() => { exportToast.value = ''; }, 3200);
+};
+const mimeExt = (type: string): string => {
+  const m = /image\/(png|jpe?g|gif|webp|svg|bmp|avif)/.exec(type || '');
+  if (!m) return 'png';
+  const sub = m[1].toLowerCase();
+  return sub === 'jpeg' ? 'jpg' : sub;
+};
+const exportAllMarkdownZip = async () => {
+  if (exportingZip) return;
+  const live = pages.value.filter((p) => !p.deletedAt);
+  if (!live.length) { flashDataMsg('没有可导出的文档'); return; }
+  exportingZip = true;
+  try {
+    const ASSET_RE = /asset:([0-9a-fA-F-]+)/g;
+    const usedAssets = new Set<string>();
+    const safeName = (t: string) => (t || 'untitled').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'untitled';
+    // 与 exportMarkdown 同构，但图片块把 asset 引用写成 ![image](asset:<id>)，交由全局改写
+    const pageMdForZip = (p: Page, depth: number): string => {
+      const lines: string[] = [`${'#'.repeat(Math.min(depth + 1, 6))} ${p.title || '无标题'}`, ''];
+      for (const t of p.tasks) {
+        if (t.deletedAt) continue;
+        const text = htmlToMarkdown(t.content || '');
+        const indent = '  '.repeat(t.indentLevel || 0);
+        switch (t.type) {
+          case 'h1': lines.push(`${indent}# ${text}`, ''); break;
+          case 'h2': lines.push(`${indent}## ${text}`, ''); break;
+          case 'h3': lines.push(`${indent}### ${text}`, ''); break;
+          case 'bullet': lines.push(`${indent}- ${text}`); break;
+          case 'numbered': lines.push(`${indent}1. ${text}`); break;
+          case 'todo': lines.push(`${indent}- [${t.completed ? 'x' : ' '}] ${text}`); break;
+          case 'quote': lines.push(`${indent}> ${text}`, ''); break;
+          case 'callout': lines.push(`${indent}> ${t.payload?.icon || '💡'} ${text}`, ''); break;
+          case 'toggle': lines.push(`${indent}<details><summary>${text}</summary>`, '', `${indent}</details>`, ''); break;
+          case 'divider': lines.push('', '---', ''); break;
+          case 'codeblock': lines.push('```' + (t.payload?.language || ''), t.payload?.code || '', '```', ''); break;
+          case 'image': {
+            const u = String(t.payload?.url ?? '');
+            if (!u) lines.push('<!-- 未上传图片 -->', '');
+            else if (u.startsWith('asset:')) { usedAssets.add(u.slice('asset:'.length)); lines.push(`![image](${u})`, ''); }
+            else lines.push(`![](${u.slice(0, 80)})`, '');
+            break;
+          }
+          case 'kanban': {
+            lines.push('<!-- 看板 -->');
+            for (const col of t.payload?.columns ?? []) {
+              lines.push(`**${col.title}**`);
+              for (const c of col.cards) lines.push(`- ${escapeMdText(c.text)}`);
+            }
+            lines.push('');
+            break;
+          }
+          default: lines.push(`${indent}${text}`, '');
+        }
+      }
+      return lines.join('\n');
+    };
+    const collect = (parentId: string | null, depth: number): string[] => {
+      const out: string[] = [];
+      for (const child of live.filter((p) => p.parentId === parentId)) {
+        out.push(pageMdForZip(child, depth));
+        out.push(...collect(child.id, depth + 1));
+      }
+      return out;
+    };
+    const liveIds = new Set(live.map((p) => p.id));
+    const roots = live.filter((p) => p.parentId === null || !liveIds.has(p.parentId)); // 含父页已删的孤儿页
+    const nameCount = new Map<string, number>();
+    const pageFiles: { rel: string; content: string }[] = [];
+    for (const root of roots) {
+      const body = [pageMdForZip(root, 0), ...collect(root.id, 1)].join('\n\n---\n\n');
+      const base = safeName(root.title);
+      const n = nameCount.get(base) ?? 0;
+      nameCount.set(base, n + 1);
+      pageFiles.push({ rel: `pages/${n === 0 ? base : `${base}_${n + 1}`}.md`, content: body });
+    }
+    // 取回所有引用到的图片二进制
+    const assetBlobs = new Map<string, Blob>();
+    for (const id of usedAssets) {
+      const blob = await getAsset(`asset:${id}`);
+      if (blob) assetBlobs.set(`asset:${id}`, blob);
+    }
+    const rewriteAssets = (content: string): string =>
+      content.replace(ASSET_RE, (m) => assetBlobs.has(m) ? `images/${m.slice('asset:'.length)}.${mimeExt(assetBlobs.get(m)!.type)}` : `<!-- 图片缺失: ${m} -->`);
+    const enc = new TextEncoder();
+    const files: Record<string, Uint8Array> = {};
+    for (const pf of pageFiles) files[pf.rel] = enc.encode(rewriteAssets(pf.content));
+    for (const [ref, blob] of assetBlobs) {
+      files[`images/${ref.slice('asset:'.length)}.${mimeExt(blob.type)}`] = new Uint8Array(await blob.arrayBuffer());
+    }
+    if (!Object.keys(files).length) { flashDataMsg('没有可导出的内容'); return; }
+    const { zipSync } = await import('fflate');
+    const zipped = zipSync(files);
+    const blob = new Blob([zipped], { type: 'application/zip' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nexus-导出-${new Date().toISOString().slice(0, 10)}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+    flashDataMsg(`已导出 ${pageFiles.length} 篇文档 / ${assetBlobs.size} 张图片（ZIP）`);
+  } finally {
+    exportingZip = false;
+  }
 };
 
 // === 块选择态（对齐 Notion：Esc 选中当前块，↑↓ 扩展，Enter 回到编辑） ===
@@ -2778,7 +2981,30 @@ const resolveAssetUrl = (url: string | undefined): string => {
   return '';
 };
 
-// 当前页所有图片引用预热，确保首屏就有 src
+// 记录图片自然尺寸：写入 imageDims（按 asset 引用聚合），并让 offsets 用新尺寸重算，
+// 使虚拟滚动的估算高度更准、滚动条行程稳定（修「拖不到底」）。
+const recordImageDims = (ref: string | undefined, w: number, h: number) => {
+  if (!ref || w <= 0 || h <= 0) return;
+  const cur = imageDims[ref];
+  if (cur && cur.w === w && cur.h === h) return;
+  imageDims[ref] = { w, h };
+  heightsVersion++;
+  nextTick(() => recomputeRange());
+};
+// 图片加载完成：取真实尺寸回填（覆盖导入/未存尺寸的旧图）
+const onImgLoad = (ref: string | undefined, e: Event) => {
+  const im = e.target as HTMLImageElement;
+  if (im && im.naturalWidth > 0) recordImageDims(ref, im.naturalWidth, im.naturalHeight);
+};
+// 给 <img> 预留「宽高比占位」：尺寸已知时高度在加载前就正确，异步加载不再撑高重排（修行抖动）。
+const imageStyle = (ref: string | undefined): Record<string, string> => {
+  if (!ref) return {};
+  const d = imageDims[ref];
+  if (!d || d.w <= 0) return {};
+  return { aspectRatio: `${d.w} / ${d.h}`, width: `${d.w}px` };
+};
+
+// 当前页所有图片引用预热，确保首屏就有 src；同时预读自然尺寸，让虚拟滚动的估算高度接近真实值
 watch(
   () => activePage.value?.tasks,
   (tasks) => {
@@ -2788,7 +3014,20 @@ watch(
       .map((t: Task) => t.payload!.url as string);
     const cover = activePage.value?.cover;
     if (cover && isAssetRef(cover)) refs.push(cover);
-    if (refs.length > 0) void warmAssets(refs);
+    if (refs.length > 0) {
+      void warmAssets(refs);
+      // 预读尺寸：每张图解析出 blob URL 后用一次 Image 取 naturalWidth/Height，回填 imageDims。
+      // 这样打开长文档时，视口下方未挂载的图片也能拿到真实宽高比 → 估算高度准确 → 滚动条行程稳定（修拖不到底）。
+      for (const ref of refs) {
+        if (imageDims[ref]) continue;
+        void resolveAsset(ref).then((u) => {
+          if (!u) return;
+          const im = new Image();
+          im.onload = () => recordImageDims(ref, im.naturalWidth, im.naturalHeight);
+          im.src = u;
+        });
+      }
+    }
   },
   { immediate: true, deep: false },
 );
@@ -3687,8 +3926,17 @@ const deleteSelectionContents = (): boolean => {
 // 打字路径本身是「DOM -> 数据」，并不需要回写；真正需要回写的只有「代码改了 content 却没动 DOM」
 // 的场景（斜杠命令清空、@ 页面链接插入、块类型转换、撤销/恢复/远端合并），而这些块必然是已挂载的块。
 // 因此只订阅「已挂载块的 content 快照」，并按下标比对，只对内容真的变了的块读一次 innerHTML。
+// 上次同步时的渲染窗口。窗口滑动导致的 displayTasks 变化要跳过同步：
+// 这些块是 Vue 刚渲染出来的，DOM 本来就对；而 contenteditable 的 HTML 规范化
+// 会让 el.innerHTML !== task.content 恒成立 → 反复回写 → 反复触发 ResizeObserver
+// → 总高度不停变 → 滚动条持续抖动。
+let lastSyncWindowKey = '';
 const syncDomFromTasks = (cur?: string[], prev?: string[]) => {
   nextTick(() => {
+    if (prev && cur) {
+      const key = `${vStart.value}:${vEnd.value}`;
+      if (lastSyncWindowKey !== key) { lastSyncWindowKey = key; return; }
+    }
     const list = displayTasks.value;
     for (let i = 0; i < list.length; i++) {
       if (prev && cur && prev.length === cur.length && prev[i] === cur[i]) continue;
@@ -4663,6 +4911,14 @@ defineExpose({ exportMarkdown });
 </script>
 
 <style scoped>
+/* 关闭浏览器原生「滚动锚定」（scroll anchoring）。
+   原理：浏览器发现「视口上方内容高度变了」会自动挪 scrollTop 去补偿，让可见内容看起来不动。
+   这对普通网页是好事，但对虚拟滚动是灾难——本组件的 vTop spacer 会随窗口按 VIRTUAL_QUANT(24) 块
+   一档跳变（窗口对齐导致的正常现象），浏览器把它当成「上方内容变了」而反复补偿，形成闭环：
+     spacer 高度变 → 浏览器自动挪 scrollTop → 触发 scroll 事件 → 重算窗口 → spacer 又变 → …
+   表现就是「静止不动时文档仍持续部分抖动」。虚拟滚动必须显式关掉原生锚定，改由自己控制。 */
+main { overflow-anchor: none; }
+main :deep(*) { overflow-anchor: none; }
 /* 主题化：这里全部走语义变量（定义在 src/style.css 的 [data-theme]），
    不要再写死 hex，否则换肤后这些富文本样式会「留在旧主题里」。 */
 .ce-block b, .ce-block strong { color: rgb(var(--accent)); font-weight: 700; text-shadow: 0 0 var(--accent-glow-radius, 4px) rgb(var(--accent) / var(--accent-glow, 0.3)); }

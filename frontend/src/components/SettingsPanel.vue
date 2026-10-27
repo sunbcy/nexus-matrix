@@ -33,6 +33,7 @@ const props = defineProps<{ visible: boolean; dirtyTitleCount?: number; deadLink
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'export-md'): void;
+  (e: 'export-all-zip'): void;
   (e: 'open-notion-import'): void;
   (e: 'clean-titles'): void;
   (e: 'clean-links'): void;
@@ -295,6 +296,10 @@ const onRestoreKilledBlocks = () => {
             <button @click="emit('export-md')"
                     class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               导出当前页 MD
+            </button>
+            <button @click="emit('export-all-zip')"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              导出全部文档 (ZIP)
             </button>
           </div>
           <div class="flex flex-wrap gap-2 mt-2">
