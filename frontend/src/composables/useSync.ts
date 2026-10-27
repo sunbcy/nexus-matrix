@@ -2,6 +2,7 @@ import {ref, type Ref, watch} from 'vue';
 import {getStore} from './storage';
 import {newBlockId, newPageId} from './ids';
 import {getRuntimeConfig} from '../runtimeConfig';
+import {collectAssetRefs, mergeImportOverwrite} from './importMerge';
 
 // === 数据结构 ===
 export interface Task {
@@ -16,6 +17,7 @@ export interface Task {
   // null 表示该块是其父级下的第一个块。见 orderTasks()。
   prevId?: string | null;
   deletedAt?: number;   // 块级墓碑时间戳（ms）。与 Page.deletedAt 一致，块删除也走墓碑参与合并
+  updatedAt?: number;   // 客户端生成的时间戳（ms），供块级 LWW 合并
 }
 
 export interface Page {
@@ -47,19 +49,27 @@ export interface Page {
 // 注意：插入新块时必须同时更新「原后继块」的 prevId，否则链会断裂。
 // 因此本文件导出 setPrevId / normalizeOrder 供编辑器在增删块后调用。
 
-/** 重建顺序：把数组下标顺序写成 prevId 链（首次迁移与插入新块时调用） */
-export const writePrevIds = (tasks: Task[]): Task[] =>
-  tasks.map((t, i) => ({ ...t, prevId: i === 0 ? null : tasks[i - 1].id }));
+/** 重建顺序：把数组下标顺序写成 prevId 链（首次迁移与插入新块时调用）。墓碑块不参与链。 */
+export const writePrevIds = (tasks: Task[]): Task[] => {
+  let prev: string | null = null;
+  return tasks.map((t) => {
+    if (t.deletedAt) return t; // 墓碑不参与顺序链
+    const out = { ...t, prevId: prev };
+    prev = t.id;
+    return out;
+  });
+};
 
-/** 由 prevId 链还原为有序数组（对同一输入永远得到同一输出） */
+/** 由 prevId 链还原为有序数组（对同一输入永远得到同一输出）。墓碑块不参与链，统一挪到末尾。 */
 export const orderTasks = (tasks: Task[]): Task[] => {
   if (tasks.length === 0) return [];
-  const byId = new Map<string, Task>();
-  for (const t of tasks) byId.set(t.id, t);
+  const dead = tasks.filter((t) => t.deletedAt);
+  const live = tasks.filter((t) => !t.deletedAt);
+  const byId = new Map(live.map((t) => [t.id, t]));
 
-  const heads = tasks.filter((t) => !t.prevId || !byId.has(t.prevId));
+  const heads = live.filter((t) => !t.prevId || !byId.has(t.prevId));
   // 没有明确的头时，用 id 最小的块兜底，保证结果确定
-  if (heads.length === 0) heads.push([...tasks].sort((a, b) => (a.id < b.id ? -1 : 1))[0]);
+  if (heads.length === 0) heads.push([...live].sort((a, b) => (a.id < b.id ? -1 : 1))[0]);
 
   const used = new Set<string>();
   const out: Task[] = [];
@@ -68,13 +78,14 @@ export const orderTasks = (tasks: Task[]): Task[] => {
     while (cur && !used.has(cur.id)) {
       used.add(cur.id);
       out.push(cur);
-      const next = tasks.find((t) => t.prevId === cur!.id && !used.has(t.id));
+      const next = live.find((t) => t.prevId === cur!.id && !used.has(t.id));
       cur = next;
     }
   }
   // 断链/环导致的遗漏块，按 id 字典序追加，保证输出完整且确定
-  const rest = tasks.filter((t) => !used.has(t.id)).sort((a, b) => (a.id < b.id ? -1 : 1));
-  return [...out, ...rest];
+  const rest = live.filter((t) => !used.has(t.id)).sort((a, b) => (a.id < b.id ? -1 : 1));
+  // 墓碑块保留在数组尾部，随同步上推让各端消化删除（渲染/导出/搜索已过滤）
+  return [...out, ...rest, ...dead];
 };
 
 // === 合并（三端同步的基础） ===
@@ -126,6 +137,15 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
     const localBlocks = new Map(lp.tasks.map((t) => [t.id, t]));
     for (const rt of rp.tasks) {
       const lt = localBlocks.get(rt.id);
+      // 远端块是墓碑：标记本地对应块为删除。删除戳具有权威性，避免旧内容被拉回。
+      // 本地根本没有该块时，不新增死块（它本就不存在，无需「复活」）。
+      if (rt.deletedAt) {
+        if (lt) {
+          lt.deletedAt = rt.deletedAt;
+          (lt as { updatedAt?: number }).updatedAt = (rt as { updatedAt?: number }).updatedAt ?? lt.updatedAt;
+        }
+        continue;
+      }
       // 本端没有的块：直接加入（另一端新增的）
       if (!lt) { lp.tasks.push({ ...rt }); continue; }
       // 两端都有：谁的块时间戳新就保留谁。
@@ -901,11 +921,12 @@ export const importMarkdown = async (
 // 与 importMarkdown 一样是追加语义，但一次可导入多个页面并重建层级。
 export const importNotionZip = async (
   file: File,
+  opts?: { imageMode?: 'original' | 'compressed' },
 ): Promise<{ ok: boolean; message: string }> => {
   try {
     if (!currentPagesRef) return { ok: false, message: '同步尚未初始化' };
     const { importZip } = await import('./zipImport');
-    const result = await importZip(file);
+    const result = await importZip(file, opts);
     if (!result || result.pages.length === 0) {
       return { ok: false, message: 'ZIP 中未找到可导入的 Markdown 文件' };
     }
@@ -913,12 +934,20 @@ export const importNotionZip = async (
     currentPagesRef.value = [...currentPagesRef.value, ...result.pages];
     await pushAll(currentPagesRef.value);
 
+    // 落库复核（与向导式导入同一道闸）：复验 asset: 引用、补存导入时没下下来的外链图
+    const { verifyImportedAssets } = await import('./zipImport');
+    const check = await verifyImportedAssets(result.pages);
+    if (check.recovered > 0) {
+      for (const p of result.pages) markDirty(p.id);
+      flushPendingSave();
+    }
+
     const totalBlocks = result.report.reduce((s, r) => s + r.blocks, 0);
     const parts = [`导入 ${result.pages.length} 个页面、${totalBlocks} 个块`];
     const downgraded = result.report.reduce((s, r) => s + r.downgraded, 0);
     if (downgraded > 0) parts.push(`${downgraded} 处降级为文本`);
-    if (result.imageFailures > 0) parts.push(`${result.imageFailures} 张图片下载失败（已保留原链接）`);
-    return { ok: true, message: parts.join('，') };
+    if (check.pending > 0) parts.push(`${check.pending} 张图片未存为本地资产（已保留原链接）`);
+    return { ok: true, message: describeAssetCheck(parts.join('，'), check) };
   } catch (e) {
     return { ok: false, message: 'ZIP 导入失败：' + (e as Error).message };
   }
@@ -928,10 +957,13 @@ export const importNotionZip = async (
 // 只解析、不修改 currentPagesRef、不上推，供预览面板展示页面树与层级。
 export const previewNotionZip = async (
   file: File,
-): Promise<{ ok: boolean; message?: string; pages?: Page[]; report?: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures?: number; imageVerifyFailures?: number; verifyFailures?: Array<{ title: string; block: number }> }> => {
+  opts?: { imageMode?: 'original' | 'compressed' },
+): Promise<{ ok: boolean; message?: string; pages?: Page[]; report?: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures?: number; imageVerifyFailures?: number; verifyFailures?: ImportAssetIssue[] }> => {
   try {
     const { importZip } = await import('./zipImport');
-    const result = await importZip(file);
+    // 注意：图片在**预览阶段**就落库了（importZip 一步做完），
+    // 所以「原图 / 压缩」必须在选文件之前定好，事后再改不生效。
+    const result = await importZip(file, opts);
     if (!result || result.pages.length === 0) {
       return { ok: false, message: 'ZIP 中未找到可导入的 Markdown 文件' };
     }
@@ -941,18 +973,148 @@ export const previewNotionZip = async (
   }
 };
 
+/**
+ * 一条「图片没存上」的明细。
+ * 带 pageId / taskId 是为了让结果面板能「点一下直接跳到那一块」——
+ * 只有「《标题》第 N 块」这种文字描述，用户还得自己回侧边栏一页页找。
+ */
+export interface ImportAssetIssue {
+  title: string;
+  block: number;
+  pageId: string;
+  taskId: string;
+}
+
 // 提交预览中勾选的页面（追加语义，不动已有内容），落盘 + 上推。
+export interface CommitImportResult {
+  ok: boolean;
+  message: string;
+  /** 落库复核后仍然缺失的张数（asset: 引用读不回，刷新后必破图） */
+  imageVerifyFailures: number;
+  /** 缺失明细（含定位所需的 pageId/taskId） */
+  verifyFailures: ImportAssetIssue[];
+  /** 提交时后台补下载并成功落库的张数 */
+  recovered: number;
+  /** 仍未落库、暂留原链接的张数 */
+  pending: number;
+  /** 覆盖了几个同名页面 */
+  overwritten: number;
+  /** 覆盖时回收掉几张旧图（避免同一份内容在 IndexedDB 里占两份） */
+  reclaimed: number;
+  /** 最终落地的页面 id（覆盖模式下是**旧页 id**，不是导入时的临时 id） */
+  importedIds: string[];
+  /** 建议跳转的根页面（块数最多的那个根；多文件导入时其余在 roots 里） */
+  rootId: string | null;
+  /** 所有根页面，块数降序 */
+  roots: Array<{ id: string; title: string; blocks: number }>;
+  /** 本次导入的总块数 */
+  blocks: number;
+}
+
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 把落库复核结果拼成一句人话（含缺失明细），供导入完成后的提示复用 */
+const describeAssetCheck = (base: string, check: { missing: Array<{ title: string; block: number }>; recovered: number; pending: number }): string => {
+  const parts = [base];
+  if (check.recovered > 0) parts.push(`${check.recovered} 张图片后台补存成功`);
+  if (check.pending > 0) parts.push(`${check.pending} 张图片仍是外链（联网后可重新导入补存）`);
+  if (check.missing.length > 0) {
+    const detail = check.missing.slice(0, 3).map((m) => `《${m.title || '无标题'}》第${m.block}块`).join('、');
+    parts.push(`${check.missing.length} 张图片没存上（${detail}${check.missing.length > 3 ? ' 等' : ''}）`);
+  }
+  const msg = parts.join('，');
+  return check.missing.length > 0
+    ? `${msg}。这几张刷新后会丢失，建议重新导入该 ZIP，或检查浏览器存储设置（无痕窗口 / 退出时清除数据会导致存不住）。`
+    : msg;
+};
+
 export const commitImportPages = async (
   pages: Page[],
-): Promise<{ ok: boolean; message: string }> => {
+  opts?: { overwriteSameTitle?: boolean; imageMode?: 'original' | 'compressed' },
+): Promise<CommitImportResult> => {
+  const fail = (message: string): CommitImportResult =>
+    ({ ok: false, message, imageVerifyFailures: 0, verifyFailures: [], recovered: 0, pending: 0, overwritten: 0, reclaimed: 0, importedIds: [], rootId: null, roots: [], blocks: 0 });
+  const idRemap = new Map<string, string>(); // 导入页 id -> 最终保留下来的页面 id
   try {
-    if (!currentPagesRef) return { ok: false, message: '同步尚未初始化' };
-    if (pages.length === 0) return { ok: false, message: '未选择任何页面' };
-    currentPagesRef.value = [...currentPagesRef.value, ...pages];
+    if (!currentPagesRef) return fail('同步尚未初始化');
+    if (pages.length === 0) return fail('未选择任何页面');
+
+    let reclaimed = 0;
+    // 文档级去重（指纹默认开启）：导入页若与现有存活页「标题+内容」指纹完全相同，直接覆盖那页
+    // （沿用旧 id），而不是再建一份副本——这正是「反复导入同一批 zip 越导越重复」的根因修复。
+    // 仅当勾选「覆盖同名页面」时，才额外把「同名但内容不同」的页也覆盖（适合重新导入修图）。
+    let overwritten = 0;
+    const { next, idRemap: remap, overwritten: n, replacedRefs } = mergeImportOverwrite(
+      currentPagesRef.value, pages,
+      { overwriteSameTitle: opts?.overwriteSameTitle ?? false, fingerprintOverwrite: true },
+    );
+    for (const [k, v] of remap) idRemap.set(k, v);
+    overwritten = n;
+    if (idRemap.size > 0) {
+      // 导入时生成的都是临时 id：子页的 parentId 与正文里的 data-page-id 都指过去，
+      // 覆盖之后必须一并改指到保留下来的旧 id，否则层级与页内链接全断。
+      const idRe = new RegExp([...idRemap.keys()].map(escapeRegExp).join('|'), 'g');
+      for (const p of pages) {
+        p.parentId = (p.parentId && idRemap.get(p.parentId)) || p.parentId;
+        for (const t of p.tasks ?? []) {
+          if (t.content) t.content = t.content.replace(idRe, (m) => idRemap.get(m) ?? m);
+        }
+      }
+    }
+    currentPagesRef.value = next;
+    // 回收被换掉的旧图：否则「压缩版」和「原图版」会在 IndexedDB 里同时躺着，白占一份
+    const stillUsed = collectAssetRefs(next);
+    const orphans = [...replacedRefs].filter((r) => !stillUsed.has(r));
+    if (orphans.length > 0) {
+      const { deleteAsset } = await import('./assets');
+      for (const r of orphans) void deleteAsset(r);
+      reclaimed = orphans.length;
+    }
+
     await pushAll(currentPagesRef.value);
-    return { ok: true, message: `已导入 ${pages.length} 个页面` };
+
+    // 落库复核：确认每个 asset: 引用都真在本地 store，并对导入时没下下来的外链图后台补存一次。
+    // 顺序很重要——必须在页面已并入 currentPagesRef 之后改，这样补存的图能跟着一起落盘。
+    const { verifyImportedAssets } = await import('./zipImport');
+    const check = await verifyImportedAssets(pages, { imageMode: opts?.imageMode });
+    if (check.recovered > 0 || overwritten > 0) {
+      // 覆盖过的页要按**保留下来的 id** 标脏，否则改动不会落盘
+      for (const p of pages) markDirty(idRemap.get(p.id) ?? p.id);
+      flushPendingSave();
+    }
+
+    // 最终落地 id：覆盖模式下导入页的临时 id 已被旧页 id 取代，
+    // 前端必须拿这个去跳转，否则 selectPage 指向不存在的页 → 被兜底 watch 打回第一篇。
+    const finalIdOf = (p: Page): string => idRemap.get(p.id) ?? p.id;
+    const importedIds = pages.map(finalIdOf);
+    const importedIdSet = new Set(importedIds);
+    const roots = pages
+      .filter((p) => !(p.parentId && importedIdSet.has(p.parentId)))
+      .map((p) => ({ id: finalIdOf(p), title: p.title, blocks: (p.tasks ?? []).length }))
+      .sort((a, b) => b.blocks - a.blocks);
+    // 缺失明细里的 pageId 也要跟着重映射，否则「跳到那一块」会跳空
+    const issues: ImportAssetIssue[] = check.missing.map((m) => ({ ...m, pageId: idRemap.get(m.pageId) ?? m.pageId }));
+
+    const base = `已导入 ${pages.length} 个页面`
+      + (overwritten > 0
+        ? `（覆盖 ${overwritten} 个同名页${reclaimed > 0 ? `，回收 ${reclaimed} 张旧图` : ''}）`
+        : '');
+    return {
+      ok: true,
+      message: describeAssetCheck(base, check),
+      imageVerifyFailures: issues.length,
+      verifyFailures: issues,
+      recovered: check.recovered,
+      pending: check.pending,
+      overwritten,
+      reclaimed,
+      importedIds,
+      rootId: roots[0]?.id ?? null,
+      roots,
+      blocks: pages.reduce((s, p) => s + (p.tasks?.length ?? 0), 0),
+    };
   } catch (e) {
-    return { ok: false, message: '导入失败：' + (e as Error).message };
+    return fail('导入失败：' + (e as Error).message);
   }
 };
 

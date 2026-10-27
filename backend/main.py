@@ -158,30 +158,41 @@ def _heal_prev_id_chain(tasks: List[Dict]) -> List[Dict]:
 
     策略：仅当链是「合法单链」（恰好一个头、无环、无悬空 prevId）时才原样保留；
     否则按数组下标顺序重置为一条合法链（与前端 writePrevIds 等价），保证入库
-    数据对任意端都是确定性可还原的。
+    数据对任意端都是确定性可还原的。墓碑块不参与链，统一挪到末尾。
     """
     if not tasks:
         return tasks
-    ids = {t.get("id") for t in tasks}
-    if len(ids) != len(tasks):
+    dead = [t for t in tasks if t.get("deletedAt")]
+    live = [t for t in tasks if not t.get("deletedAt")]
+    if not dead:
+        return _heal_chain(live)
+    return _heal_chain(live) + dead
+
+
+def _heal_chain(live: List[Dict]) -> List[Dict]:
+    """对活块做链自愈（墓碑已在外部剥离）。"""
+    if not live:
+        return live
+    ids = {t.get("id") for t in live}
+    if len(ids) != len(live):
         # 存在重复 id（数据已损坏），按数组顺序强制重置链，去重交由上层 LWW
-        return [dict(t, prevId=(tasks[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(tasks)]
-    heads = [t for t in tasks if not t.get("prevId") or t.get("prevId") not in ids]
+        return [dict(t, prevId=(live[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(live)]
+    heads = [t for t in live if not t.get("prevId") or t.get("prevId") not in ids]
     if len(heads) != 1:
-        return [dict(t, prevId=(tasks[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(tasks)]
+        return [dict(t, prevId=(live[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(live)]
     # 单头：沿链走一遍，检测环与断链
     seen = set()
     cur = heads[0]
     while cur is not None:
         tid = cur.get("id")
         if tid in seen:  # 成环
-            return [dict(t, prevId=(tasks[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(tasks)]
+            return [dict(t, prevId=(live[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(live)]
         seen.add(tid)
-        nxt = next((t for t in tasks if t.get("prevId") == tid), None)
+        nxt = next((t for t in live if t.get("prevId") == tid), None)
         cur = nxt
-    if len(seen) != len(tasks):  # 断链（有游离块）
-        return [dict(t, prevId=(tasks[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(tasks)]
-    return tasks  # 合法单链，原样保留
+    if len(seen) != len(live):  # 断链（有游离块）
+        return [dict(t, prevId=(live[i - 1]["id"] if i > 0 else None)) for i, t in enumerate(live)]
+    return live  # 合法单链，原样保留
 
 
 # 页面标量字段（对齐前端 useSync.ts 的 PAGE_SCALAR_FIELDS）
@@ -214,18 +225,35 @@ def _merge_pages(incoming: List[Dict]) -> List[Dict]:
             base["updatedAt"] = other_upd
 
     def _tasks_lww(base_tasks, other_tasks):
-        """以 base 为基，叠加 other 中更新或新增的块。"""
+        """以 base 为基，叠加 other 中更新或新增的块；尊重块级墓碑。
+
+        块级墓碑（deletedAt）是「整页替换型导入 / 去重」能真正删除旧块的唯一途径：
+        服务端原本是只增不减的并集，本地独有的旧块永远不会被它移除——这正是
+        反复导入导致内容翻倍的元凶。让 tombstone 随上推一并到达服务端即可就地删除。
+        """
         out = [dict(t) for t in (base_tasks or [])]
         by_id = {t.get("id"): t for t in out}
         for ot in (other_tasks or []):
             oid = ot.get("id")
             if oid is None:
                 continue
+            if ot.get("deletedAt"):
+                # 远端墓碑：本地有该块则打上删除戳；本地没有则不新增死块
+                bt = by_id.get(oid)
+                if bt is not None:
+                    bt["deletedAt"] = ot["deletedAt"]
+                    if ot.get("updatedAt") is not None:
+                        bt["updatedAt"] = ot["updatedAt"]
+                continue
             bt = by_id.get(oid)
             if bt is None:
                 out.append(dict(ot))           # 另一端新增的块
             elif (_norm_ts(ot.get("updatedAt")) or "0") >= (_norm_ts(bt.get("updatedAt")) or "0"):
                 bt.update(ot)                  # 远端块更新 → 浅合并覆盖
+        # 墓碑块不参与 prevId 链，统一挪到末尾，避免其 prevId=null 破坏活块顺序
+        dead = [t for t in out if t.get("deletedAt")]
+        if dead:
+            out = [t for t in out if not t.get("deletedAt")] + dead
         return out
 
     seen: set = set()

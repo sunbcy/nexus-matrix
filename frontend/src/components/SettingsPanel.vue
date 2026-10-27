@@ -29,13 +29,16 @@ import {
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
 import {applyTheme, currentThemeId, type ThemeId, THEMES} from '../composables/theme';
 
-const props = defineProps<{ visible: boolean; dirtyTitleCount?: number; deadLinkCount?: number }>();
+const props = defineProps<{ visible: boolean; dirtyTitleCount?: number; deadLinkCount?: number; duplicateBlockCount?: number; duplicateDocCount?: number; divergentDocCount?: number; wronglyKilledCount?: number }>();
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'export-md'): void;
   (e: 'open-notion-import'): void;
   (e: 'clean-titles'): void;
   (e: 'clean-links'): void;
+  (e: 'clean-dup-blocks'): void;
+  (e: 'clean-dup-pages'): void;
+  (e: 'restore-killed-blocks'): void;
 }>();
 
 const { isCoarsePointer } = useMobileInput();
@@ -151,6 +154,31 @@ const onCleanLinks = () => {
   if (n === 0) return;
   emit('clean-links');
   flashDataMsg(`已修复 ${n} 个文档死链为页内链接`);
+};
+// 导入翻倍导致同一份内容出现多份，这里把重复块标成墓碑随同步删除
+const onCleanDupBlocks = () => {
+  const n = props.duplicateBlockCount ?? 0;
+  if (n === 0) return;
+  emit('clean-dup-blocks');
+  flashDataMsg(`已清理 ${n} 个重复块（导入翻倍残留），删除将随同步广播到各端`);
+};
+// 反复导入同一批 ZIP 导致整页重复：内容基本一致的副本自动合并，保留封面/图标更全的一份
+const onCleanDupPages = () => {
+  const n = props.duplicateDocCount ?? 0;
+  const d = props.divergentDocCount ?? 0;
+  if (n === 0) return;
+  emit('clean-dup-pages'); // 删除数在 emit 前已捕获，避免删除后计数归零
+  flashDataMsg(
+    `已合并 ${n} 份重复文档（保留封面/图标更全的一份）` +
+      (d > 0 ? `；另有 ${d} 组标题相同但内容不同，未自动删除，请人工核对/改名。` : '。'),
+  );
+};
+// 恢复被旧版「清理重复块」误杀的独有块（不含代码正文的旧指纹把不同代码块当成了重复）
+const onRestoreKilledBlocks = () => {
+  const n = props.wronglyKilledCount ?? 0;
+  if (n === 0) return;
+  emit('restore-killed-blocks'); // 数量在 emit 前已捕获
+  flashDataMsg(`已恢复 ${n} 个被误删的独有块（代码/图片等），删除标记已随同步广播到各端`);
 };
 </script>
 
@@ -295,7 +323,25 @@ const onCleanLinks = () => {
               修复文档里的死链<template v-if="deadLinkCount">（{{ deadLinkCount }}）</template><template v-else>（无）</template>
             </button>
           </div>
-          <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID、与变成 `href="#"` 的页内死链，可分别用上面的按钮一键修复。</p>
+          <div class="mt-2">
+            <button @click="onRestoreKilledBlocks" :disabled="!wronglyKilledCount"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-accent enabled:hover:border-accent enabled:active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              恢复误删块<template v-if="wronglyKilledCount">（{{ wronglyKilledCount }}）</template><template v-else>（无）</template>
+            </button>
+          </div>
+          <div class="mt-2">
+            <button @click="onCleanDupBlocks" :disabled="!duplicateBlockCount"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-accent enabled:hover:border-accent enabled:active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              清理重复块<template v-if="duplicateBlockCount">（{{ duplicateBlockCount }}）</template><template v-else>（无）</template>
+            </button>
+          </div>
+          <div class="mt-2">
+            <button @click="onCleanDupPages" :disabled="!duplicateDocCount"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-accent enabled:hover:border-accent enabled:active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              清理重复文档<template v-if="duplicateDocCount">（{{ duplicateDocCount }}）</template><template v-else>（无）</template>
+            </button>
+          </div>
+          <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID、变成 `href="#"` 的页内死链、与反复导入导致的重复块，可分别用上面的按钮一键修复。</p>
           <p v-if="dataMsg" class="mt-2 text-xs text-accent font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
           <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />
           <input ref="mdInput" type="file" accept=".md,.markdown,text/markdown" class="hidden" @change="onMdImport" />

@@ -15,6 +15,7 @@
     "android:apk": "npm run android:build && cap sync android"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.2",
     "@fontsource/inter": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/rajdhani": "^5.3.0",

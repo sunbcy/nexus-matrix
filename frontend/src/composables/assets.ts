@@ -33,26 +33,59 @@ export const ASSET_PREFIX = 'asset:';
 const ASSET_STORE = STORE_NAMES.assets;
 const openDB = openNexusDB;
 
-/** 存入 Blob，返回 asset:<id> 引用 */
-export const saveAsset = async (blob: Blob): Promise<string> => {
-  const id = newId();
-  const ref = `${ASSET_PREFIX}${id}`;
-  const db = await openDB();
-  const put = () => new Promise<void>((resolve, reject) => {
+/** 写一条资产记录；事务失败直接抛错，由调用方决定重试还是放弃 */
+const putAssetBlob = (db: IDBDatabase, id: string, blob: Blob): Promise<void> =>
+  new Promise<void>((resolve, reject) => {
     const tx = db.transaction(ASSET_STORE, 'readwrite');
     tx.objectStore(ASSET_STORE).put(blob, id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error ?? new Error('保存图片资产失败'));
     tx.onabort = () => reject(tx.error ?? new Error('保存图片资产被中止'));
   });
+
+/**
+ * 「写进去并且真的能读回来」为止：先查（已有就直接返回）、再写、再读回校验，最多 tries 轮。
+ * 返回最终是否可读回 —— 不抛错，让调用方自己决定「没落住」算致命还是可降级。
+ */
+const putUntilReadable = async (db: IDBDatabase, id: string, blob: Blob, tries: number): Promise<boolean> => {
+  const ref = `${ASSET_PREFIX}${id}`;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    if (await getAsset(ref)) return true;
+    try { await putAssetBlob(db, id, blob); } catch { /* 单次事务失败：消耗一次重试，最终由读回结果裁决 */ }
+  }
+  return (await getAsset(ref)) !== null;
+};
+
+/** 存入 Blob，返回 asset:<id> 引用 */
+export const saveAsset = async (blob: Blob): Promise<string> => {
+  const id = newId();
+  const ref = `${ASSET_PREFIX}${id}`;
+  const db = await openDB();
   // 落库校验：写入后立即读回，确认真的存住了。历史出现过「引用(asset:)生成了、但 blob 没落库」，
   // 本地与后端都取不到 → 破图（ZIP 导入篇正是此问题）。同一 id 重试最多 3 次，仍读不回就抛错，
   // 让调用方知道没存上（而不是静默返回一个取不到的死引用）。
-  for (let attempt = 0; attempt < 3; attempt++) {
-    await put();
-    if (await getAsset(ref)) return ref;
+  if (!(await putUntilReadable(db, id, blob, 3))) {
+    throw new Error('图片写入本地存储后校验失败');
   }
-  throw new Error('图片写入本地存储后校验失败');
+  return ref;
+};
+
+/**
+ * 已有引用的「落库复核 + 就地补写」。
+ *
+ * 终检场景专用：引用已经写进页面了，事后却发现 blob 读不回（事务丢失 / IDB 被驱逐）。
+ * 只要手里还留着原始 blob，就该把它补回去，而不是只报一句「没存上」——
+ * 这正是「确保不缺」的关键一步：缺了先救，救不回来才提示。
+ */
+export const verifyAssetOrRetry = async (ref: string, blob: Blob, tries = 3): Promise<boolean> => {
+  const id = ref.slice(ASSET_PREFIX.length);
+  if (!id) return false;
+  try {
+    const db = await openDB();
+    return await putUntilReadable(db, id, blob, tries);
+  } catch {
+    return false; // 连库都开不了：无法自愈，交给调用方提示
+  }
 };
 
 export const getAsset = async (ref: string): Promise<Blob | null> => {
@@ -81,6 +114,22 @@ export const deleteAsset = async (ref: string): Promise<void> => {
 };
 
 /**
+ * Blob -> base64。必须分块：String.fromCharCode(...arr) 是把数组展开成函数入参，
+ * V8 的入参上限约 100~200KB，超过直接抛 RangeError（已实测：200KB 必炸）。
+ * 而导入的图片压缩后仍有 150~350KB，等于**上传从来没成功过一次** ——
+ * 本地看着好好的，一旦换设备 / 清缓存 / 无痕窗口，回源只有 404，图就全破。
+ */
+const blobToBase64 = (buf: ArrayBuffer): string => {
+  const bytes = new Uint8Array(buf);
+  const CHUNK = 0x8000; // 32KB：远低于上限，又不至于循环太多轮
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+};
+
+/**
  * 阶段二 2.3：把本地资产上传到后端（尽力而为，不阻塞正文保存）。
  * 离线或后端不可用时静默失败——本地已存，待下次有网时由 resolveAsset 的回源
  * 路径触发补传（另一设备来取时本端不一定在线，故采用「按需回源」而非预推送）。
@@ -89,7 +138,7 @@ export const uploadAssetToServer = async (ref: string, blob: Blob): Promise<void
   if (!SYNC_SERVER) return; // 纯本地模式（无 syncServer）无需上传
   try {
     const buf = await blob.arrayBuffer();
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+    const b64 = blobToBase64(buf);
     await fetch(`${ASSET_API_BASE}/assets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -170,7 +219,8 @@ const markAssetMissing = (ref: string): void => {
   assetMissCache.add(ref);
   persistAssetMiss();
 };
-const clearAssetMissing = (ref: string): void => {
+/** 资产后来补上了（含补上传/补写入）：移出负缓存，允许再次解析 */
+export const clearAssetMissing = (ref: string): void => {
   if (!assetMissCache.delete(ref)) return;
   persistAssetMiss();
 };
@@ -205,21 +255,35 @@ export const warmAssets = async (refs: string[]): Promise<void> => {
 
 /**
  * 把 File / Blob 转成 asset 引用（图片块与封面统一入口）。
- * 上传时先降采样，避免原图直接进 IndexedDB 把配额吃光。
+ * 默认先降采样再存，避免原图直接进 IndexedDB 把配额吃光。
+ *
+ * 但「降采样 + 重编码」是有损的：一张 3072×4096 的图会被缩到 900×1200
+ * 再压成 JPEG 0.82 —— 分辨率只剩 1/3。扫板书页、截图带小字的这类图会明显发虚。
+ * 所以提供 `original`：原样落库，一个字节都不动（代价是体积 = 原文件）。
  */
+export interface ImageSaveOptions {
+  /** 原样落库：不缩放、不重编码。用于「我要的就是原图」的场景（如 ZIP 导入） */
+  original?: boolean;
+  maxWidth?: number;
+  maxHeight?: number;
+  quality?: number;
+}
+
 const MAX_W = 1600;
 const MAX_H = 1200;
 const SMALL_ENOUGH = 400_000; // 小于此长度的 DataURL 直接采用，省一次解码
 
 /** 读取文件并降采样为 JPEG Blob */
-const compressImage = (file: Blob): Promise<Blob> =>
+const compressImage = (file: Blob, opts: ImageSaveOptions = {}): Promise<Blob> =>
   new Promise((resolve) => {
+    const maxW = opts.maxWidth ?? MAX_W;
+    const maxH = opts.maxHeight ?? MAX_H;
     const reader = new FileReader();
     reader.onerror = () => resolve(file); // 读失败就用原文件，至少不丢功能
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const scale = Math.min(MAX_W / img.width, MAX_H / img.height, 1);
+        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
         // 已经够小就不折腾，保留原图（PNG 的清晰度比 JPEG 好）
         if (scale >= 1 && file.size < SMALL_ENOUGH) { resolve(file); return; }
         const w = Math.max(1, Math.round(img.width * scale));
@@ -236,7 +300,7 @@ const compressImage = (file: Blob): Promise<Blob> =>
         canvas.toBlob(
           (blob) => resolve(blob ?? file),
           'image/jpeg',
-          0.82,
+          opts.quality ?? 0.82,
         );
       };
       img.onerror = () => resolve(file);
@@ -245,11 +309,19 @@ const compressImage = (file: Blob): Promise<Blob> =>
     reader.readAsDataURL(file);
   });
 
-export const saveImageAsset = async (file: Blob): Promise<string> => {
-  const blob = await compressImage(file);
+export const saveImageAsset = async (file: Blob, opts?: ImageSaveOptions): Promise<string> =>
+  (await saveImageAssetWithBlob(file, opts)).ref;
+
+/**
+ * 与 saveImageAsset 相同，但一并返回**真正落库的那份** Blob。
+ * 导入场景要留着它：终检发现没存上时，得拿同一份内容原样补写，
+ * 否则存进去的不是落库时的那份（原图模式下就是未压缩原图），白白吃掉 IndexedDB 配额。
+ */
+export const saveImageAssetWithBlob = async (file: Blob, opts?: ImageSaveOptions): Promise<{ ref: string; blob: Blob }> => {
+  const blob = opts?.original ? file : await compressImage(file, opts);
   const ref = await saveAsset(blob);
   // 阶段二 2.3：本地存好后尽力上传到后端，供其它设备安装/渲染。
   // 异步、不阻塞正文保存（图片同步失败不应让打字卡顿）。
   void uploadAssetToServer(ref, blob);
-  return ref;
+  return { ref, blob };
 };

@@ -1,5 +1,6 @@
-import type { Ref } from 'vue';
-import { syncStatus, onlineDevices, lastSyncError } from './useSync';
+import type {Ref} from 'vue';
+import {ref, watch} from 'vue';
+import {lastSyncError, onlineDevices, retrySync, syncStatus} from './useSync';
 
 /**
  * Web → 原生 只读桥（阶段 1）。
@@ -26,11 +27,19 @@ export interface NexusNativeApi {
   getActivePage(): NativePageSummary | null;
   getSyncStatus(): { status: string; onlineDevices: number; lastError: string };
   openPage(id: string): boolean;
+  /** 下拉刷新触发：重新同步（而非整页 reload，避免丢失编辑态） */
+  triggerResync(): void;
 }
 
 declare global {
   interface Window {
     __NEXUS_API__?: NexusNativeApi;
+    /** 原生注入的 Web → 原生 桥：推送下拉刷新开关与列表置顶状态 */
+    NexusNativeBridge?: {
+      setPullRefresh(enabled: boolean): void;
+      setListScrollAtTop(atTop: boolean): void;
+      finishPullRefresh(): void;
+    };
   }
 }
 
@@ -43,6 +52,21 @@ const summarize = (p: BridgePage): NativePageSummary => ({
   isFavorite: !!p.isFavorite,
   updatedAt: p.updatedAt,
 });
+
+/** Web → 原生：是否允许下拉刷新（仅列表页为 true，内容编辑页为 false）。 */
+export const setNativePullRefresh = (enabled: boolean): void => {
+  window.NexusNativeBridge?.setPullRefresh(enabled);
+};
+/** Web → 原生：列表滚动容器是否已在顶部（仅顶部允许触发刷新）。 */
+export const setNativeListAtTop = (atTop: boolean): void => {
+  window.NexusNativeBridge?.setListScrollAtTop(atTop);
+};
+const finishNativePullRefresh = (): void => {
+  window.NexusNativeBridge?.finishPullRefresh();
+};
+
+// 下拉刷新进行中标记：同步状态落定后由本模块通知原生收起 spinner。
+const pullRefreshActive = ref(false);
 
 /** 在编辑器 onMounted 中调用；pages/activePageId 为编辑器内的 ref */
 export function installNativeBridge(pages: Ref<BridgePage[]>, activePageId: Ref<string>): void {
@@ -64,5 +88,26 @@ export function installNativeBridge(pages: Ref<BridgePage[]>, activePageId: Ref<
       activePageId.value = id;   // 编辑器 watch 会同步 location.hash
       return true;
     },
+    // 下拉刷新触发：重新同步（而非整页 reload，避免丢失编辑态）。
+    triggerResync: () => {
+      pullRefreshActive.value = true;
+      void retrySync();
+      // Web 兜底：若同步状态在 3s 内未落定（online/offline），强制收起 spinner，
+      // 避免原生侧未收到回调时 spinner 卡死（原生另有 8s 安全网）。
+      setTimeout(() => {
+        if (pullRefreshActive.value) {
+          pullRefreshActive.value = false;
+          finishNativePullRefresh();
+        }
+      }, 3000);
+    },
   };
+
+  // 同步状态落定（online=同步完成 / offline=无后端可连）后，通知原生收起下拉 spinner。
+  watch(syncStatus, (s) => {
+    if (pullRefreshActive.value && (s === 'online' || s === 'offline')) {
+      pullRefreshActive.value = false;
+      finishNativePullRefresh();
+    }
+  });
 }

@@ -74,7 +74,7 @@
         </div>
       </div>
 
-      <div class="flex-1 py-4 space-y-6 custom-scrollbar" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'">
+      <div ref="listScrollRef" @scroll.passive="onListScroll" class="flex-1 py-4 space-y-6 custom-scrollbar" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'">
         <!-- 最近访问（Notion 的 Recent）：本地记录、按访问倒序 -->
         <div v-if="recentPages.length > 0">
           <div class="text-[11px] font-['JetBrains_Mono',monospace] text-dim mb-1 px-4 uppercase tracking-wider font-bold">最近</div>
@@ -147,6 +147,8 @@
                  class="group relative flex items-center justify-between py-1.5 pr-2 rounded-md cursor-pointer transition-colors"
                  :class="[
                    activePageId === page.id ? 'bg-panel text-accent' : 'text-dim hover:bg-panel/50',
+                   // 刚导入进来的页面：短暂高亮，让人一眼看到新内容落在哪
+                   highlightPageIds.has(page.id) ? 'ring-1 ring-accent/60 bg-accent/10' : '',
                    draggedPageId === page.id ? 'opacity-40' : '',
                    dragOverPageId === page.id && pageDropPosition === 'top' ? 'shadow-[inset_0_2px_0_0_var(--cyan-glow)] bg-panel/60' : '',
                    dragOverPageId === page.id && pageDropPosition === 'bottom' ? 'shadow-[inset_0_-2px_0_0_var(--cyan-glow)] bg-panel/60' : '',
@@ -209,7 +211,7 @@
 
     <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
     <Transition name="page-fade" mode="out-in">
-    <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage && (!isMobile || mobileView === 'content')" :ref="onMainRef" @scroll="onEditorScroll">
+    <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage && (!isMobile || mobileView === 'content')" :ref="onMainRef" @scroll="onEditorScroll" @touchstart.passive="onEditorTouchStart" @touchmove.passive="onEditorTouchMove" @touchend.passive="onEditorTouchEnd" @touchcancel.passive="onEditorTouchEnd">
       <div class="w-full h-1 bg-accent shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
@@ -317,10 +319,11 @@
 
           <!-- 任务行循环渲染 (含层级缩进与多媒体类型) -->
           <div v-for="(task, index) in displayTasks" :key="task.id" :data-block-id="task.id"
-               class="task-item-container group relative flex items-start py-2 pr-2 my-1 rounded-sm transition-all duration-150"
+               class="task-item-container group relative flex items-start py-2 pr-2 my-1 rounded-sm transition-colors duration-150"
                :style="{ marginLeft: `${(task.indentLevel || 0) * 1.5}rem` }"
                :class="{ 
                  'opacity-50': task.completed && task.type === 'todo',
+                 'ring-1 ring-danger/70 bg-danger/10': highlightTaskId === task.id,
                  'hover:bg-panel/40': draggedTaskId !== task.id,
                  'opacity-30 scale-[0.98] border border-dashed border-dim/50': draggedTaskId === task.id,
                  'shadow-[inset_0_2px_0_0_var(--cyan-glow)] bg-panel/30': dragOverTaskId === task.id && dropPosition === 'top',
@@ -334,9 +337,9 @@
                @dragleave="handleDragLeave($event, task)"
                @drop.prevent="handleDrop($event, task)"
                @dragend="handleDragEnd">
-            
-            <!-- 缩进引导线 (Guide Line) -->
-            <div v-if="(task.indentLevel || 0) > 0" class="absolute -left-4 top-0 bottom-0 w-[2px] bg-panel rounded-full group-hover:bg-accent/30 transition-colors"></div>
+
+            <!-- 缩进引导线已移除：默认态几乎不可见（bg-panel），层级感由 marginLeft 缩进本身承担，
+                 留着只会让多层嵌套的页面看起来布满竖线（对齐 Notion：无引导线）。 -->
 
             <!-- 左槽（统一垂直对齐容器）：把「+号 / 拖拽点 / 块类型标记」收进同一个 flex 容器，
                  使它们与右侧文字首行的水平中线严格对齐。
@@ -495,13 +498,24 @@
                  @keydown.enter.prevent="insertTask(task.id, 'below')"
                  @keydown.backspace.prevent="deleteBlockAndFocus(task)"
                  @keydown.delete.prevent="deleteBlockAndFocus(task)">
-              <img v-if="task.payload?.url" :src="resolveAssetUrl(task.payload.url)"
-                   class="max-w-full rounded-md border border-line shadow-sm object-contain max-h-[500px] block" />
-              <!-- 图片操作浮层：替换 / 删除。
+              <!-- 适应内容宽度（Notion 默认）：宽度取 min(原图宽, 内容列宽)。
+                   小图按原始尺寸显示，不强行拉伸；超宽的图缩进列宽内。
+                   注意不要加 max-h 之类的硬高度上限——竖版大图（如 3072×4096 的扫板书页）
+                   会被压到几百像素高，正是「导入后看不清」的来源之一。 -->
+              <img v-if="task.payload?.url" :src="resolveAssetUrl(task.payload?.url)"
+                   class="max-w-full rounded-md border border-line shadow-sm object-contain block" />
+              <!-- 图片操作浮层：放大 / 替换 / 删除。
                    desktop 靠 hover，触屏无 hover 故点击后（selectedMediaId）常驻显示 -->
               <div v-if="task.payload?.url"
                    class="absolute top-2 right-2 flex items-center gap-1 transition-opacity z-10"
                    :class="selectedMediaId === task.id ? 'opacity-100' : 'opacity-0 group-hover/img:opacity-100'">
+                <!-- 放大查看：双击也能开，但双击不可发现，给一个显式入口（对齐 Notion 的全屏按钮） -->
+                <button @mousedown.stop.prevent="openImagePreview(task.payload.url)"
+                        @touchstart.stop.prevent="openImagePreview(task.payload.url)"
+                        title="放大查看"
+                        class="w-9 h-9 md:w-7 md:h-7 flex items-center justify-center bg-void/90 border border-line text-dim hover:text-accent hover:border-accent rounded-sm transition-colors backdrop-blur-sm">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+                </button>
                 <button @mousedown.stop.prevent="triggerImageUpload(task.id)"
                         @touchstart.stop.prevent="triggerImageUpload(task.id)"
                         title="替换图片"
@@ -619,14 +633,18 @@
     </main>
     </Transition>
 
-    <!-- 图片全屏预览（触屏双击放大查看，桌面双击同样可用；点遮罩或图片外区域关闭） -->
+    <!-- 图片全屏预览（工具栏「放大查看」或双击打开；点遮罩 / 关闭按钮 / Esc 退出） -->
     <div v-if="previewImageUrl" class="fixed inset-0 z-[60] bg-black/90 flex items-center justify-center p-4 md:p-8"
          @click="closeImagePreview()" @touchstart.stop="closeImagePreview()">
       <img :src="resolveAssetUrl(previewImageUrl)" class="max-w-full max-h-full object-contain rounded-sm" @click.stop @touchstart.stop />
+      <button @click.stop="closeImagePreview()" @touchstart.stop.prevent="closeImagePreview()"
+              class="absolute top-3 right-3 w-11 h-11 md:w-9 md:h-9 flex items-center justify-center bg-void/90 border border-line text-dim hover:text-danger hover:border-danger rounded-sm transition-colors backdrop-blur-sm" title="关闭 (Esc)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+      </button>
     </div>
 
     <!-- 设置面板：入口在侧边栏右上角齿轮（原生底部 Tab 已移除） -->
-    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" :dead-link-count="deadLinkCount" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" @clean-links="cleanDeadLinks" />
+    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" :dead-link-count="deadLinkCount" :duplicate-block-count="duplicateBlockCount" :duplicate-doc-count="duplicateDocCount" :divergent-doc-count="divergentDocCount" :wrongly-killed-count="wronglyKilledCount" @close="settingsOpen = false" @export-md="exportMarkdown" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" @clean-links="cleanDeadLinks" @clean-dup-blocks="dedupBlocks" @clean-dup-pages="dedupPages" @restore-killed-blocks="restoreWronglyKilledBlocks" />
 
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
@@ -826,8 +844,24 @@
         </div>
         <div class="flex-1 overflow-y-auto custom-scrollbar px-4 py-3 text-sm">
           <!-- 未选择文件 -->
-          <div v-if="!importPreview && !importLoading" class="space-y-3">
+          <div v-if="!importPreview && !importLoading && !importResult" class="space-y-3">
             <p class="text-muted leading-snug">选择 Notion 的「Markdown &amp; CSV」导出 <code class="text-accent font-['JetBrains_Mono',monospace]">.zip</code>（<span class="text-accent">可一次多选多个</span>，按文件分组预览），解析后会列出将创建的页面，确认再导入（不会改动你已有的内容）。<span class="text-warn">同名页面默认不勾选（含多个文件间的同名，仅保留第一份），需要创建副本时手动勾选即可。</span></p>
+            <!-- 图片质量：必须选文件**之前**定好——图片在解析那一步就落库了，事后改不生效 -->
+            <div class="space-y-1">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-dim shrink-0">图片质量</span>
+                <div class="flex rounded-sm border border-line overflow-hidden">
+                  <button @click="setImportImageMode('compressed')" class="px-3 h-9 md:h-7 text-xs font-['JetBrains_Mono',monospace] transition-colors"
+                          :class="importImageMode === 'compressed' ? 'bg-accent text-onaccent' : 'text-dim hover:text-display'">压缩</button>
+                  <button @click="setImportImageMode('original')" class="px-3 h-9 md:h-7 text-xs font-['JetBrains_Mono',monospace] transition-colors"
+                          :class="importImageMode === 'original' ? 'bg-accent text-onaccent' : 'text-dim hover:text-display'">原图</button>
+                </div>
+              </div>
+              <p class="text-[11px] text-dim leading-snug">
+                <template v-if="importImageMode === 'original'">原图：一个字节都不动，就是 ZIP 里那个文件（最清晰，但 10 张扫板书页约 35 MB）。</template>
+                <template v-else>压缩：缩到最长边 1600px 再压成 JPEG（约 3 MB），但原图会缩小到 1/3，带小字的图会发虚。</template>
+              </p>
+            </div>
             <button @click="importFileInput?.click()" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-surface border border-line text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">选择 ZIP 文件（可多选）</button>
           </div>
           <!-- 解析中 -->
@@ -838,6 +872,14 @@
               <span class="text-xs text-dim">将导入 {{ importSelected.size }} / {{ importPreview.pages.length }} 个页面<template v-if="importPreview.sources.filter(s => s.count > 0).length > 1">（来自 {{ importPreview.sources.filter(s => s.count > 0).length }} 个文件）</template><template v-if="importPreview.imageFailures">，{{ importPreview.imageFailures }} 张图片待后台下载</template></span>
               <button @click="toggleImportSelectAll" class="text-xs text-accent font-['JetBrains_Mono',monospace]">{{ importSelected.size === importPreview.pages.length ? '全不选' : '全选' }}</button>
             </div>
+            <!-- 同名页：默认不勾选（免得造副本）；勾这个则「重新导入 = 修好已有的那一页」 -->
+            <label v-if="importConflictIds.size > 0" class="flex items-start gap-2 px-1 cursor-pointer select-none" @click="toggleImportOverwrite">
+              <span class="mt-0.5 w-4 h-4 shrink-0 flex items-center justify-center border rounded-sm"
+                    :class="importOverwrite ? 'bg-accent border-accent text-onaccent' : 'border-dim'">
+                <svg v-if="importOverwrite" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </span>
+              <span class="text-xs leading-snug" :class="importOverwrite ? 'text-warn' : 'text-dim'">检测到 {{ importConflictIds.size }} 个与已有文档重复（标题或内容完全相同者会**自动去重**，不会再造副本）；勾选本项可额外把「同名但内容不同」的页也覆盖，适合重新导入修图。</span>
+            </label>
             <!-- 图片落库校验失败告警：明确告诉用户哪几张没存上，避免导入后破图却不自知 -->
             <div v-if="importPreview.imageVerifyFailures > 0" class="rounded-sm bg-danger/10 border border-danger/40 text-danger text-xs leading-snug px-3 py-2">
               <div class="font-bold">⚠ {{ importPreview.imageVerifyFailures }} 张图片没能存入本地存储，刷新后会丢失（破图）。</div>
@@ -871,10 +913,50 @@
               </div>
             </div>
           </div>
+          <!-- 导入结果：不只是甩一句 toast，而是说清「进了什么、哪几张没成」，且能一键跳到出问题的那一块 -->
+          <div v-else-if="importResult" class="space-y-3">
+            <div class="flex items-baseline gap-2">
+              <span class="text-sm text-display">已导入 {{ importResult.pages }} 个页面</span>
+              <span class="text-xs text-dim font-['JetBrains_Mono',monospace]">· {{ importResult.blocks }} 个块<template v-if="importResult.overwritten > 0"> · 覆盖 {{ importResult.overwritten }} 个同名页</template><template v-if="importResult.reclaimed > 0"> · 回收 {{ importResult.reclaimed }} 张旧图</template></span>
+            </div>
+            <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs font-['JetBrains_Mono',monospace]">
+              <span v-if="importResult.recovered > 0" class="text-accent">{{ importResult.recovered }} 张图片后台补存成功</span>
+              <span v-if="importResult.pending > 0" class="text-warn">{{ importResult.pending }} 张仍是外链</span>
+              <span v-if="importResult.issues.length > 0" class="text-danger">{{ importResult.issues.length }} 张没存上</span>
+            </div>
+            <!-- 缺失明细：可点，直接跳到那一块 -->
+            <div v-if="importResult.issues.length > 0" class="rounded-sm bg-danger/10 border border-danger/40 px-3 py-2">
+              <div class="text-danger text-xs font-bold">⚠ 下面这些图刷新后会丢失，点条目可直接跳到那一块：</div>
+              <div class="mt-1.5 space-y-0.5">
+                <button v-for="iss in importResult.issues.slice(0, 8)" :key="iss.pageId + '-' + iss.block"
+                        @click="gotoImportIssue(iss)"
+                        class="block w-full text-left text-xs font-['JetBrains_Mono',monospace] text-danger/90 hover:text-danger hover:underline truncate">
+                  《{{ iss.title || '无标题' }}》第{{ iss.block }}块
+                </button>
+              </div>
+              <div v-if="importResult.issues.length > 8" class="mt-1 text-[11px] text-danger/70 font-['JetBrains_Mono',monospace]">…等 {{ importResult.issues.length }} 处</div>
+            </div>
+            <!-- 根页面入口：多文件导入时可能有多个根，块数最多的是主入口 -->
+            <div v-if="importResult.roots.length > 0" class="space-y-0.5">
+              <div class="text-[11px] text-dim font-['JetBrains_Mono',monospace] uppercase tracking-wider">导入的顶层页面</div>
+              <button v-for="r in importResult.roots.slice(0, 8)" :key="r.id" @click="gotoImportedPage(r.id)"
+                      class="w-full flex items-center justify-between px-2 py-1.5 rounded-sm text-left hover:bg-panel/50 transition-colors">
+                <span class="text-sm text-display truncate">{{ r.title || '无标题' }}</span>
+                <span class="text-[10px] text-dim font-['JetBrains_Mono',monospace] shrink-0">{{ r.blocks }} 块</span>
+              </button>
+            </div>
+          </div>
           <p v-if="importWizardMsg" class="mt-3 text-xs font-['JetBrains_Mono',monospace]" :class="importLoading ? 'text-dim' : 'text-warn'">{{ importWizardMsg }}</p>
           <input ref="importFileInput" type="file" accept=".zip,application/zip" multiple class="hidden" @change="onImportFilePicked" />
         </div>
-        <div v-if="importPreview" class="flex items-center gap-2 px-4 py-3 border-t border-line shrink-0">
+        <div v-if="importResult" class="flex items-center gap-2 px-4 py-3 border-t border-line shrink-0">
+          <button @click="gotoImportedPage(importResult.roots[0]?.id ?? '')"
+                  class="flex-1 h-11 md:h-9 flex items-center justify-center rounded-sm bg-surface border border-accent text-accent hover:bg-panel active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
+            查看<template v-if="importResult.roots[0]">「{{ importResult.roots[0].title || '无标题' }}」</template>
+          </button>
+          <button @click="closeNotionImportWizard" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-surface border border-line text-dim hover:text-display transition-colors text-xs font-['JetBrains_Mono',monospace]">完成</button>
+        </div>
+        <div v-else-if="importPreview" class="flex items-center gap-2 px-4 py-3 border-t border-line shrink-0">
           <button @click="confirmNotionImport" :disabled="importLoading || importSelected.size === 0"
                   class="flex-1 h-11 md:h-9 flex items-center justify-center rounded-sm bg-surface border border-accent text-accent hover:bg-panel active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace] disabled:opacity-40">
             导入所选 ({{ importSelected.size }})
@@ -1022,7 +1104,9 @@ import {
   writePagePrevIds,
   writePrevIds,
 } from '../composables/useSync';
-import {installNativeBridge} from '../composables/nativeBridge';
+import {blockContentKey, docFingerprint, planDuplicatePages, planWronglyKilledBlocks} from '../composables/importMerge';
+import {installNativeBridge, setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
+import {App} from '@capacitor/app';
 import {useMobileInput} from '../composables/useMobileInput';
 import {hasNotionIdSuffix, stripNotionId} from '../composables/zipImport';
 import {newBlockId, newPageId} from '../composables/ids';
@@ -1041,8 +1125,10 @@ interface Task {
   indentLevel?: number;
   payload?: any;
   prevId?: string | null;
+  deletedAt?: number;   // 块级墓碑时间戳（ms）。整页替换/去重时被换掉的旧块打此戳随同步上推
+  updatedAt?: number;   // 客户端生成的时间戳（ms），供块级 LWW 合并
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; icon?: string; cover?: string; coverPos?: number; deletedAt?: number; isTemplate?: boolean; prevId?: string | null; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; updatedAt?: number; icon?: string; cover?: string; coverPos?: number; deletedAt?: number; isTemplate?: boolean; prevId?: string | null; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -1073,18 +1159,43 @@ setTimeout(() => { booting.value = false; showOverlay.value = false; }, 8000);
 const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768);
 const mobileView = ref<'list' | 'content'>('list');
 
-// 进入内容页（仅移动端）：切到 content 并压一条 history，
-// 这样安卓系统/手势返回会先 pop 回列表页，而不是直接退出 App。
+// 进入文档页后的「静默窗口」：这段时间内拒绝程序化聚焦（focusConfig 的自动落光标），
+// 避免一进页面就唤起软键盘——对齐 Notion：进入页面是「阅读」，不自动落光标。
+let suppressAutoFocusUntil = 0;
+
+// 进入内容页（仅移动端）：切到 content 视图（列表/内容分离，像 Notion 页面栈）。
 const enterContent = () => {
   if (!isMobile.value) return;
-  if (mobileView.value === 'content') return;   // 已在内容页则不再重复压栈
+  if (mobileView.value === 'content') return;   // 已在内容页则不再重复切换
   mobileView.value = 'content';
-  window.history.pushState({ nexusView: 'content' }, '');
+  // 不自动落光标、不弹键盘：清掉待聚焦目标，并交出可能残留的焦点。
+  suppressAutoFocusUntil = Date.now() + 600;
+  setFocusConfig(null, null);
+  nextTick(() => {
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae && (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
+  });
 };
-// 从内容页返回列表（仅移动端）：优先走页面栈；系统/手势返回也会经 popstate 命中。
+// 关闭当前最上层的浮层（链接弹窗 / 设置 / 页面菜单 / 操作菜单 / 图标 / 封面 / 提及 / 格式工具栏等）。
+// 返回是否关闭了某个浮层——用于「返回键先关浮层，再走页面栈/退出」，避免误退 App。
+const closeTopmostOverlay = (): boolean => {
+  if (linkDialog.value.visible) { closeLinkDialog(); return true; }
+  if (settingsOpen.value) { settingsOpen.value = false; return true; }
+  if (pageMenuConfig.value.isOpen) { closePageMenu(); return true; }
+  if (actionMenuConfig.value.isOpen) { actionMenuConfig.value.isOpen = false; return true; }
+  if (iconPicker.value) { closeIconPicker(); return true; }
+  if (coverAnchorEl.value) { closeCoverPicker(); return true; }
+  if (mentionTaskId.value) { closeMention(); return true; }
+  if (formatToolbar.value.visible) { hideFormatToolbar(); return true; }
+  if (linkChip.value.visible) { linkChip.value.visible = false; return true; }
+  return false;
+};
+
+// 从内容页返回列表（仅移动端）：左上返回箭头点击；浮层打开时先关浮层。
 const goToList = () => {
   if (!isMobile.value) return;
-  if (mobileView.value === 'content') window.history.back();
+  if (closeTopmostOverlay()) return;
+  mobileView.value = 'list';
 };
 
 // 切页统一出口：桌面端无副作用；移动端切到内容页（分离视图）。
@@ -1096,10 +1207,72 @@ const selectPage = (id: string) => {
 
 // 移动端形态切换（与 Tailwind md: 断点一致）：宽度 <768 视为移动端。
 const updateIsMobile = () => { isMobile.value = window.innerWidth < 768; };
-// 系统/手势返回：移动端在内容页时先返回列表，而不是直接退出 App。
-const onPopState = () => {
-  if (isMobile.value && mobileView.value === 'content') mobileView.value = 'list';
+// 安卓系统/手势返回（由 Capacitor App 插件的 backButton 事件驱动，见 onMounted）：
+// 任意浮层打开时先收起浮层；否则内容页 → 回列表页；列表页 → 退出 App。
+const onBackButton = () => {
+  if (!isMobile.value) return;
+  if (closeTopmostOverlay()) return;
+  if (mobileView.value === 'content') {
+    mobileView.value = 'list';
+  } else {
+    App.exitApp();
+  }
 };
+
+// === 移动端：输入法弹起时，滑动文档自动收起输入法 ===
+// 安卓常见交互：键盘占了半屏，此时再滑动文档的意图多半是「去看内容 / 让出屏幕」，应自动收起，
+// 不必先按一次返回。仅在「确有可编辑焦点」且「未在做跨块文本拖选」时触发，避免抢掉选区。
+const KB_DISMISS_DRAG = 64;   // 判定为「滑动」的最小位移(px)
+let kbDragStartY = 0;
+let kbDragTracking = false;
+const getActiveEditable = (): HTMLElement | null => {
+  const ae = document.activeElement as HTMLElement | null;
+  if (!ae) return null;
+  return (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') ? ae : null;
+};
+const onEditorTouchStart = (e: TouchEvent) => {
+  if (!isMobile.value || mobileView.value !== 'content') return;
+  const t = e.touches[0];
+  kbDragStartY = t ? t.clientY : 0;
+  kbDragTracking = !!(t && getActiveEditable());
+};
+const onEditorTouchMove = (e: TouchEvent) => {
+  if (!kbDragTracking) return;
+  const t = e.touches[0];
+  if (!t) return;
+  // 已经拖出选区：让位给选区引擎，不抢
+  if (hasTextSelection()) { kbDragTracking = false; return; }
+  const ae = getActiveEditable();
+  if (!ae) { kbDragTracking = false; return; }
+  // 上/下滑都算「有意图的滑动」（对应「往下翻看更多」与「下滑收起」两种表述）
+  if (Math.abs(t.clientY - kbDragStartY) >= KB_DISMISS_DRAG) {
+    kbDragTracking = false;
+    ae.blur();
+  }
+};
+const onEditorTouchEnd = () => { kbDragTracking = false; };
+
+// 受控下拉刷新（仅移动端）：
+// - 列表页才允许下拉刷新；内容编辑页整体禁用（与安卓手势导航不再冲突）。
+// - 列表滚动位置实时上报，仅顶部可触发，避免阅读时下滑误刷新。
+const listScrollRef = ref<HTMLElement | null>(null);
+let listScrollRaf = 0;
+const onListScroll = (e: Event) => {
+  if (!isMobile.value) return;
+  const el = e.target as HTMLElement;
+  const atTop = el.scrollTop <= 0;
+  if (listScrollRaf) return;
+  listScrollRaf = requestAnimationFrame(() => {
+    listScrollRaf = 0;
+    setNativeListAtTop(atTop);
+  });
+};
+watch(mobileView, (v) => {
+  if (!isMobile.value) return;
+  setNativePullRefresh(v === 'list');
+  const el = listScrollRef.value;
+  setNativeListAtTop(!el || el.scrollTop <= 0);
+}, { immediate: true });
 
 // === 全局搜索 ===
 // 匹配范围：页面标题 + 所有块的正文（转纯文本后匹配）。
@@ -1126,6 +1299,7 @@ const searchResults = computed<SearchHit[]>(() => {
     }
     // 标题未命中则找正文首个匹配块，取关键词前后各 30 字作为上下文
     for (const t of page.tasks ?? []) {
+      if (t.deletedAt) continue;
       const text = plainText(t.content || '');
       const idx = text.toLowerCase().indexOf(q);
       if (idx === -1) continue;
@@ -1183,7 +1357,7 @@ const hiddenTaskIds = computed(() => {
   }
   return hidden;
 });
-const visibleTasks = computed(() => (activePage.value?.tasks ?? []).filter((t: Task) => !hiddenTaskIds.value.has(t.id)));
+const visibleTasks = computed(() => (activePage.value?.tasks ?? []).filter((t: Task) => !t.deletedAt && !hiddenTaskIds.value.has(t.id)));
 
 // P1 补充：块的「结构性变化」（增 / 删 / 拖拽重排 / 合并 / 拆分）都是直接改 tasks 数组
 // （splice 或整体重赋值），不经过 updateTask，因此不触发即时保存——过去只靠 4s 对账兜底，
@@ -1202,7 +1376,8 @@ watch(
 // 关键不变量：焦点块不能被卸载；键盘/跳转/搜索先把目标块滚进视口（纳入窗口并挂载）再聚焦（见 focusConfig watch）。
 // 开关 virtualScrolling=false → 退回 P3「渐进全挂载」，便于对照与回退。
 const virtualScrolling = ref(true);
-const VIRTUAL_OVERSCAN = 1;                 // 视口上下各多渲染 1 屏
+const VIRTUAL_OVERSCAN = 2;                 // 视口上下各多渲染 2 屏（1 屏在快速滚动时会一帧跳过，出现空白闪现）
+const VIRTUAL_QUANT = 24;                   // 窗口按 N 块一档对齐，避免拖动滚动条时每帧都重渲染
 const scrollEl = ref<HTMLElement | null>(null);
 const blockHeights = ref<Record<string, number>>({});
 const vStart = ref(0);
@@ -1212,20 +1387,31 @@ const vBottom = ref(0);
 let listVersion = 0;
 let heightsVersion = 0;
 
+// 估算高度缓存：只有「剥离标签后的文本长度」需要跑正则，故按 (content 引用, type, 缩进) 缓存。
+// 每次重算 offsets 都要遍历全篇（1418 块），没缓存就等于每次都对全篇做一遍正则剥离。
+const estCache = new Map<string, { raw: string; ty: string; lv: number; h: number }>();
 const estimateBlockHeight = (t: Task): number => {
+  const raw = t.content || '';
+  const lv = t.indentLevel || 0;
+  const cached = estCache.get(t.id);
+  if (cached && cached.raw === raw && cached.ty === t.type && cached.lv === lv) return cached.h;
+  let h = 0;
   switch (t.type) {
-    case 'divider': return 33;
-    case 'image': return 260;
-    case 'todo': return 40;
-    case 'h1': return 52;
-    case 'h2': return 44;
-    case 'h3': return 38;
-    case 'callout': return 72;
+    case 'divider': h = 33; break;
+    case 'image': h = 520; break; // 图片按内容列宽显示后实际常达 700~900px，估 260 会让 spacer 严重偏短 → 上滑空白
+    case 'todo': h = 40; break;
+    case 'h1': h = 52; break;
+    case 'h2': h = 44; break;
+    case 'h3': h = 38; break;
+    case 'callout': h = 72; break;
     default: {
-      const len = (t.content || '').replace(/<[^>]*>/g, '').length;
-      return 24 + Math.max(0, Math.ceil(len / 60) - 1) * 26;
+      const len = raw.replace(/<[^>]*>/g, '').length;
+      h = 24 + Math.max(0, Math.ceil(len / 60) - 1) * 26;
     }
   }
+  if (estCache.size > 8000) estCache.clear();
+  estCache.set(t.id, { raw, ty: t.type, lv, h });
+  return h;
 };
 const heightOf = (t: Task): number => blockHeights.value[t.id] || estimateBlockHeight(t);
 
@@ -1242,6 +1428,17 @@ const buildOffsets = (): number[] => {
   return arr;
 };
 
+// 滚动方向：上滑时「上方」要多备货——空白闪现几乎都发生在上滑
+// （下滑时内容往下长，视觉上不缺东西；上滑时上方块还没挂载就是实打实的空白）。
+let lastScrollTop = 0;
+let scrollDirUp = false;
+const onEditorScrollDir = (el: HTMLElement) => {
+  const t = el.scrollTop;
+  if (t < lastScrollTop - 2) scrollDirUp = true;
+  else if (t > lastScrollTop + 2) scrollDirUp = false;
+  lastScrollTop = t;
+};
+
 const recomputeRange = () => {
   if (!virtualScrolling.value) return;
   const all = visibleTasks.value;
@@ -1255,14 +1452,19 @@ const recomputeRange = () => {
   const top = el.scrollTop;
   const bottom = top + el.clientHeight;
   const over = el.clientHeight * VIRTUAL_OVERSCAN;
-  // 第一个 bottom > top-over 的块
+  const overTop = scrollDirUp ? over * 2 : over;   // 上滑：上方多备一屏
+  // 第一个 bottom > top-overTop 的块
   let lo = 0, hi = all.length;
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (offsets[mid + 1] > top - over) hi = mid; else lo = mid + 1; }
-  const start = lo;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (offsets[mid + 1] > top - overTop) hi = mid; else lo = mid + 1; }
+  const rawStart = lo;
   // 第一个 top >= bottom+over 的块
-  lo = start; hi = all.length;
+  lo = rawStart; hi = all.length;
   while (lo < hi) { const mid = (lo + hi) >> 1; if (offsets[mid] < bottom + over) lo = mid + 1; else hi = mid; }
-  const end = Math.min(all.length, Math.max(lo, start + 1));
+  const rawEnd = lo;
+  // 窗口按 QUANT 个块一档对齐：拖动滚动条时窗口不会每帧都变，
+  // 重渲染频率从「每帧一次」降到「每跨越一档一次」，这是滚动丝滑度的关键。
+  const start = Math.max(0, Math.floor(rawStart / VIRTUAL_QUANT) * VIRTUAL_QUANT);
+  const end = Math.min(all.length, Math.max(Math.ceil(rawEnd / VIRTUAL_QUANT) * VIRTUAL_QUANT, start + VIRTUAL_QUANT));
   const t = offsets[start];
   const b = Math.max(0, total - offsets[end]);
   if (start !== vStart.value || end !== vEnd.value || t !== vTop.value || b !== vBottom.value) {
@@ -1316,12 +1518,22 @@ const blockRO = new ResizeObserver((entries) => {
   if (delta !== 0) el.scrollTop = before + delta;
   recomputeRange();
 });
+const observedIds = new Set<string>();
 const observeBlocks = () => {
   nextTick(() => {
     const el = scrollEl.value;
     if (!el) return;
-    blockRO.disconnect();
-    el.querySelectorAll('[data-block-id]').forEach((n) => blockRO.observe(n));
+    // 只观测新出现的块。此前每次窗口变化都 disconnect + 全量重观测，
+    // 拖动滚动条时每帧一遍 O(n)，是长文档滚动掉帧的主力之一。
+    const nodes = el.querySelectorAll('[data-block-id]');
+    const current = new Set<string>();
+    for (const n of nodes) {
+      const id = n.getAttribute('data-block-id');
+      if (!id) continue;
+      current.add(id);
+      if (!observedIds.has(id)) { observedIds.add(id); blockRO.observe(n); }
+    }
+    for (const id of observedIds) if (!current.has(id)) observedIds.delete(id);
   });
 };
 
@@ -1362,10 +1574,22 @@ const displayTasks = computed(() => virtualScrolling.value ? windowedTasks.value
 const showSpacers = computed(() => virtualScrolling.value && visibleTasks.value.length > 0);
 
 // 滚动：虚拟模式重算窗口；回退模式按需补挂
+// 滚动事件一帧可能触发多次，重算窗口合并到下一帧即可（反正读的是当时的 scrollTop）
+let recomputeRaf: number | null = null;
+const scheduleRecompute = () => {
+  if (recomputeRaf != null) return;
+  recomputeRaf = requestAnimationFrame(() => { recomputeRaf = null; recomputeRange(); });
+};
+
 const onEditorScroll = (e: Event) => {
   hideFormatToolbar();
   closeCoverPicker();
-  if (virtualScrolling.value) { recomputeRange(); return; }
+  if (virtualScrolling.value) {
+    const el = e.currentTarget as HTMLElement | null;
+    if (el) onEditorScrollDir(el);
+    scheduleRecompute();
+    return;
+  }
   const el = e.currentTarget as HTMLElement | null;
   if (el && el.scrollTop + el.clientHeight >= el.scrollHeight - 600 && renderCount.value < visibleTasks.value.length) {
     renderCount.value = Math.min(renderCount.value + RENDER_CHUNK, visibleTasks.value.length);
@@ -1374,14 +1598,15 @@ const onEditorScroll = (e: Event) => {
 // 渲染索引 ≠ 数据索引（折叠会跳过块），键盘逻辑必须使用数据索引
 const realIndexMap = computed(() => {
   const map = new Map<string, number>();
-  (activePage.value?.tasks ?? []).forEach((t: Task, i: number) => map.set(t.id, i));
+  // 用 visibleTasks（已剔除折叠与墓碑块），与键盘/光标逻辑看到的数据索引一致
+  visibleTasks.value.forEach((t: Task, i: number) => map.set(t.id, i));
   return map;
 });
 const realIndexOf = (task: Task) => realIndexMap.value.get(task.id) ?? 0;
 
 // 编号列表序号：只累计「同级且相邻」的 numbered 块，遇到其它类型或更浅层级则重置
 const getNumberedIndex = (task: Task) => {
-  const list = activePage.value?.tasks ?? [];
+  const list = (activePage.value?.tasks ?? []).filter((t: Task) => !t.deletedAt);
   const idx = list.findIndex((t: Task) => t.id === task.id);
   const level = task.indentLevel || 0;
   let n = 1;
@@ -1414,20 +1639,30 @@ const getLinkedPageIds = (page: Page): string[] => {
   return [...ids];
 };
 // 引用了当前页面的其它页面（含引用处的上下文摘要）
-const backlinks = computed(() => {
+// 反链：原本是 computed，而它读取了「所有页的所有块内容」，于是每敲一个键都会触发一次全库扫描
+// （121 页 / 上万块，实测约 4ms 每次击键）。改为放在 watch 回调里算——watch 回调不收集响应式依赖——
+// 只在「切页 / 增删页 / 一次数据提交之后」防抖重建。
+const backlinks = ref<Array<{ page: Page; excerpt: string }>>([]);
+let backlinksTimer: ReturnType<typeof setTimeout> | null = null;
+const rebuildBacklinks = () => {
   const current = activePage.value;
-  if (!current) return [];
+  if (!current) { backlinks.value = []; return; }
   const result: Array<{ page: Page; excerpt: string }> = [];
   for (const p of pages.value) {
     if (p.id === current.id || p.deletedAt) continue;
-    const linked = getLinkedPageIds(p).includes(current.id);
-    if (!linked) continue;
-    const hit = p.tasks.find((t: Task) => t.content?.includes(`data-page-id="${current.id}"`));
+    if (!getLinkedPageIds(p).includes(current.id)) continue;
+    const hit = p.tasks.find((t: Task) => !t.deletedAt && t.content?.includes(`data-page-id="${current.id}"`));
     const plain = (hit?.content ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
     result.push({ page: p, excerpt: plain.slice(0, 80) || '（链接）' });
   }
-  return result;
-});
+  backlinks.value = result;
+};
+const scheduleBacklinks = (delay: number) => {
+  if (backlinksTimer) clearTimeout(backlinksTimer);
+  backlinksTimer = setTimeout(rebuildBacklinks, delay);
+};
+watch([() => pages.value.length, activePageId], () => scheduleBacklinks(120), { immediate: true });
+watch(dataVersion, () => scheduleBacklinks(600));
 
 const mentionTaskId = ref<string | null>(null);
 const mentionIndex = ref(0);
@@ -1480,6 +1715,7 @@ const exportMarkdown = () => {
   const pageMd = (p: Page, depth: number): string => {
     const lines: string[] = [`${'#'.repeat(Math.min(depth + 1, 6))} ${p.title || '无标题'}`, ''];
     for (const t of p.tasks) {
+      if (t.deletedAt) continue;
       const text = htmlToMarkdown(t.content || '');
       const indent = '  '.repeat(t.indentLevel || 0);
       switch (t.type) {
@@ -1686,11 +1922,19 @@ onMounted(async () => {
      if (newHash && pages.value.find(p => p.id === newHash)) activePageId.value = newHash;
   });
 
-  // 移动端视图栈初始化：监听形态切换与系统返回，初始若已恢复出文档则直接进入内容页。
+  // 移动端视图栈初始化：监听形态切换，初始若已恢复出文档则直接进入内容页。
   updateIsMobile();
   window.addEventListener('resize', updateIsMobile);
-  window.addEventListener('popstate', onPopState);
+  // 接管安卓系统/手势返回：内容页→列表页，列表页→退出 App（替代原生默认直接退出）。
+  App.addListener('backButton', onBackButton);
   if (isMobile.value && activePage.value) enterContent();
+
+  // 初始同步受控下拉刷新状态（确保原生桥就绪后状态已下发：列表页允许、内容页禁用）
+  if (isMobile.value) {
+    setNativePullRefresh(mobileView.value === 'list');
+    const lel = listScrollRef.value;
+    setNativeListAtTop(!lel || lel.scrollTop <= 0);
+  }
 
   // 离场落盘：防抖 500ms 意味着切走/杀进程会丢掉最后一批改动。
   // 移动端 App 切后台极易被回收，这里在隐藏与卸载时强制 flush。
@@ -1867,7 +2111,6 @@ watch(activePage, (ap) => {
 onUnmounted(() => {
   closeSync();
   window.removeEventListener('resize', updateIsMobile);
-  window.removeEventListener('popstate', onPopState);
 });
 
 // === Sidebar 树状逻辑 ===
@@ -2606,7 +2849,7 @@ const cleanDeadLinks = () => {
   for (const p of pages.value) {
     if (p.deletedAt) continue;
     for (const t of p.tasks ?? []) {
-      if (!t.content) continue;
+      if (t.deletedAt || !t.content) continue;
       DEAD_LINK_RE.lastIndex = 0;
       const next = t.content.replace(DEAD_LINK_RE, (_tag, _pre, _post, inner) => {
         const text = inner.replace(/<[^>]+>/g, '').trim();
@@ -2619,6 +2862,105 @@ const cleanDeadLinks = () => {
     }
   }
   return fixed;   // 就地改 content，经 pages 的 deep watch -> stampUpdated + 上推同步
+};
+
+// === 历史重复块清理（导入翻倍导致） ===
+// 反复覆盖导入会让同一份内容在服务端并集出多份：块级合并只增不减（见 useSync.mergePages /
+// 后端 _tasks_lww 注释），旧块没墓碑就永久残留。这里按「类型 + 纯文本 + 图片 URL」指纹，
+// 把每页里重复出现的块标成墓碑（保留首份），随同步上推，服务端据此删除，不再并集成双份。
+const duplicateBlockCount = computed(() => {
+  let n = 0;
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    const seen = new Set<string>();
+    for (const t of p.tasks ?? []) {
+      if (t.deletedAt) continue;
+      const k = blockContentKey(t);
+      if (seen.has(k)) n++;
+      else seen.add(k);
+    }
+  }
+  return n;
+});
+
+const dedupBlocks = () => {
+  let n = 0;
+  const now = Date.now();
+  const touched = new Set<string>();
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    const seen = new Set<string>();
+    let changed = false;
+    for (const t of p.tasks ?? []) {
+      if (t.deletedAt) continue;
+      const k = blockContentKey(t);
+      if (seen.has(k)) { t.deletedAt = now; t.updatedAt = now; n++; changed = true; }
+      else seen.add(k);
+    }
+    if (changed) touched.add(p.id);
+  }
+  // 就地改 deletedAt 不改 id 序列，pages 的 id 签名 watch 不触发，需显式标脏并上推
+  if (touched.size > 0) {
+    for (const id of touched) markDirty(id);
+    flushPendingSave();
+  }
+  return n;
+};
+
+// === 历史重复文档清理（反复导入同一批 ZIP 导致） ===
+// 按「标题」分组；组内再按「去重后的唯一块集合」指纹细分：同一份文档被多次导入只会多出
+// 内容一致的副本（或仅重复块数量不同），这些"基本相同"的副本自动合并——按封面+图标优先、
+// 其次块更多、再其次更新更晚，保留最优一份，其余整页打墓碑随同步删除。
+// 标题相同但唯一块集合不同（真·内容不同）的，只各留一份、绝不误删，留给用户人工核对/改名。
+// 核心分组/挑选逻辑抽到 importMerge.planDuplicatePages（纯函数，已单测覆盖）。
+const duplicateDocPreview = computed(() => {
+  const plan = planDuplicatePages(pages.value);
+  return { toDelete: plan.toDelete.length, divergentGroups: plan.divergentGroups.length };
+});
+
+const duplicateDocCount = computed(() => duplicateDocPreview.value.toDelete);
+const divergentDocCount = computed(() => duplicateDocPreview.value.divergentGroups);
+
+const dedupPages = () => {
+  const plan = planDuplicatePages(pages.value);
+  const now = Date.now();
+  let deleted = 0;
+  const touched = new Set<string>();
+  const byId = new Map(pages.value.map((p) => [p.id, p]));
+  for (const id of plan.toDelete) {
+    const p = byId.get(id);
+    if (!p || p.deletedAt) continue;
+    p.deletedAt = now; p.updatedAt = now; deleted++; touched.add(id);
+  }
+  if (touched.size > 0) {
+    for (const id of touched) markDirty(id);
+    flushPendingSave();
+  }
+  return { deleted, divergentGroups: plan.divergentGroups.length };
+};
+
+// === 误杀块恢复（清理重复块旧指纹把不同代码块当重复误杀的事故修复） ===
+const wronglyKilledCount = computed(() => planWronglyKilledBlocks(pages.value).total);
+
+const restoreWronglyKilledBlocks = () => {
+  const { byPage, total } = planWronglyKilledBlocks(pages.value);
+  if (total === 0) return 0;
+  const now = Date.now();
+  const byId = new Map(pages.value.map((p) => [p.id, p]));
+  for (const [pid, ids] of byPage) {
+    const p = byId.get(pid);
+    if (!p) continue;
+    const want = new Set(ids);
+    let changed = false;
+    for (const t of p.tasks ?? []) {
+      if (!t.deletedAt || !want.has(t.id)) continue;
+      t.deletedAt = undefined; t.updatedAt = now; // 清墓碑并抬高 updatedAt，LWW 下复活覆盖服务端墓碑
+      changed = true;
+    }
+    if (changed) markDirty(p.id);
+  }
+  flushPendingSave();
+  return total;
 };
 
 // === 页面级「···」菜单（对齐 Notion：页面操作收敛到内容页右上角） ===
@@ -2689,6 +3031,33 @@ const importLoading = ref(false);
 const importWizardMsg = ref('');
 const importSelected = ref<Set<string>>(new Set());
 const importConflictIds = ref<Set<string>>(new Set());  // 与现有存活页同名的待导入页（默认不勾选，避免盲目创建重复）
+const importOverwrite = ref(false);  // 覆盖同名页：重新导入时用它「修好已有的那一页」而不是再建副本
+// 图片质量：'original' 原样落库，'compressed' 缩放+重编码。持久化，免得每次都要重新选。
+const IMPORT_MODE_KEY = 'nexus_import_image_mode';
+const importImageMode = ref<'original' | 'compressed'>(
+  (() => { try { return localStorage.getItem(IMPORT_MODE_KEY) === 'original' ? 'original' : 'compressed'; } catch { return 'compressed'; } })(),
+);
+const setImportImageMode = (m: 'original' | 'compressed') => {
+  importImageMode.value = m;
+  try { localStorage.setItem(IMPORT_MODE_KEY, m); } catch { /* 配额满：本次会话内仍生效 */ }
+};
+// 导入结果摘要：导入完成后展示「进了什么 + 哪几张没成」，替代一句一闪而过的 toast
+const importResult = ref<null | {
+  pages: number; blocks: number; overwritten: number; reclaimed: number; recovered: number; pending: number;
+  roots: Array<{ id: string; title: string; blocks: number }>;
+  issues: Array<{ title: string; block: number; pageId: string; taskId: string }>;
+}>(null);
+// 侧边栏/正文的临时高亮：告诉用户「这批是刚进来的」「就是这一块」
+const highlightPageIds = ref<Set<string>>(new Set());
+const highlightTaskId = ref<string | null>(null);
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+const armHighlight = () => {
+  if (highlightTimer) clearTimeout(highlightTimer);
+  highlightTimer = setTimeout(() => {
+    highlightPageIds.value = new Set();
+    highlightTaskId.value = null;
+  }, 3000);
+};
 
 const openNotionImportWizard = () => {
   settingsOpen.value = false;   // 先关设置面板，避免其盖在导入向导之上
@@ -2697,11 +3066,14 @@ const openNotionImportWizard = () => {
   importGroups.value = [];
   importSelected.value = new Set();
   importConflictIds.value = new Set();
+  importOverwrite.value = false;
+  importResult.value = null;
   importWizardMsg.value = '';
 };
 const closeNotionImportWizard = () => {
   importWizardOpen.value = false;
   importPreview.value = null;
+  importResult.value = null;
   importLoading.value = false;
   importWizardMsg.value = '';
 };
@@ -2718,7 +3090,7 @@ const onImportFilePicked = async (e: Event) => {
   let imageVerifyFailures = 0;
   const verifyFailures: Array<{ title: string; block: number }> = [];
   for (const file of files) {
-    const res = await previewNotionZip(file);
+    const res = await previewNotionZip(file, { imageMode: importImageMode.value });
     if (res.ok && res.pages && res.pages.length > 0) {
       groups.push({ file: file.name, pages: res.pages });
       imageFailures += res.imageFailures ?? 0;
@@ -2745,18 +3117,33 @@ const onImportFilePicked = async (e: Event) => {
     sources: groups.map((g) => ({ file: g.file, count: g.pages.length, error: g.error })),
   };
   importGroups.value = groups;
-  // 同名去重：标题在「现有存活页 ∪ 已出现的待导入页」中重复的，默认不勾选并标「已存在」，
-  // 每个标题只保留第一份（跨文件也生效）；空标题不参与去重。用户仍可手动勾选建副本。
-  const seenTitles = new Set(pages.value.filter((p) => !p.deletedAt).map((p) => (p.title || '').trim()));
+  // 文档级去重预览：标题（去大小写/空白）或「标题+内容」指纹与现有页/已选页重复的，标记「已存在」
+  // 并默认不勾选——避免反复导入同一批 zip 时又默默造出副本。空标题不参与（都允许导入）。
+  const seenTitles = new Set<string>();
+  const seenFp = new Set<string>();
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    seenTitles.add((p.title || '').trim().toLowerCase());
+    seenFp.add(docFingerprint(p));
+  }
   const conflict = new Set<string>();
   for (const p of allPages) {
-    const t = (p.title || '').trim();
+    const t = (p.title || '').trim().toLowerCase();
+    const fp = docFingerprint(p);
     if (!t) continue;                 // 空标题不参与去重（都允许导入）
-    if (seenTitles.has(t)) conflict.add(p.id);
-    else seenTitles.add(t);
+    if (seenFp.has(fp) || seenTitles.has(t)) conflict.add(p.id);
+    else { seenTitles.add(t); seenFp.add(fp); }
   }
   importConflictIds.value = conflict;
-  importSelected.value = new Set(allPages.map((p) => p.id).filter((id) => !conflict.has(id)));
+  // 默认勾选：同名冲突页不勾；**祖先里有冲突页的整棵子树也不勾**——
+  // 否则子页导进来 parentId 指向一个没导入的父页，在侧边栏里是隐形的。
+  const defaultSel = new Set<string>();
+  for (const p of allPages) {
+    if (conflict.has(p.id)) continue;
+    if (importAncestorIds(p.id).some((a) => conflict.has(a))) continue;
+    defaultSel.add(p.id);
+  }
+  importSelected.value = defaultSel;
   importWizardMsg.value = '';
 };
 // 依据 parentId 计算某页在预览树里的深度（带环保护）
@@ -2773,9 +3160,97 @@ const importDepth = (p: Page): number => {
   }
   return d;
 };
+// 以当前预览树为准，取某页的整棵子树（含自身）。勾选/取消都要沿树级联，
+// 否则「父没选、子选了」导入后 parentId 指向不存在的页 → 在侧边栏树里永远不显示。
+const importSubtreeIds = (id: string): string[] => {
+  const pages = importPreview.value?.pages ?? [];
+  const byParent = new Map<string, Page[]>();
+  for (const p of pages) {
+    const k = p.parentId ?? '';
+    if (!byParent.has(k)) byParent.set(k, []);
+    byParent.get(k)!.push(p);
+  }
+  const out: string[] = [];
+  const stack = [id];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    out.push(cur);
+    for (const c of byParent.get(cur) ?? []) stack.push(c.id);
+  }
+  return out;
+};
+// 某页的全部祖先 id（自下而上，带环保护）
+const importAncestorIds = (id: string): string[] => {
+  const byId = new Map((importPreview.value?.pages ?? []).map((p) => [p.id, p]));
+  const out: string[] = [];
+  let cur = byId.get(id);
+  const guard = new Set<string>();
+  while (cur?.parentId && byId.has(cur.parentId) && !guard.has(cur.id)) {
+    guard.add(cur.id);
+    out.push(cur.parentId);
+    cur = byId.get(cur.parentId);
+  }
+  return out;
+};
 const toggleImportSelect = (id: string) => {
+  const willCheck = !importSelected.value.has(id);
   const s = new Set(importSelected.value);
-  if (s.has(id)) s.delete(id); else s.add(id);
+  if (willCheck) {
+    for (const x of importSubtreeIds(id)) s.add(x);
+    // 勾子必须连祖先一起勾：只勾子页的话，导进来就是侧边栏里看不见的孤儿
+    for (const a of importAncestorIds(id)) s.add(a);
+  } else {
+    for (const x of importSubtreeIds(id)) s.delete(x);
+  }
+  importSelected.value = s;
+};
+// 让导入的页面在侧边栏「看得见」：展开自身与整条父链 + 短暂高亮 + 滚动进视口。
+// 它们被追加在私人列表末尾，不做这一步的话用户根本看不到新内容落在哪。
+const revealImportedPages = (ids: string[]) => {
+  if (ids.length === 0) return;
+  for (const id of ids) {
+    let cur = pages.value.find((p) => p.id === id);
+    let guard = 0;
+    while (cur && guard++ < 50) {
+      cur.isExpanded = true;
+      cur = cur.parentId ? pages.value.find((p) => p.id === cur!.parentId) : undefined;
+    }
+  }
+  highlightPageIds.value = new Set(ids);
+  armHighlight();
+  nextTick(() => {
+    document.querySelector(`[data-page-node="${ids[0]}"]`)?.scrollIntoView({ block: 'nearest' });
+  });
+};
+// 从结果摘要跳到某个导入页
+const gotoImportedPage = (id: string) => {
+  closeNotionImportWizard();
+  if (id) selectPage(id);
+};
+// 从「第 N 块没存上」跳到具体那一块并高亮
+const gotoImportIssue = (iss: { pageId: string; taskId: string }) => {
+  closeNotionImportWizard();
+  if (!iss.pageId) return;
+  selectPage(iss.pageId);
+  if (!iss.taskId) return;
+  nextTick(() => {
+    scrollTaskIntoView(iss.taskId);
+    highlightTaskId.value = iss.taskId;
+    armHighlight();
+  });
+};
+// 覆盖同名页开关：连带把「已存在」的那几页（含其子树）选上/取消——
+// 勾了却没选它们的话什么也不会发生，是最容易让人以为「重新导入没生效」的坑。
+// 子树也要一起：只覆盖父页的话，子页还是旧内容。
+const toggleImportOverwrite = () => {
+  importOverwrite.value = !importOverwrite.value;
+  const s = new Set(importSelected.value);
+  for (const id of importConflictIds.value) {
+    for (const x of importSubtreeIds(id)) {
+      if (importOverwrite.value) s.add(x);
+      else s.delete(x);
+    }
+  }
   importSelected.value = s;
 };
 const toggleImportSelectAll = () => {
@@ -2789,13 +3264,34 @@ const confirmNotionImport = async () => {
   const chosen = importPreview.value.pages.filter((p) => importSelected.value.has(p.id));
   if (chosen.length === 0) { importWizardMsg.value = '请先勾选要导入的页面'; return; }
   importLoading.value = true;
-  const res = await commitImportPages(chosen);
+  const res = await commitImportPages(chosen, { overwriteSameTitle: importOverwrite.value, imageMode: importImageMode.value });
   importLoading.value = false;
   if (res.ok) {
-    closeNotionImportWizard();
-    // 跳到导入结果的根页面（其父不在所选集合里的第一个）
-    const root = chosen.find((p) => !chosen.some((q) => q.id === p.parentId)) ?? chosen[0];
-    if (root) selectPage(root.id);
+    // 展开 + 高亮 + 滚动，让新内容在侧边栏里看得见
+    revealImportedPages(res.importedIds);
+    // 有覆盖、或有没落库的图，就留在结果面板里说清楚；全绿才直接关掉，不打扰。
+    // 覆盖过也要展示：否则用户无从知道「覆盖到底生效没有」（覆盖 0 个 = 其实一份都没匹配上）。
+    if (res.overwritten > 0 || res.imageVerifyFailures > 0 || res.pending > 0) {
+      importResult.value = {
+        pages: chosen.length,
+        blocks: res.blocks,
+        overwritten: res.overwritten,
+        reclaimed: res.reclaimed,
+        recovered: res.recovered,
+        pending: res.pending,
+        roots: res.roots,
+        issues: res.verifyFailures,
+      };
+      importPreview.value = null; // 已导入：清掉预览，避免重复提交
+      importGroups.value = [];
+      importWizardMsg.value = '';
+    } else {
+      closeNotionImportWizard();
+    }
+    // 跳转必须用**最终落地 id**：覆盖模式下导入时的临时 id 已被旧页 id 取代，
+    // 拿临时 id 去 selectPage 会命中「页面不存在」的兜底 → 表现就是跳到私人列表第一篇。
+    const target = res.rootId ?? chosen[0]?.id ?? null;
+    if (target) selectPage(target);
   } else {
     importWizardMsg.value = res.message;
   }
@@ -3185,18 +3681,30 @@ const deleteSelectionContents = (): boolean => {
   return true;
 };
 
-// 状态同步
-watch(() => activePage.value?.tasks, () => {
+// 状态同步（DOM <- 数据）
+// 原本是 watch(activePage.tasks, ..., { deep: true })：每次击键都要深遍历整份 tasks
+// （基准页 1418 块，逐属性登记依赖），回调还要遍历全部块做 innerHTML 比对——是击键耗时的大头之一。
+// 打字路径本身是「DOM -> 数据」，并不需要回写；真正需要回写的只有「代码改了 content 却没动 DOM」
+// 的场景（斜杠命令清空、@ 页面链接插入、块类型转换、撤销/恢复/远端合并），而这些块必然是已挂载的块。
+// 因此只订阅「已挂载块的 content 快照」，并按下标比对，只对内容真的变了的块读一次 innerHTML。
+const syncDomFromTasks = (cur?: string[], prev?: string[]) => {
   nextTick(() => {
-    if (!activePage.value) return;
-    activePage.value.tasks.forEach(task => {
-      const el = inputRefs.value[task.id]; 
-      if (el && el.innerHTML !== task.content && EDITABLE_TYPES.includes(task.type)) {
-          el.innerHTML = task.content; 
-      }
-    });
+    const list = displayTasks.value;
+    for (let i = 0; i < list.length; i++) {
+      if (prev && cur && prev.length === cur.length && prev[i] === cur[i]) continue;
+      const task = list[i];
+      const el = inputRefs.value[task.id];
+      if (el && el.innerHTML !== task.content && EDITABLE_TYPES.includes(task.type)) el.innerHTML = task.content;
+    }
   });
-}, { deep: true, immediate: true });
+};
+watch(
+  () => displayTasks.value.map((t: Task) => t.content),
+  (cur, prev) => syncDomFromTasks(cur, prev),
+  { immediate: true }
+);
+// 切页：整页 DOM 重建，prev 为空则全量比对一次
+watch(activePageId, () => syncDomFromTasks());
 
 // 设置焦点到指定行的指定位置
 const setFocusConfig = (id: string | null, pos: any) => {
@@ -3207,6 +3715,8 @@ watch(focusConfig, (newVal) => {
   if (!newVal.id) return;
   const id = newVal.id;
   const attempt = (): boolean => {
+    // 静默窗口内不抢焦点（刚进入文档页）；返回 true 以阻止后续延迟重试再聚焦。
+    if (Date.now() < suppressAutoFocusUntil) return true;
     const el = inputRefs.value[id];
     if (el) { el.focus(); if (newVal.pos !== null) setCaretPosition(el, newVal.pos); return true; }
     return false;
@@ -3243,6 +3753,16 @@ const selectedMediaId = ref<string | null>(null);
 const previewImageUrl = ref<string | null>(null);
 const openImagePreview = (url: string) => { previewImageUrl.value = url; };
 const closeImagePreview = () => { previewImageUrl.value = null; };
+// 放大是显式入口了，就得能顺手退出：Esc 关闭（捕获阶段拦截，避免被别的浮层逻辑抢走）
+const onPreviewKeydown = (e: KeyboardEvent) => {
+  if (e.key !== 'Escape') return;
+  e.stopPropagation();
+  closeImagePreview();
+};
+watch(previewImageUrl, (v) => {
+  if (v) window.addEventListener('keydown', onPreviewKeydown, true);
+  else window.removeEventListener('keydown', onPreviewKeydown, true);
+});
 
 
 // 删除块后把光标交还给相邻的可编辑块。

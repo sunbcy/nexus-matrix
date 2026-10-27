@@ -51,7 +51,9 @@ const escapeHtml = (s: string) =>
 const isSafeHref = (href: string): boolean => {
   const m = /^([a-z][a-z0-9+.-]*):/i.exec(href);
   if (!m) return true;                          // 无协议：相对路径 / 锚点
-  return /^(https?|mailto):$/i.test(m[1]);
+  // 注意 m[1] 是不含冒号的协议名（"https"），所以下面的正则不能再写冒号，
+  // 否则 http/https/mailto 全被判成不安全、一律降级成 "#" —— 外链整片变死链。
+  return /^(https?|mailto)$/i.test(m[1]);
 };
 
 export const inlineToHtml = (text: string): string => {
@@ -92,6 +94,40 @@ export const inlineToHtml = (text: string): string => {
   while (out.indexOf('\u0000') !== -1 && guard++ < 10) {
     out = out.replace(/\u0000(\d+)\u0000/g, (_m, i) => stash[Number(i)]);
   }
+  return out;
+};
+
+/**
+ * 把一行里的图片挑出来，按出现顺序切成「文本段 / 图片段」。
+ *
+ * 为什么必须拆：inlineToHtml 的链接规则用 (?<!!) **刻意**排除了 ![...](...)，
+ * 而 INLINE_RULES 里也没有图片规则 —— 于是一行里图文混排时，整张图会原样当字面文本
+ * 留在正文里（正文显示成 `![图](a.png)` 这样一串字符），图片内容等于丢了。
+ *
+ * 为什么不改成往正文里塞 <img src="asset:...">：正文 HTML 是直接 innerHTML 进
+ * contenteditable 的，只有 image 块会走 payload.url -> resolveAsset 的解析链路，
+ * 正文里的 asset: 引用没人解析，结果是另一批破图。
+ * Notion 的图片本来就是独立块，拆成独立 image 块既还原语义，又复用现有渲染链路。
+ */
+const INLINE_IMG_SRC = /!\[([^\]]*)\]\(([^)]+)\)|<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/i;
+const splitInlineImages = (line: string): Array<{ kind: 'text'; text: string } | { kind: 'image'; alt: string; src: string }> => {
+  const out: Array<{ kind: 'text'; text: string } | { kind: 'image'; alt: string; src: string }> = [];
+  const re = new RegExp(INLINE_IMG_SRC.source, 'gi');
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    const before = line.slice(last, m.index).trim();
+    if (before) out.push({ kind: 'text', text: before });
+    if (m[3] !== undefined) {
+      // HTML <img>：alt 有可能带在标签上，取不到就留空
+      out.push({ kind: 'image', alt: /\balt\s*=\s*["']([^"']*)["']/i.exec(m[0])?.[1] ?? '', src: m[3] });
+    } else {
+      out.push({ kind: 'image', alt: m[1] ?? '', src: m[2] });
+    }
+    last = m.index + m[0].length;
+  }
+  const tail = line.slice(last).trim();
+  if (tail) out.push({ kind: 'text', text: tail });
   return out;
 };
 
@@ -297,20 +333,30 @@ export const parseMarkdown = (md: string): ImportResult => {
       continue;
     }
 
-    // 图片行（单独一行时成为图片块）
-    const img = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(t);
-    if (img) {
-      blocks.push({
-        type: 'image',
-        content: '',
-        indentLevel: indent,
-        payload: { url: img[2].trim(), alt: img[1], pendingDownload: !/^(data:|blob:)/.test(img[2].trim()) },
-      });
-      i++;
-      continue;
+    // 图片（整行一张、或段内图文混排，都在这里拆成独立块）
+    if (/!\[[^\]]*\]\([^)]+\)|<img\b/i.test(t)) {
+      const segs = splitInlineImages(t);
+      if (segs.length > 0) {
+        for (const seg of segs) {
+          if (seg.kind === 'image') {
+            const src = seg.src.trim();
+            if (!src) continue;
+            blocks.push({
+              type: 'image',
+              content: '',
+              indentLevel: indent,
+              payload: { url: src, alt: seg.alt, pendingDownload: !/^(data:|blob:)/.test(src) },
+            });
+          } else {
+            blocks.push({ type: 'text', content: inlineToHtml(seg.text), indentLevel: indent });
+          }
+        }
+        i++;
+        continue;
+      }
     }
 
-    // HTML <img>（Notion 有时直接嵌标签）
+    // HTML <img>（走到这里的都是没被上面拆出 src 的，例如 <img> 缺 src）
     if (/^<img\b/i.test(t)) {
       const src = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(t);
       if (src) {

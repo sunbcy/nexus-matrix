@@ -10,9 +10,31 @@
 // 另外要处理 Notion 的图片第二种形态：S3 预签名外链（带 X-Amz-Signature），
 // 签名过期后会 403。这里同样在导入时立即下载转 Base64，不留外链。
 
-import type {Page} from './useSync';
+import type {ImportAssetIssue, Page} from './useSync';
 import {newBlockId, newPageId} from './ids';
-import {saveImageAsset, getAsset} from './assets';
+import {clearAssetMissing, getAsset, type ImageSaveOptions, saveImageAssetWithBlob, verifyAssetOrRetry} from './assets';
+
+/**
+ * 导入选项。
+ * imageMode='original' 时图片原样落库（不缩放、不重编码）——ZIP 里本来就是
+ * 用户自己的文件，很多场景（扫描书页、带小字的截图）要的就是原图，
+ * 默认压缩会把 3072×4096 缩到 900×1200 再压成 JPEG 0.82，图就不是原来那张了。
+ */
+export interface ZipImportOptions {
+  imageMode?: 'original' | 'compressed';
+}
+const saveOptsOf = (opts?: ZipImportOptions): ImageSaveOptions =>
+  (opts?.imageMode === 'original' ? { original: true } : {});
+
+/** 导入后落库复核的结果 */
+export interface AssetCheckReport {
+  /** 引用已写进页面、但本地 store 里读不回来的（刷新后必破图）——「第 N 张没存上」 */
+  missing: ImportAssetIssue[];
+  /** 本次后台补下载并成功落库的张数 */
+  recovered: number;
+  /** 仍未落库、暂留原链接的张数（远程外链为主，网络恢复后可再试） */
+  pending: number;
+}
 
 export interface ZipImportResult {
   pages: Page[];
@@ -22,8 +44,8 @@ export interface ZipImportResult {
   imageFailures: number;
   /** 落库校验失败的图片数（写进本地 store 后读不回） */
   imageVerifyFailures: number;
-  /** 具体哪些没存上：[{ 页面标题, 第几个块 }]，用于明确提示「第 N 张图没存上」 */
-  verifyFailures: Array<{ title: string; block: number }>;
+  /** 具体哪些没存上（含定位用的 pageId/taskId），用于明确提示与一键跳转 */
+  verifyFailures: ImportAssetIssue[];
 }
 
 const decoder = new TextDecoder();
@@ -45,6 +67,14 @@ const mimeOf = (name: string): string => {
 };
 
 const isImageName = (name: string) => /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(name);
+
+// ZIP 里存的是真实文件名，而 md 正文里的引用常是百分号编码（Notion 导出一贯如此：
+// 代码里页链接用的 linkKey() 早就解码了，图片这条路径此前没解）。
+// 不解码的话，中文标题页面（如「一些很棒的书」）的图片几乎必然 miss ——
+// 完整路径匹配不上，basename 兜底也匹配不上，最后只剩一张破图。
+const safeDecode = (s: string): string => {
+  try { return decodeURIComponent(s); } catch { return s; } // 非法百分号序列：原样返回
+};
 
 // Notion 导出的 .md 文件名末尾会追加一个内部页面 id（如「会议记录 1a2b…5o6p.md」）。
 // 它是 Notion 的标识、不属于标题，导入时必须去掉才能还原原标题。
@@ -85,7 +115,8 @@ const stripRootDir = (paths: string[]): string[] => {
   return paths.map((p) => (p.startsWith(root) ? p.slice(root.length) : p));
 };
 
-export const importZip = async (file: File): Promise<ZipImportResult | null> => {
+export const importZip = async (file: File, opts?: ZipImportOptions): Promise<ZipImportResult | null> => {
+  const saveOpts = saveOptsOf(opts);
   // 动态 import：fflate 约 8KB gzip，但 ZIP 导入是低频操作
   const { unzipSync } = await import('fflate');
 
@@ -104,6 +135,15 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
   // 剥离后路径 -> 文件字节
   const fileMap = new Map<string, Uint8Array>();
   originalPaths.forEach((orig, i) => fileMap.set(entries[i], raw[orig]));
+
+  // 图片 basename -> 包内路径。目录前缀靠不住（有的导出带、有的不带），
+  // 所以除了按完整路径找，还要能只凭文件名兜底命中。
+  const imageByName = new Map<string, string>();
+  for (const p of entries) {
+    if (!isImageName(p)) continue;
+    const k = safeDecode(p.slice(p.lastIndexOf('/') + 1)).toLowerCase();
+    if (!imageByName.has(k)) imageByName.set(k, p);
+  }
 
   const mdPaths = entries.filter((p) => /\.md$/i.test(p));
 
@@ -133,7 +173,10 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
   const pageIdByPath = new Map<string, string>();
   const report: ZipImportResult['report'] = [];
   let imageFailures = 0;
-  const verifyFailures: Array<{ title: string; block: number }> = [];
+  const verifyFailures: ImportAssetIssue[] = [];
+  // asset 引用 -> 真正落库的那份 Blob。终检发现「引用在、blob 不在」时，
+  // 靠它就地把图补回去，而不是只能报一句没存上。导入结束即释放。
+  const blobByRef = new Map<string, Blob>();
 
   // 先按路径深度排序，保证父页面先创建（parentId 引用时已存在）
   const sorted = [...mdByPath.values()].sort((a, b) => a.path.split('/').length - b.path.split('/').length);
@@ -153,6 +196,9 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
     const fromName = stripNotionId(entry.base.replace(/\.md$/i, ''));
     const title = fromName || (stripNotionId(firstH1?.content.replace(/<[^>]+>/g, '') || '') || '导入的文档');
 
+    // 页面 id 提前生成：图片失败明细要记 pageId，供结果面板「跳到那一块」
+    const id = newPageId();
+
     // 图片处理：包内相对路径与远程 URL 都转为**独立资产**，页面只留 asset: 引用。
     // （此前是转 Base64 内联进 payload.url，会让整页广播与存储配额暴涨。）
     let images = 0;
@@ -166,24 +212,35 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
       if (/^https?:\/\//i.test(url)) {
         blob = await fetchAsBlob(url);
       } else {
-        // 相对路径：按 md 所在目录解析（支持 ./ 与 ../）
+        // 相对路径：按 md 所在目录解析（支持 ./ 与 ../）。
+        // md 里的引用可能是百分号编码的，而 ZIP 条目是真实字符，故两种写法都要试。
         const clean = url.split(/[?#]/)[0];
-        const abs = resolveRelative(entry.dir, clean);
-        const hit = fileMap.get(abs);
-        if (hit) {
-          blob = new Blob([new Uint8Array(hit)], { type: mimeOf(abs) });
+        const decoded = safeDecode(clean);
+        const candidates = [
+          resolveRelative(entry.dir, clean),
+          resolveRelative(entry.dir, decoded),
+          clean,
+          decoded,
+        ];
+        let hitPath: string | undefined;
+        for (const c of candidates) {
+          if (fileMap.has(c)) { hitPath = c; break; }
+        }
+        if (hitPath) {
+          blob = new Blob([new Uint8Array(fileMap.get(hitPath)!)], { type: mimeOf(hitPath) });
         } else {
-          // 文件名兜底：有些导出不带目录前缀，直接按 basename 找
-          const base = clean.slice(clean.lastIndexOf('/') + 1);
-          const byBase = entries.find((p) => p.slice(p.lastIndexOf('/') + 1) === base && isImageName(p));
+          // 文件名兜底：有些导出不带目录前缀，直接按 basename 找（同样要解码后比对）
+          const base = safeDecode(clean.slice(clean.lastIndexOf('/') + 1)).toLowerCase();
+          const byBase = imageByName.get(base);
           if (byBase) blob = new Blob([new Uint8Array(fileMap.get(byBase)!)], { type: mimeOf(byBase) });
         }
       }
 
       if (blob) {
         try {
-          // saveImageAsset 内部已「写入→读回校验→同 id 重试」，真正没落库会抛错
-          const ref = await saveImageAsset(blob);
+          // saveImageAssetWithBlob 内部已「写入→读回校验→同 id 重试」，真正没落库会抛错
+          const { ref, blob: stored } = await saveImageAssetWithBlob(blob, saveOpts);
+          blobByRef.set(ref, stored);
           // 必须显式清掉 pendingDownload：parseMarkdown 会预置该标记，
           // 只覆盖 url 会让它残留为 true，导致编辑器仍把它当作待下载的外链
           b.payload = { ...b.payload, url: ref, alt: b.payload?.alt ?? '', pendingDownload: false };
@@ -192,7 +249,7 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
           // 落库校验失败：保留原 URL + 标记待下载（内容不丢），并记录以便明确提示「第 N 张没存上」
           b.payload = { ...b.payload, pendingDownload: true };
           imageFailures++;
-          verifyFailures.push({ title, block: bi + 1 });
+          verifyFailures.push({ title, block: bi + 1, pageId: id, taskId: '' });
         }
       } else {
         // 下载/查找失败：保留原 URL 并标记，至少内容不丢
@@ -205,7 +262,6 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
     const parentPath = ownerMdOfDir(entry.dir, entry.path);
     const parentId = parentPath ? pageIdByPath.get(parentPath) ?? null : null;
 
-    const id = newPageId();
     pageIdByPath.set(entry.path, id);
 
     const tasks = blocks.map((b) => ({
@@ -218,6 +274,11 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
       payload: b.payload,
     }));
     tasks.forEach((t, i) => { t.prevId = i === 0 ? null : tasks[i - 1].id; });
+
+    // 块 id 是建 tasks 时才生成的，这里回填到失败明细上（blocks 与 tasks 一一对应、同序）
+    for (const f of verifyFailures) {
+      if (f.pageId === id && !f.taskId) f.taskId = tasks[f.block - 1]?.id ?? '';
+    }
 
     pages.push({
       id,
@@ -237,7 +298,8 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
   resolveImportedPageLinks(pages, pageIdByPath);
 
   // 落库终检：对每个 asset: 引用读回校验，捕捉「保存时成功、之后又丢」的罕见情况。
-  // 保存时已 3 次重试，这里只是导入结束前的兜底确认；读不回就记录下来明确提示，绝不静默留下死引用。
+  // 与保存时的重试不同，这里手里还有原始 blob —— 读不回先就地补写（verifyAssetOrRetry），
+  // 补回来就从失败列表里撤掉，补不回才记录「第 N 张没存上」。绝不静默留下死引用。
   for (const p of pages) {
     const tasks = p.tasks ?? [];
     for (let ti = 0; ti < tasks.length; ti++) {
@@ -246,12 +308,67 @@ export const importZip = async (file: File): Promise<ZipImportResult | null> => 
       if (t.type === 'image' && typeof t.payload?.url === 'string' && t.payload.url.startsWith('asset:')) refs.push(t.payload.url);
       if (t.content) { const m = t.content.match(/asset:[0-9a-fA-F-]+/g); if (m) refs.push(...m); }
       for (const ref of [...new Set(refs)]) {
-        if (!(await getAsset(ref))) verifyFailures.push({ title: p.title, block: ti + 1 });
+        if (await getAsset(ref)) { clearAssetMissing(ref); continue; }
+        const blob = blobByRef.get(ref);
+        if (blob && (await verifyAssetOrRetry(ref, blob))) { clearAssetMissing(ref); continue; }
+        verifyFailures.push({ title: p.title, block: ti + 1, pageId: p.id, taskId: t.id });
       }
     }
   }
 
+  blobByRef.clear(); // 归还内存：解析阶段结束了，blob 不必再留着
+
   return { pages, report, imageFailures, imageVerifyFailures: verifyFailures.length, verifyFailures };
+};
+
+/**
+ * 提交后的落库复核（「确保不缺」的最后一道闸）。
+ *
+ * 与 importZip 结尾的终检分工不同：那时手里还有 ZIP 里的原始字节，能就地补写；
+ * 提交时原文件早已释放，所以这里做两件仍做得到的事：
+ *   1) 复验所有 asset: 引用是否真的还在本地 store —— 不在的就是「第 N 张没存上」，如实报出来；
+ *   2) 对仍挂着 pendingDownload 的**远程外链**，后台再下一次并落库（网络抖动是最常见的可恢复原因）。
+ *      相对路径的图在 ZIP 释放后已无从下载，不计入可恢复，只算 pending。
+ *
+ * 会**就地修改**传入的页面块（补成功的图会把 url 换成 asset: 并清掉 pendingDownload），
+ * 调用方需要在之后触发一次落盘。
+ */
+export const verifyImportedAssets = async (pages: Page[], opts?: ZipImportOptions): Promise<AssetCheckReport> => {
+  const missing: ImportAssetIssue[] = [];
+  let recovered = 0;
+  let pending = 0;
+
+  for (const p of pages) {
+    const tasks = p.tasks ?? [];
+    for (let ti = 0; ti < tasks.length; ti++) {
+      const t = tasks[ti];
+      if (t.type !== 'image') continue;
+      const url = String(t.payload?.url ?? '').trim();
+      if (!url) continue;
+
+      if (url.startsWith('asset:')) {
+        if (!(await getAsset(url))) missing.push({ title: p.title, block: ti + 1, pageId: p.id, taskId: t.id });
+        continue;
+      }
+      if (!t.payload?.pendingDownload) continue;
+
+      let fixed = false;
+      if (/^https?:\/\//i.test(url)) {
+        const blob = await fetchAsBlob(url);
+        if (blob) {
+          try {
+            const { ref } = await saveImageAssetWithBlob(blob, saveOptsOf(opts));
+            t.payload = { ...t.payload, url: ref, pendingDownload: false };
+            recovered++;
+            fixed = true;
+          } catch { /* 存不进去：按未恢复处理，保留原外链 */ }
+        }
+      }
+      if (!fixed) pending++;
+    }
+  }
+
+  return { missing, recovered, pending };
 };
 
 /**
