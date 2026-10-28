@@ -1,29 +1,43 @@
 import asyncio
+import base64
 import json
 import logging
 import os
-import sqlite3
-import threading
+import time
 from datetime import datetime, timezone
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Dict
+from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from typing import Dict, List, Optional
+
+import monitor
+from db import create_database
+from keys import get_allowed_keys, validate
 
 # 初始化日志记录系统
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("NexusSync")
 
+#: 服务版本，/api/health 会带回，便于确认线上跑的是哪份产物
+VERSION = "1.0.0"
+#: 进程启动时间，用于计算 uptime
+START_TIME = time.time()
+
 # ============================================================
-# 轻量共享密钥鉴权（阶段四：穿透 / 上云前置）
-# 仅当环境变量 NEXUS_API_KEY 非空时强制校验；为空（默认 / 纯本地模式）则完全开放，
-# 向后兼容现有局域网用法。REST 经全局依赖校验，WS 在握手阶段校验。
+# 多租户鉴权（阶段四：上云 / 公网服务）
+# ------------------------------------------------------------
+# 每个 key = 一个独立租户房间(room)；room = sha256(key)。
+# 相同 key 的多台设备属于同一用户 → 互相实时同步；不同 key 之间数据完全隔离。
+# 密钥的加载 / 校验 / 吊销统一由 keys.py 负责（改 keys.json 热生效）。
+#
 # 客户端把密钥放在：REST → `Authorization: Bearer <key>` 或 `?api_key=<key>`；
-#                    WS   → 握手 query `?api_key=<key>`（浏览器 WebSocket 无法自定义 header）。
+#                   WS   → 握手 query `?api_key=<key>`（浏览器 WS 不能自定义 header）。
 # ============================================================
-API_KEY = (os.getenv("NEXUS_API_KEY") or "").strip()
 
 
 def _extract_token(authorization: str, api_key: str) -> str:
+    """从 Authorization 头或 ?api_key= query 里取出密钥。"""
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
     if api_key:
@@ -31,44 +45,67 @@ def _extract_token(authorization: str, api_key: str) -> str:
     return ""
 
 
-async def _require_key(
+def get_room(
     authorization: str = Header(default=""),
     api_key: str = Query(default="", alias="api_key"),
-) -> None:
-    if not API_KEY:
-        return  # 未启用鉴权 → 开放
+) -> str:
+    """REST 路由依赖：校验密钥并解析出当前请求的 room。
+    未配置任何 key 时返回 PUBLIC_ROOM（开放模式）；启用鉴权后非法 key 返回 401。"""
     token = _extract_token(authorization, api_key)
-    if not token or token != API_KEY:
+    room = validate(token)
+    if room is None:
         raise HTTPException(status_code=401, detail="Unauthorized: missing or invalid API key")
+    return room
 
 
-app = FastAPI(title="Nexus Matrix Sync Server", dependencies=[Depends(_require_key)])
+# CORS：默认放开（兼容本地 / 内网），公网部署请用 CORS_ORIGINS 收紧到具体前端源。
+# 注意：allow_origins=["*"] 时不能带 credentials（浏览器拒绝），故二者联动。
+_raw_origins = (os.getenv("CORS_ORIGINS") or "*").strip()
+if _raw_origins == "*":
+    CORS_ORIGINS: List[str] = ["*"]
+else:
+    CORS_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
 
-# 允许本地和跨端的前端容器进行网络请求 (Cors)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 允许跨端（Tauri/Capacitor）的本地或远程源
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+_ALLOW_CREDENTIALS = CORS_ORIGINS != ["*"]
+
+app = FastAPI(title="Nexus Matrix Sync Server", version=VERSION)
+
+# 数据持久层：由 DATABASE_URL 决定 SQLite / Postgres，业务代码不感知
+db = create_database()
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await db.init()
+    entries = get_allowed_keys()
+    active = sum(1 for e in entries.values() if not e.get("revoked"))
+    mode = "开放(无鉴权)" if active == 0 else f"多租户(有效 key {active} 个)"
+    logger.info(f"[NEXUS] 版本={VERSION} 鉴权模式={mode} 后端={db.backend_name} CORS={CORS_ORIGINS}")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    await db.close()
+
+
+@app.middleware("http")
+async def _metrics_middleware(request: Request, call_next):
+    """计数 + 错误捕获：给 /api/health 的 metrics 提供素材。"""
+    monitor.record_request()
+    try:
+        response = await call_next(request)
+        if response.status_code >= 500:
+            monitor.record_error(f"{request.method} {request.url.path} -> {response.status_code}")
+        return response
+    except Exception as e:
+        monitor.record_error(f"{request.method} {request.url.path}: {e}")
+    raise
+
 
 # ============================================================
-# 持久化层：SQLite（零额外依赖，重启不丢数据）
-# 设计：服务端仅作同步中继，初始为空；数据由客户端 LocalFirst 上推。
+# 同步语义：时间戳归一化 / 水位戳 / 块级 LWW 合并
+# （存储细节全在 db.py，这里只管同步逻辑）
 # ============================================================
-# 阶段三 F8 修复：SQLite 连接被 FastAPI 线程池（REST）、WebSocket 事件循环（/ws/sync）、
-# 以及 _schedule_broadcast 经 asyncio.run_coroutine_threadsafe 跨线程触发的协程并发访问。
-# check_same_thread=False 只关闭了线程检查、并未提供并发安全，多线程序列执行同一连接
-# 可能导致 "SQLite objects created in a thread..." 或写竞争。此处用一把全局锁把所有
-# 对 _conn 的访问串行化（写串行 + 读串行），并保留 busy_timeout 作为兜底。
-_DB_PATH = os.getenv("DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "nexus.db"))
-_DB_LOCK = threading.Lock()
-_conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
-_conn.execute("PRAGMA busy_timeout=5000")
-_conn.execute("CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, data TEXT, updated_at TEXT)")
-# 阶段二资产同步：图片 Blob 单独入库，避免页面 JSON 携带 Base64 膨胀 payload。
-_conn.execute("CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, data BLOB, created_at TEXT)")
 
 
 def _now_iso() -> str:
@@ -80,23 +117,6 @@ def _norm_ts(ts) -> str:
     if isinstance(ts, (int, float)):
         return datetime.fromtimestamp(ts / 1000, timezone.utc).isoformat()
     return ts or _now_iso()
-
-
-def _save_page(page: Dict) -> None:
-    ts = _norm_ts(page.get("updatedAt"))
-    page["updatedAt"] = ts
-    with _DB_LOCK:
-        _conn.execute(
-            "INSERT OR REPLACE INTO pages (id, data, updated_at) VALUES (?, ?, ?)",
-            (page["id"], json.dumps(page, ensure_ascii=False), ts),
-        )
-        _conn.commit()
-
-
-def _delete_page(pid: str) -> None:
-    with _DB_LOCK:
-        _conn.execute("DELETE FROM pages WHERE id = ?", (pid,))
-        _conn.commit()
 
 
 def _ts_of(page: Dict) -> str:
@@ -112,12 +132,12 @@ def _ts_of(page: Dict) -> str:
     return _norm_ts(page.get("updatedAt"))
 
 
-# 阶段二 2.1/2.2：服务端水位戳（ms 数字）。
-# 取所有页 max(updatedAt, deletedAt) 的数值，作为「已确认高水位」基准。
-# 用于：CLIENT_UPDATE 后回 ACK 的 cursor；GET /pages?since= 的增量比较基准。
-def _water_mark() -> int:
+async def _water_mark(room: str, pages: Optional[List[Dict]] = None) -> int:
+    """该 room 的高水位戳（ms）。传入 pages 可复用已有数据，避免重复读库。"""
+    if pages is None:
+        pages = await db.load_pages(room)
     wm = 0
-    for p in pages_db:
+    for p in pages:
         ts = _ts_of(p)
         try:
             ms = int(datetime.fromisoformat(ts).timestamp() * 1000)
@@ -127,26 +147,10 @@ def _water_mark() -> int:
     return wm
 
 
-# 阶段二 2.3：图片资产存取（SQLite BLOB）。
-def _save_asset(aid: str, blob: bytes) -> None:
-    with _DB_LOCK:
-        _conn.execute(
-            "INSERT OR REPLACE INTO assets (id, data, created_at) VALUES (?, ?, ?)",
-            (aid, blob, _now_iso()),
-        )
-        _conn.commit()
-
-
-def _get_asset(aid: str):
-    with _DB_LOCK:
-        row = _conn.execute("SELECT data FROM assets WHERE id = ?", (aid,)).fetchone()
-    return row[0] if row else None
-
-
-def _delete_asset(aid: str) -> None:
-    with _DB_LOCK:
-        _conn.execute("DELETE FROM assets WHERE id = ?", (aid,))
-        _conn.commit()
+async def _persist_page(page: Dict, room: str) -> None:
+    """落库前统一归一化 updatedAt，保证 LWW 比较基准一致。"""
+    page["updatedAt"] = _norm_ts(page.get("updatedAt"))
+    await db.save_page(page, room)
 
 
 def _heal_prev_id_chain(tasks: List[Dict]) -> List[Dict]:
@@ -199,10 +203,10 @@ def _heal_chain(live: List[Dict]) -> List[Dict]:
 PAGE_SCALAR_FIELDS = ["title", "icon", "cover", "parentId", "isFavorite", "isExpanded"]
 
 
-def _merge_pages(incoming: List[Dict]) -> List[Dict]:
+def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]:
     """块级 LWW 合并，语义对齐前端 mergePages。
 
-    将 incoming（某客户端上推的页）合并进服务端现有 pages_db，而不是整页替换——
+    将 incoming（某客户端上推的页）合并进服务端「该 room 现有页」，而不是整页替换——
     这样「先到达服务端的设备编辑的块」不会被「后到的整页」覆盖，
     新设备 INITIAL_SYNC 拉到的才是块级合并后的真实状态。
 
@@ -211,7 +215,7 @@ def _merge_pages(incoming: List[Dict]) -> List[Dict]:
     - 块级：逐块比较 block.updatedAt，>= 取远端；本地缺失的块直接加入。
     阶段三 F7：合并后对每页 tasks 做 prevId 链自愈。
     """
-    existing = {p["id"]: p for p in pages_db}
+    existing = {p["id"]: p for p in existing_pages}
     merged: Dict[str, Dict] = {}
 
     def _scalar_lww(base: Dict, other: Dict) -> None:
@@ -296,106 +300,151 @@ def _merge_pages(incoming: List[Dict]) -> List[Dict]:
             p["tasks"] = _heal_prev_id_chain(p["tasks"])
     return list(merged.values())
 
-# 离线数据持久化池 - 页面数据结构（从 SQLite 恢复；初始为空，由客户端上推）
-pages_db: List[Dict] = [json.loads(r[0]) for r in _conn.execute("SELECT data FROM pages").fetchall()]
 
-# 兼容旧版单页数据结构
-in_memory_db: List[Dict] = [
-    { "id": "1", "type": "h1", "content": "NEXUS 协议核心目标", "completed": False },
-    { "id": "2", "type": "todo", "content": "本地优先分布式矩阵调试已启动", "completed": True },
-]
-
-# 核心：管理跨端（iOS/Android/桌面端）WebSocket 同接通道的管理器
+# ============================================================
+# WebSocket 连接管理：按 room 分桶，广播只发同 room 的设备（租户隔离核心）
+# ============================================================
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.rooms: Dict[str, List[WebSocket]] = {}
+        self._ws_room: Dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, room: str) -> None:
         await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"设备建立连接。在线设备总数: {len(self.active_connections)}")
-        await self.broadcast_device_count()
+        self.rooms.setdefault(room, []).append(websocket)
+        self._ws_room[websocket] = room
+        logger.info(f"设备建立连接 room={room[:8]}… 在线设备数: {len(self.rooms.get(room, []))}")
+        await self.broadcast_device_count(room)
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-        logger.info(f"设备断开连接。在线设备总数: {len(self.active_connections)}")
+    def disconnect(self, websocket: WebSocket) -> None:
+        room = self._ws_room.pop(websocket, None)
+        if room and websocket in self.rooms.get(room, []):
+            self.rooms[room].remove(websocket)
+            if not self.rooms[room]:
+                self.rooms.pop(room, None)
+        logger.info(
+            f"设备断开连接 room={(room or '?')[:8]}… "
+            f"在线设备数: {len(self.rooms.get(room, [])) if room else 0}"
+        )
 
     async def _send_or_drop(self, connection: WebSocket, message: str) -> None:
-        """向单个连接发送；失败即判定为死连接并移除（静默，不刷 error）。
-        同步场景下连接频繁建立/断开，向已断开连接 send 失败是常态，
-        只需清理掉以保持在线数准确，不应以 error 刷屏。"""
+        """向单个连接发送；失败即判定为死连接并移除（静默，不刷 error）。"""
         try:
             await connection.send_text(message)
         except Exception:
-            if connection in self.active_connections:
-                self.active_connections.remove(connection)
+            room = self._ws_room.get(connection)
+            if room and connection in self.rooms.get(room, []):
+                self.rooms[room].remove(connection)
 
-    async def broadcast_device_count(self):
-        # 向所有设备推送当前在线设备数（死连接由 _send_or_drop 顺手清理）
-        msg = json.dumps({"type": "DEVICE_COUNT", "data": len(self.active_connections)})
-        for connection in list(self.active_connections):
+    async def broadcast_device_count(self, room: str) -> None:
+        conns = self.rooms.get(room, [])
+        msg = json.dumps({"type": "DEVICE_COUNT", "data": len(conns)})
+        for connection in list(conns):
             await self._send_or_drop(connection, msg)
 
-    async def broadcast(self, message: str, sender: WebSocket):
-        # 广播数据给其他连接的客户端设备，排除发送者自身（防止回环反射）。
+    async def broadcast(self, message: str, room: str, sender: Optional[WebSocket] = None) -> None:
+        # 仅向同 room 的其它连接广播（排除发送者自身，防止回环反射）。
         # 用副本遍历 + _send_or_drop：避免遍历中移除导致跳过元素，并静默清理死连接。
-        for connection in list(self.active_connections):
+        for connection in list(self.rooms.get(room, [])):
             if connection != sender:
                 await self._send_or_drop(connection, message)
+        monitor.record_broadcast()
+
 
 manager = ConnectionManager()
 
-# 阶段一：REST 写操作（POST/PUT/DELETE）原本**不广播**，只有 WS 路径才广播，
-# 导致「在某端用 REST 删除/新增页面」后，其它已连接设备永远收不到变更，
-# 已删页还会被另一端下一次 CLIENT_UPDATE 推回来「复活」。
-# 这里在 REST 写后主动把最新全量广播出去。
-# 注意：FastAPI 的 sync def 路由跑在独立线程，不能直接 await；
-# 用模块级事件循环 + run_coroutine_threadsafe 跨线程投递广播协程。
-_event_loop: asyncio.AbstractEventLoop | None = None
 
-
-def _schedule_broadcast() -> None:
-    """REST 写操作后，把最新 pages_db 广播给所有已连接的 WebSocket 设备。"""
-    if not manager.active_connections:
-        return  # 没有在线设备时无需广播（数据已落 SQLite）
-    message = json.dumps({"type": "SERVER_BROADCAST", "data": pages_db})
-    # 同步 REST 端点在 worker 线程执行，线程内可能无事件循环；
-    # 此时 get_event_loop() 会抛 RuntimeError。无可用 loop 时安全跳过广播——
-    # 数据已落 SQLite，WebSocket 建连时的 INITIAL_SYNC 会把最新数据补发给对端。
-    loop = _event_loop
-    if loop is None:
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            return
-
-    async def _broadcast() -> None:
-        for connection in list(manager.active_connections):
-            await manager._send_or_drop(connection, message)
-
-    try:
-        asyncio.run_coroutine_threadsafe(_broadcast(), loop)
-    except RuntimeError:
-        # 事件循环尚未建立（首字节请求极早到达）——忽略，WS 连接建立时本就会发 INITIAL_SYNC
-        pass
+async def _broadcast_room(room: str) -> None:
+    """REST 写操作后，把该 room 最新数据广播给同 room 的 WS 设备。
+    没有在线设备时直接返回（数据已落库，新设备建连时会收到 INITIAL_SYNC 补发）。"""
+    if not manager.rooms.get(room):
+        return
+    pages = await db.load_pages(room)
+    await manager.broadcast(
+        json.dumps({"type": "SERVER_BROADCAST", "data": pages}), room=room
+    )
 
 
 @app.get("/")
 def read_root():
     return {"status": "ONLINE", "protocol": "NEXUS_SYNCHRONIZATION_MATRIX"}
 
-# REST API: 获取所有页面
+
+@app.get("/api/health")
+async def health(response: Response):
+    """健康检查 + 简单运行时指标。
+
+    刻意**不做鉴权**：负载均衡 / uptime 监控通常不带 API key。
+    因此这里只暴露聚合计数（页数 / 资产数 / 房间数 / 连接数 / 错误数），
+    不含任何用户内容，也不暴露 key。
+    """
+    db_error: Optional[str] = None
+    try:
+        db_ok = await db.ping()
+    except Exception as e:  # ping 内部已兜底，这里再兜一层
+        db_ok = False
+        db_error = str(e)
+        monitor.record_error(f"health ping: {e}")
+
+    room_count = len(manager.rooms)
+    conn_count = sum(len(v) for v in manager.rooms.values())
+
+    status = "ok" if db_ok else "degraded"
+    if status != "ok":
+        response.status_code = 503
+
+    return {
+        "status": status,
+        "version": VERSION,
+        "backend": db.backend_name,
+        "db": "up" if db_ok else "down",
+        "db_error": db_error,
+        "uptime_seconds": round(time.time() - START_TIME, 1),
+        "rooms": room_count,
+        "connections": conn_count,
+        "metrics": monitor.snapshot(),
+    }
+
+
+@app.get("/api/metrics")
+async def metrics_prometheus():
+    """Prometheus 文本格式（exposition format v0.0.4）的指标导出。
+
+    Prometheus 抓取配置示例：
+        scrape_configs:
+          - job_name: nexus
+            metrics_path: /api/metrics
+            static_configs:
+              - targets: ['127.0.0.1:8010']
+
+    同样**不做鉴权**，建议在反向代理层限制只允许内网 / 监控网访问。
+    """
+    try:
+        db_ok = await db.ping()
+    except Exception:
+        db_ok = False
+    extra: List[Dict[str, object]] = [
+        {"name": "nexus_db_up", "help": "数据库连通性（1=通，0=断）", "type": "gauge",
+         "value": 1.0 if db_ok else 0.0},
+        {"name": "nexus_rooms", "help": "当前在线房间数", "type": "gauge", "value": len(manager.rooms)},
+        {"name": "nexus_connections", "help": "当前 WebSocket 连接总数", "type": "gauge",
+         "value": sum(len(v) for v in manager.rooms.values())},
+    ]
+    return PlainTextResponse(
+        monitor.render_prometheus(extra),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
+# REST API: 获取某 room 的所有页面
 # 阶段二 2.2：支持 ?since=<ms 水位戳> 增量拉取。
-# since 为空 → 返回全量（首装/换设备）；since 非空 → 只返回比该水位更新的页
-# （任一 updatedAt 或 deletedAt 晚于 since）。前端用上次收到的 cursor 作 since，
-# 断线期间错过的变更得以补齐，无需每次传输整库。
 @app.get("/api/pages")
-def get_pages(since: int | None = None):
+async def get_pages(since: Optional[int] = None, room: str = Depends(get_room)):
+    pages = await db.load_pages(room)
     if since is None:
-        return {"success": True, "data": pages_db, "cursor": _water_mark()}
+        return {"success": True, "data": pages, "cursor": await _water_mark(room, pages)}
     changed = []
-    for p in pages_db:
+    for p in pages:
         ts = _ts_of(p)
         try:
             ms = int(datetime.fromisoformat(ts).timestamp() * 1000)
@@ -403,21 +452,23 @@ def get_pages(since: int | None = None):
             ms = 0
         if ms > since:
             changed.append(p)
-    return {"success": True, "data": changed, "cursor": _water_mark()}
+    return {"success": True, "data": changed, "cursor": await _water_mark(room, pages)}
+
 
 # REST API: 获取单个页面
 @app.get("/api/pages/{page_id}")
-def get_page(page_id: str):
-    for page in pages_db:
+async def get_page(page_id: str, room: str = Depends(get_room)):
+    for page in await db.load_pages(room):
         if page["id"] == page_id:
             return {"success": True, "data": page}
     return {"success": False, "error": "Page not found"}
 
+
 # REST API: 创建新页面
 @app.post("/api/pages")
-def create_page(page: Dict):
+async def create_page(page: Dict, room: str = Depends(get_room)):
     new_page = {
-        "id": page.get("id") or f"page-{len(pages_db) + 1}-{int(__import__('time').time())}",
+        "id": page.get("id") or f"page-{len(await db.load_pages(room)) + 1}-{int(time.time())}",
         "title": page.get("title", "未命名子程序"),
         "tasks": page.get("tasks", []),
         "updatedAt": _now_iso(),
@@ -426,53 +477,46 @@ def create_page(page: Dict):
     for k, v in page.items():
         if k not in new_page:
             new_page[k] = v
-    pages_db.append(new_page)
-    _save_page(new_page)
-    _schedule_broadcast()
+    await _persist_page(new_page, room)
+    await _broadcast_room(room)
     return {"success": True, "data": new_page}
+
 
 # REST API: 更新页面
 @app.put("/api/pages/{page_id}")
-def update_page(page_id: str, page: Dict):
-    for i, p in enumerate(pages_db):
+async def update_page(page_id: str, page: Dict, room: str = Depends(get_room)):
+    pages = await db.load_pages(room)
+    for p in pages:
         if p["id"] == page_id:
             # 墓碑优先：客户端若带 deletedAt，保留它（删除要能传播，不能被服务端时间盖掉）
             incoming = dict(page)
             if incoming.get("deletedAt"):
                 incoming["deletedAt"] = _norm_ts(incoming.get("deletedAt"))
-            pages_db[i] = {**p, **incoming, "updatedAt": _now_iso()}
-            _save_page(pages_db[i])
-            _schedule_broadcast()
-            return {"success": True, "data": pages_db[i]}
+            merged = {**p, **incoming, "updatedAt": _now_iso()}
+            await _persist_page(merged, room)
+            await _broadcast_room(room)
+            return {"success": True, "data": merged}
     return {"success": False, "error": "Page not found"}
 
-# REST API: 删除页面
-#
-# 阶段一：删除改为**墓碑**，不再真删行。
-# 原因：真删时另一端仍持有该页，其下一次 CLIENT_UPDATE 会把页面推回来「复活」；
-# 而且 DELETE 原本不广播，其它端永远不知道要删。
+
+# REST API: 删除页面（墓碑，不真删）
 @app.delete("/api/pages/{page_id}")
-def delete_page(page_id: str):
-    for i, p in enumerate(pages_db):
+async def delete_page(page_id: str, room: str = Depends(get_room)):
+    pages = await db.load_pages(room)
+    for p in pages:
         if p["id"] == page_id:
             p["deletedAt"] = _now_iso()
             p["updatedAt"] = p["deletedAt"]
-            _save_page(p)
-            _schedule_broadcast()
+            await _persist_page(p, room)
+            await _broadcast_room(room)
             return {"success": True, "message": "Page tombstoned"}
     return {"success": False, "error": "Page not found"}
 
-# === 阶段二 2.3：图片资产同步端点 ===
-# 页面 JSON 只存 asset:<id> 引用；Blob 二进制走独立端点，避免全量广播塞满 Base64。
-# 单用户多设备：资产一旦上传即全端可读；删除页时不级联删资产（墓碑期引用可能仍在其它端）。
-import base64
-from fastapi import Request, Response
 
+# === 阶段二 2.3：图片资产同步端点（按 room 隔离）===
+# 页面 JSON 只存 asset:<id> 引用；Blob 二进制走独立端点，避免全量广播塞满 Base64。
 @app.post("/api/assets")
-async def upload_asset(request: Request):
-    # 支持两种上传体：
-    #  1) JSON { "id": "asset:xxx", "data": "<base64>" }（前端 saveImageAsset 预生成 id）
-    #  2) multipart/form-data（其它端或调试用），由服务端生成 id
+async def upload_asset(request: Request, room: str = Depends(get_room)):
     ctype = request.headers.get("content-type", "")
     if "application/json" in ctype:
         body = await request.json()
@@ -490,39 +534,38 @@ async def upload_asset(request: Request):
         aid = (str(form.get("id") or "")).replace("asset:", "")
         blob = await f.read()
     if not aid:
-        aid = f"asset-{int(__import__('time').time() * 1000)}-{os.urandom(4).hex()}"
-    _save_asset(aid, blob)
+        aid = f"asset-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
+    await db.save_asset(aid, blob, room)
     return {"success": True, "id": f"asset:{aid}"}
 
+
 @app.get("/api/assets/{asset_id}")
-def download_asset(asset_id: str):
-    blob = _get_asset(asset_id.replace("asset:", ""))
+async def download_asset(asset_id: str, room: str = Depends(get_room)):
+    blob = await db.get_asset(asset_id.replace("asset:", ""), room)
     if blob is None:
         return Response(status_code=404, content=b"not found")
-    # 尝试推断 MIME；默认 image/jpeg
-    return Response(content=blob, media_type="image/jpeg", headers={
-        "Content-Disposition": f"inline; filename={asset_id}",
-        "Cache-Control": "no-store",
-    })
+    return Response(
+        content=blob,
+        media_type="image/jpeg",
+        headers={"Content-Disposition": f"inline; filename={asset_id}", "Cache-Control": "no-store"},
+    )
+
 
 @app.delete("/api/assets/{asset_id}")
-def remove_asset(asset_id: str):
-    _delete_asset(asset_id.replace("asset:", ""))
+async def remove_asset(asset_id: str, room: str = Depends(get_room)):
+    await db.delete_asset(asset_id.replace("asset:", ""), room)
     return {"success": True}
 
+
 # === 阶段三：墓碑 GC（垃圾回收）===
-# 删除采用墓碑（deletedAt）而非真删，以便删除能通过广播/增量同步传播到所有设备。
-# 但墓碑会永久堆积，长期抬高 _water_mark 比较基数、拖慢每次 SERVER_BROADCAST / INITIAL_SYNC 的 payload。
-# 故提供手动触发的 GC：仅清理 deletedAt 早于 retention_days（默认30天）的墓碑——
-# 30 天内任何设备都已有充足时间完成至少一次同步/上线，过期墓碑可安全物理删除，不会致复活。
-# 注意：不自动运行，避免误删尚未同步到离线设备的墓碑。
+# 仅清理 deletedAt 早于 retention_days（默认30天）的墓碑；不自动运行，避免误删
+# 尚未同步到离线设备的墓碑。
 @app.post("/api/admin/gc")
-def gc_tombstones(retention_days: int = 30):
-    global pages_db
+async def gc_tombstones(retention_days: int = 30, room: str = Depends(get_room)):
     cutoff = datetime.now(timezone.utc).timestamp() * 1000 - retention_days * 86400_000
     purged = 0
-    kept = []
-    for p in pages_db:
+    kept: List[Dict] = []
+    for p in await db.load_pages(room):
         if p.get("deletedAt"):
             ms = 0
             try:
@@ -530,52 +573,52 @@ def gc_tombstones(retention_days: int = 30):
             except Exception:
                 ms = 0
             if ms and ms < cutoff:
-                _delete_page(p["id"])  # 走加锁的 SQLite 删除
+                await db.delete_page(p["id"], room)
                 purged += 1
                 continue
         kept.append(p)
-    pages_db = kept
-    with _DB_LOCK:
-        _conn.execute("VACUUM")
-    return {"success": True, "purged": purged, "remaining": len(pages_db)}
+    await db.vacuum()
+    return {"success": True, "purged": purged, "remaining": len(kept)}
 
-# WS 实时同步路由
+
+# WS 实时同步路由（按 room 隔离广播）
 @app.websocket("/ws/sync")
 async def websocket_endpoint(websocket: WebSocket):
-    global pages_db
     # 握手阶段鉴权（浏览器 WebSocket 不能自定义 header，只用 query）
-    if API_KEY:
-        key = websocket.query_params.get("api_key", "") or ""
-        auth = websocket.headers.get("authorization", "")
-        token = _extract_token(auth, key)
-        if not token or token != API_KEY:
-            await websocket.close(code=1008, reason="Unauthorized")
-            return
-    await manager.connect(websocket)
-    
-    # 建立网络时，立即将当前最新的服务器端持久化缓存矩阵发送给新设备
+    key = websocket.query_params.get("api_key", "") or ""
+    auth = websocket.headers.get("authorization", "")
+    token = _extract_token(auth, key)
+    room = validate(token)
+    if room is None:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+    await manager.connect(websocket, room)
+
+    # 建立连接时，立即将该 room 当前最新数据发给新设备
     try:
         await websocket.send_text(json.dumps({
             "type": "INITIAL_SYNC",
-            "data": pages_db  # 使用新的页面数据结构
+            "data": await db.load_pages(room),
         }))
         await websocket.send_text(json.dumps({
             "type": "DEVICE_COUNT",
-            "data": len(manager.active_connections)
+            "data": len(manager.rooms.get(room, [])),
         }))
-        
+
         while True:
-            # 持续监听各台客户端上报的心跳及内容更改
+            # 持续监听各台客户端上报的内容更改
             data = await websocket.receive_text()
             payload = json.loads(data)
-            
-            # 如果是客户端设备推送的内容（单 Block 内容或全量更新）
+            monitor.record_ws_message()
+
             if payload.get("type") == "CLIENT_UPDATE":
                 incoming = payload.get("data")
+                incoming_list = incoming if isinstance(incoming, list) else []
                 accepted_ids = []
-                if isinstance(incoming, list) and incoming:
-                    existing_snap = {p["id"]: p for p in pages_db}
-                    for inc in incoming:
+                existing_pages = await db.load_pages(room)
+                existing_snap = {p["id"]: p for p in existing_pages}
+                if incoming_list:
+                    for inc in incoming_list:
                         pid = inc.get("id")
                         if not pid:
                             continue
@@ -584,45 +627,95 @@ async def websocket_endpoint(websocket: WebSocket):
                         # 「其时间戳 >= 服务端现有页」，即被 LWW 采纳，纳入已确认集合。
                         if cur is None or _ts_of(inc) >= _ts_of(cur):
                             accepted_ids.append(pid)
-                    pages_db = _merge_pages(incoming)
-                    for p in pages_db:
-                        _save_page(p)
+                merged = _merge_pages(incoming_list, existing_pages)
+                for p in merged:
+                    await _persist_page(p, room)
 
-                # 阶段二 2.1：回 ACK 给发送者。
-                # cursor = 服务端合并后的水位戳（ms），前端据此确认「服务端已收到并能
-                # 让其它端看到」，从而可以丢弃本地 outbox 中低于该水位的待确认变更。
-                # clientSeq 原样回显，前端用来精确对齐哪一批 outbox 被确认。
-                # 阶段三细粒度：acceptedIds = 本次被服务端采纳的页 id 集合，前端据此
-                # 只从 outbox 中剔除「已确认」的页，断线重发时仅补发未确认的页，
-                # 避免把已达成一致的全量快照反复重推、造成冲突覆盖。
+                # 阶段二 2.1：回 ACK 给发送者（cursor = 该 room 合并后的水位戳）
                 await websocket.send_text(json.dumps({
                     "type": "ACK",
-                    "cursor": _water_mark(),
+                    "cursor": await _water_mark(room, merged),
                     "clientSeq": payload.get("clientSeq"),
                     "acceptedIds": accepted_ids,
                 }))
 
-                # 触发向全平台已联网的设备同步数据广播 (同步中继)
-                await manager.broadcast(json.dumps({
-                    "type": "SERVER_BROADCAST",
-                    "data": pages_db
-                }), sender=websocket)
-                
+                # 触发向同 room 已联网的设备同步数据广播（同步中继）
+                await manager.broadcast(
+                    json.dumps({"type": "SERVER_BROADCAST", "data": merged}),
+                    room=room,
+                    sender=websocket,
+                )
+
     except WebSocketDisconnect:
         pass
     except Exception as e:
+        monitor.record_error(f"ws/room={room[:8]}: {e}")
         logger.error(f"连接中转异常: {e}")
     finally:
         # 无论正常断开还是异常，都确保移除连接并刷新在线数，防止计数只增不减
         manager.disconnect(websocket)
-        await manager.broadcast_device_count()
+        await manager.broadcast_device_count(room)
+
+
+# ============================================================
+# 前端同源托管：把 frontend/dist/ 挂到 "/"
+# ------------------------------------------------------------
+# 目的：web 端与 /api、/ws 同源 → 前端请求走相对路径，天然免 CORS、免混合内容；
+#       Caddy 只需做 TLS 终止 + 反代，不需要额外放行跨域。
+#
+# 【挂载顺序是硬约束】必须在**所有 API / WS 路由注册之后**再挂 "/"，
+# 否则根路径的通配挂载会把 /api、/ws/sync 也吞掉。本文件自上而下执行，
+# 故这段放在文件末尾（__main__ 之前）。
+#
+# 未构建前端（纯 API 部署）时目录不存在 → 跳过挂载，不影响 API。
+# ============================================================
+_FRONTEND_DIST = os.getenv(
+    "STATIC_DIR",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"),
+)
+
+
+class SPAStaticFiles(StaticFiles):
+    """静态托管 + SPA 兜底。
+
+    任意「未匹配到真实文件」且不属于 /api、/ws 的路径，一律回落到 index.html，
+    使前端路由在刷新 / 深链场景下仍能进入应用。
+    带扩展名的资源（js/css/图片）缺失时按 404 处理，避免用 HTML 掩盖构建问题。
+    """
+
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except Exception:
+            # API / WS 前缀不参与 SPA 兜底，避免给接口返回 HTML
+            if path.startswith("api/") or path.startswith("ws/"):
+                return PlainTextResponse("Not Found", status_code=404)
+            # 带扩展名的静态资源缺失 → 直接 404，便于发现构建/路径问题
+            if "." in path.rsplit("/", 1)[-1]:
+                return PlainTextResponse("Not Found", status_code=404)
+            try:
+                return await super().get_response("index.html", scope)
+            except Exception:
+                return PlainTextResponse("Frontend not built", status_code=404)
+
+
+def _mount_frontend() -> None:
+    if os.path.isdir(_FRONTEND_DIST):
+        app.mount("/", SPAStaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")
+        logger.info(f"[NEXUS] 前端已同源托管：{_FRONTEND_DIST}")
+    else:
+        logger.warning(f"[NEXUS] 未找到前端构建产物（{_FRONTEND_DIST}），仅提供 API 服务")
+
+
+_mount_frontend()
+
 
 if __name__ == "__main__":
     import uvicorn
-    import os
-    # 记录主事件循环，供 _schedule_broadcast 跨线程投递广播协程
-    _event_loop = asyncio.get_event_loop()
+
     # 从环境变量读取端口和主机配置，默认值分别为 8010 和 0.0.0.0
     port = int(os.getenv("BACKEND_PORT", "8010"))
     host = os.getenv("BACKEND_HOST", "0.0.0.0")
-    uvicorn.run("main:app", host=host, port=port, reload=True)
+    # 生产默认关闭 reload（开发期需要热重载时设 RELOAD=1）
+    reload_flag = os.getenv("RELOAD", "0") == "1"
+    uvicorn.run("main:app", host=host, port=port, reload=reload_flag)

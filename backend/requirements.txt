@@ -2,3 +2,7 @@ fastapi==0.139.0
 uvicorn==0.49.0
 websockets==16.0
 pydantic==2.13.4
+
+# 可选：仅当设置 DATABASE_URL（postgres://...）时才需要，
+# 用于切换到 PostgresDatabase 实现。用 SQLite 时可跳过。
+asyncpg
