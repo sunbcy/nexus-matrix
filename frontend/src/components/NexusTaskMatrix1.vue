@@ -878,6 +878,16 @@
                 <template v-else>压缩：缩到最长边 1600px 再压成 JPEG（约 3 MB），但原图会缩小到 1/3，带小字的图会发虚。</template>
               </p>
             </div>
+            <!-- 重复文档处理：常驻选项（持久化）。开启 → 重新导入直接覆盖已有同名页，跳过逐页选择 -->
+            <div class="space-y-1">
+              <label class="flex items-start gap-2 cursor-pointer select-none" @click="setImportOverwrite(!importOverwrite)">
+                <span class="mt-0.5 w-4 h-4 shrink-0 flex items-center justify-center border rounded-sm"
+                      :class="importOverwrite ? 'bg-accent border-accent text-onaccent' : 'border-dim'">
+                  <svg v-if="importOverwrite" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                </span>
+                <span class="text-xs leading-snug" :class="importOverwrite ? 'text-warn' : 'text-dim'"><strong class="font-bold">自动覆盖</strong>已存在的重复文档（直接替换，跳过逐页选择）。适合「导出 ZIP → 再导入还原」的无损往返。</span>
+              </label>
+            </div>
             <button @click="importFileInput?.click()" class="h-11 md:h-9 px-4 flex items-center justify-center rounded-sm bg-surface border border-line text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">选择 ZIP 文件（可多选）</button>
           </div>
           <!-- 解析中 -->
@@ -888,13 +898,17 @@
               <span class="text-xs text-dim">将导入 {{ importSelected.size }} / {{ importPreview.pages.length }} 个页面<template v-if="importPreview.sources.filter(s => s.count > 0).length > 1">（来自 {{ importPreview.sources.filter(s => s.count > 0).length }} 个文件）</template><template v-if="importPreview.imageFailures">，{{ importPreview.imageFailures }} 张图片待后台下载</template></span>
               <button @click="toggleImportSelectAll" class="text-xs text-accent font-['JetBrains_Mono',monospace]">{{ importSelected.size === importPreview.pages.length ? '全不选' : '全选' }}</button>
             </div>
-            <!-- 同名页：默认不勾选（免得造副本）；勾这个则「重新导入 = 修好已有的那一页」 -->
-            <label v-if="importConflictIds.size > 0" class="flex items-start gap-2 px-1 cursor-pointer select-none" @click="toggleImportOverwrite">
+            <!-- 重复文档处理：常驻开关（持久化，与上方选项区同一状态）。开启 → 重新导入直接覆盖已有同名页 -->
+            <label class="flex items-start gap-2 px-1 cursor-pointer select-none" @click="setImportOverwrite(!importOverwrite)">
               <span class="mt-0.5 w-4 h-4 shrink-0 flex items-center justify-center border rounded-sm"
                     :class="importOverwrite ? 'bg-accent border-accent text-onaccent' : 'border-dim'">
                 <svg v-if="importOverwrite" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
               </span>
-              <span class="text-xs leading-snug" :class="importOverwrite ? 'text-warn' : 'text-dim'">检测到 {{ importConflictIds.size }} 个与已有文档重复（标题或内容完全相同者会**自动去重**，不会再造副本）；勾选本项可额外把「同名但内容不同」的页也覆盖，适合重新导入修图。</span>
+              <span class="text-xs leading-snug" :class="importOverwrite ? 'text-warn' : 'text-dim'">
+                <strong class="font-bold">自动覆盖</strong>已存在的重复文档（直接替换，跳过逐页选择）。
+                <template v-if="importConflictIds.size > 0">本批有 {{ importConflictIds.size }} 个与现有库重复{{ importOverwrite ? '，将直接替换' : '，默认不导入（不会造副本）' }}。</template>
+                <template v-else>适合「导出 ZIP → 再导入还原」的无损往返。</template>
+              </span>
             </label>
             <!-- 图片落库校验失败告警：明确告诉用户哪几张没存上，避免导入后破图却不自知 -->
             <div v-if="importPreview.imageVerifyFailures > 0" class="rounded-sm bg-danger/10 border border-danger/40 text-danger text-xs leading-snug px-3 py-2">
@@ -1168,8 +1182,10 @@ const enterContent = () => {
     if (ae && (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
   });
 };
-// 关闭当前最上层的浮层（链接弹窗 / 设置 / 页面菜单 / 操作菜单 / 图标 / 封面 / 提及 / 格式工具栏等）。
+// 关闭当前最上层的浮层（链接弹窗 / 设置 / 页面菜单 / 操作菜单 / 图标 / 封面 / 提及）。
 // 返回是否关闭了某个浮层——用于「返回键先关浮层，再走页面栈/退出」，避免误退 App。
+// 只收「真浮层」（有遮罩或独立弹层的那些）；格式工具栏 / 链接气泡属于随选区出现、
+// 随选区消失的浮动件，状态可能残留，若让它们消费返回键，会导致返回键被永久吞掉。
 const closeTopmostOverlay = (): boolean => {
   if (linkDialog.value.visible) { closeLinkDialog(); return true; }
   if (settingsOpen.value) { settingsOpen.value = false; return true; }
@@ -1178,15 +1194,14 @@ const closeTopmostOverlay = (): boolean => {
   if (iconPicker.value) { closeIconPicker(); return true; }
   if (coverAnchorEl.value) { closeCoverPicker(); return true; }
   if (mentionTaskId.value) { closeMention(); return true; }
-  if (formatToolbar.value.visible) { hideFormatToolbar(); return true; }
-  if (linkChip.value.visible) { linkChip.value.visible = false; return true; }
   return false;
 };
 
-// 从内容页返回列表（仅移动端）：左上返回箭头点击；浮层打开时先关浮层。
+// 从内容页返回列表（仅移动端）：左上返回箭头点击。
+// 这是「显式返回」入口，必须永远可用，故**不**经过浮层判断——
+// 否则某个残留的浮层状态会让箭头整个失效（用户就被困在文档里）。
 const goToList = () => {
   if (!isMobile.value) return;
-  if (closeTopmostOverlay()) return;
   mobileView.value = 'list';
 };
 
@@ -1232,15 +1247,18 @@ const startSidebarResize = (e: MouseEvent) => {
   window.addEventListener('mouseup', onUp);
 };
 // 安卓系统/手势返回（由 Capacitor App 插件的 backButton 事件驱动，见 onMounted）：
-// 任意浮层打开时先收起浮层；否则内容页 → 回列表页；列表页 → 退出 App。
+// 浮层打开时先收起浮层；否则内容页 → 回列表页；其余情况（列表页 / 桌面分栏形态）→ 退出 App。
+//
+// 【绝不能因 isMobile 为假就提前 return】只要注册了 backButton 监听，插件就不再走
+// 系统默认的「finish activity」；此时若不调用 App.exitApp()，返回键会彻底失灵
+// （表现为「点进文档后怎么按都退不出去」）。所以退出是兜底分支，不是条件分支。
 const onBackButton = () => {
-  if (!isMobile.value) return;
   if (closeTopmostOverlay()) return;
-  if (mobileView.value === 'content') {
+  if (isMobile.value && mobileView.value === 'content') {
     mobileView.value = 'list';
-  } else {
-    App.exitApp();
+    return;
   }
+  App.exitApp();
 };
 
 // === 移动端：输入法弹起时，滑动文档自动收起输入法 ===
@@ -1960,87 +1978,134 @@ const mimeExt = (type: string): string => {
   const sub = m[1].toLowerCase();
   return sub === 'jpeg' ? 'jpg' : sub;
 };
+// === 整库导出为 ZIP（Notion 风格、可无损再导入）===
+// 与旧版的关键区别（旧版内联子页 + [[标题]] 链接 → 层级/页间链接丢失）：
+//   1) 每页一个独立 .md，子页按层级建文件夹（pages/<父>/<子>.md），对齐 Notion「为子页建文件夹」——
+//      导入端用文件夹推断 parentId，层级原样还原；
+//   2) 图标/封面用 frontmatter（--- icon/cover ---）携带，导入端还原（封面若是图则重新落库）；
+//   3) 页面间链接写成「从源目录到目标 md 的相对路径」，导入端归一化后还原成页内跳转（data-page-id）；
+//   4) 图片仍放进全局 images/，块内引用写成 images/<id>.<ext>，导入端取回重存。
+// 局限（与 Notion 导出一致，JSON 全库备份才完整）：md 本身无法表达封面渐变以外的富样式，
+//      但图标/封面/层级/链接/图片/正文格式都已无损。
 const exportAllMarkdownZip = async () => {
   if (exportingZip) return;
   const live = pages.value.filter((p) => !p.deletedAt);
   if (!live.length) { flashDataMsg('没有可导出的文档'); return; }
   exportingZip = true;
   try {
-    const ASSET_RE = /asset:([0-9a-fA-F-]+)/g;
     const usedAssets = new Set<string>();
-    const safeName = (t: string) => (t || 'untitled').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'untitled';
-    // 与 exportMarkdown 同构，但图片块把 asset 引用写成 ![image](asset:<id>)，交由全局改写
-    const pageMdForZip = (p: Page, depth: number): string => {
-      const lines: string[] = [`${'#'.repeat(Math.min(depth + 1, 6))} ${p.title || '无标题'}`, ''];
+    // 文件名只清文件系统非法字符、保留原文（含空格），不截断（120 兜底）→ 标题无损往返。
+    const safeName = (t: string) => (t || 'untitled').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 120) || 'untitled';
+    const byId = new Map(live.map((p) => [p.id, p]));
+    const roots = live.filter((p) => p.parentId === null || !byId.has(p.parentId)); // 含父页已删的孤儿页
+
+    // 1) 分配每个页面的 md 路径（按层级建文件夹；同级同名加 _2 去重）
+    const pageSegs = new Map<string, string[]>(); // id -> 从 pages/ 起的路径段（含文件名，不含 .md）
+    const usedBase = new Map<string, number>();
+    const assign = (p: Page, parentSegs: string[]) => {
+      const base = safeName(p.title);
+      const key = parentSegs.join('/') + ' ' + base;
+      const n = usedBase.get(key) ?? 0; usedBase.set(key, n + 1);
+      const fname = n === 0 ? base : `${base}_${n + 1}`;
+      const segs = [...parentSegs, fname];
+      pageSegs.set(p.id, segs);
+      for (const c of live.filter((x) => x.parentId === p.id)) assign(c, segs);
+    };
+    for (const r of roots) assign(r, []);
+
+    // 2) 收集全部要导出的图片资产（块内图片 + 封面图）
+    for (const p of live) {
       for (const t of p.tasks) {
         if (t.deletedAt) continue;
-        const text = htmlToMarkdown(t.content || '');
-        const indent = '  '.repeat(t.indentLevel || 0);
-        switch (t.type) {
-          case 'h1': lines.push(`${indent}# ${text}`, ''); break;
-          case 'h2': lines.push(`${indent}## ${text}`, ''); break;
-          case 'h3': lines.push(`${indent}### ${text}`, ''); break;
-          case 'bullet': lines.push(`${indent}- ${text}`); break;
-          case 'numbered': lines.push(`${indent}1. ${text}`); break;
-          case 'todo': lines.push(`${indent}- [${t.completed ? 'x' : ' '}] ${text}`); break;
-          case 'quote': lines.push(`${indent}> ${text}`, ''); break;
-          case 'callout': lines.push(`${indent}> ${t.payload?.icon || '💡'} ${text}`, ''); break;
-          case 'toggle': lines.push(`${indent}<details><summary>${text}</summary>`, '', `${indent}</details>`, ''); break;
-          case 'divider': lines.push('', '---', ''); break;
-          case 'codeblock': lines.push('```' + (t.payload?.language || ''), t.payload?.code || '', '```', ''); break;
-          case 'image': {
-            const u = String(t.payload?.url ?? '');
-            if (!u) lines.push('<!-- 未上传图片 -->', '');
-            else if (u.startsWith('asset:')) { usedAssets.add(u.slice('asset:'.length)); lines.push(`![image](${u})`, ''); }
-            else lines.push(`![](${u.slice(0, 80)})`, '');
-            break;
-          }
-          case 'kanban': {
-            lines.push('<!-- 看板 -->');
-            for (const col of t.payload?.columns ?? []) {
-              lines.push(`**${col.title}**`);
-              for (const c of col.cards) lines.push(`- ${escapeMdText(c.text)}`);
-            }
-            lines.push('');
-            break;
-          }
-          default: lines.push(`${indent}${text}`, '');
-        }
+        if (t.type === 'image') { const u = String(t.payload?.url ?? ''); if (u.startsWith('asset:')) usedAssets.add(u.slice('asset:'.length)); }
       }
-      return lines.join('\n');
-    };
-    const collect = (parentId: string | null, depth: number): string[] => {
-      const out: string[] = [];
-      for (const child of live.filter((p) => p.parentId === parentId)) {
-        out.push(pageMdForZip(child, depth));
-        out.push(...collect(child.id, depth + 1));
-      }
-      return out;
-    };
-    const liveIds = new Set(live.map((p) => p.id));
-    const roots = live.filter((p) => p.parentId === null || !liveIds.has(p.parentId)); // 含父页已删的孤儿页
-    const nameCount = new Map<string, number>();
-    const pageFiles: { rel: string; content: string }[] = [];
-    for (const root of roots) {
-      const body = [pageMdForZip(root, 0), ...collect(root.id, 1)].join('\n\n---\n\n');
-      const base = safeName(root.title);
-      const n = nameCount.get(base) ?? 0;
-      nameCount.set(base, n + 1);
-      pageFiles.push({ rel: `pages/${n === 0 ? base : `${base}_${n + 1}`}.md`, content: body });
+      if (p.cover && /^asset:/i.test(p.cover)) usedAssets.add(p.cover.slice('asset:'.length));
     }
-    // 取回所有引用到的图片二进制
+    const assetExt = new Map<string, string>();
     const assetBlobs = new Map<string, Blob>();
     for (const id of usedAssets) {
       const blob = await getAsset(`asset:${id}`);
-      if (blob) assetBlobs.set(`asset:${id}`, blob);
+      if (blob) { assetBlobs.set(id, blob); assetExt.set(id, mimeExt(blob.type)); }
     }
-    const rewriteAssets = (content: string): string =>
-      content.replace(ASSET_RE, (m) => assetBlobs.has(m) ? `images/${m.slice('asset:'.length)}.${mimeExt(assetBlobs.get(m)!.type)}` : `<!-- 图片缺失: ${m} -->`);
+
+    // 3) 页面间链接：从源页目录到目标 md 的相对路径（支持 ../ 跨层级，导入端据此还原页内跳转）
+    const encSeg = (s: string) => s.replace(/ /g, '%20'); // 链接里的空格编码，导入端会解码
+    const linkHref = (fromId: string, toId: string): string => {
+      const a = pageSegs.get(fromId), b = pageSegs.get(toId);
+      if (!a || !b) return '#';
+      const fromDir = a.slice(0, -1), toDir = b.slice(0, -1), fileName = b[b.length - 1];
+      let i = 0;
+      while (i < fromDir.length && i < toDir.length && fromDir[i] === toDir[i]) i++;
+      const up = fromDir.length - i;
+      const segs = Array(up).fill('..').concat(toDir.slice(i)).concat([fileName]);
+      return segs.map(encSeg).join('/') + '.md';
+    };
+    const ANCHOR_RE = /<a\b([^>]*?)\bdata-page-id="([^"]+)"([^>]*)>([\s\S]*?)<\/a>/gi;
+    const zipHtmlToMd = (content: string, linkResolver: (id: string) => string): string => {
+      const pre = content.replace(ANCHOR_RE, (_m, _a, id: string, _b, inner: string) => {
+        const href = linkResolver(id);
+        const label = (inner.replace(/<[^>]+>/g, '').trim()) || '链接';
+        return `[${label}](${href})`;
+      });
+      return htmlToMarkdown(pre);
+    };
+    const imgRef = (id: string): string =>
+      assetBlobs.has(id) ? `images/${id}.${assetExt.get(id)}` : `<!-- 图片缺失: asset:${id} -->`;
+    const coverRef = (p: Page): string => {
+      const c = p.cover ?? '';
+      if (!c) return '';
+      if (c.startsWith('asset:')) { const id = c.slice('asset:'.length); return imgRef(id); }
+      return c;
+    };
+
+    // 4) 逐页生成 md（只写本页自有块；封面/图标用 frontmatter 携带，保证无损）
+    const blockMd = (t: Task, pageId: string): string => {
+      const indent = '  '.repeat(t.indentLevel || 0);
+      const text = zipHtmlToMd(t.content || '', (id) => linkHref(pageId, id));
+      switch (t.type) {
+        case 'h1': return `${indent}# ${text}`;
+        case 'h2': return `${indent}## ${text}`;
+        case 'h3': return `${indent}### ${text}`;
+        case 'bullet': return `${indent}- ${text}`;
+        case 'numbered': return `${indent}1. ${text}`;
+        case 'todo': return `${indent}- [${t.completed ? 'x' : ' '}] ${text}`;
+        case 'quote': return `${indent}> ${text}`;
+        case 'callout': return `${indent}> ${t.payload?.icon || '💡'} ${text}`;
+        case 'toggle': return `${indent}<details><summary>${text}</summary>\n\n${indent}</details>`;
+        case 'divider': return '---';
+        case 'codeblock': return '```' + (t.payload?.language || '') + '\n' + (t.payload?.code || '') + '\n```';
+        case 'image': {
+          const u = String(t.payload?.url ?? '');
+          if (!u) return '<!-- 未上传图片 -->';
+          if (u.startsWith('asset:')) return `![image](${imgRef(u.slice('asset:'.length))})`;
+          return `![](${u})`; // 外链图原样保留，导入端会尝试下载
+        }
+        case 'kanban': {
+          const lines = ['<!-- 看板 -->'];
+          for (const col of t.payload?.columns ?? []) { lines.push(`**${col.title}**`); for (const c of col.cards) lines.push(`- ${escapeMdText(c.text)}`); }
+          return lines.join('\n');
+        }
+        default: return `${indent}${text}`;
+      }
+    };
+    const pageMd = (p: Page): string => {
+      const fm: string[] = [];
+      if (p.icon) fm.push(`icon: ${p.icon}`);
+      const cov = coverRef(p); if (cov) fm.push(`cover: ${cov}`);
+      const fmBlock = fm.length ? `---\n${fm.join('\n')}\n---\n` : '';
+      const body = [`# ${p.title || '无标题'}`, ''];
+      for (const t of p.tasks) { if (t.deletedAt) continue; const b = blockMd(t, p.id); if (b) body.push(b, ''); }
+      return fmBlock + body.join('\n');
+    };
+
     const enc = new TextEncoder();
     const files: Record<string, Uint8Array> = {};
-    for (const pf of pageFiles) files[pf.rel] = enc.encode(rewriteAssets(pf.content));
-    for (const [ref, blob] of assetBlobs) {
-      files[`images/${ref.slice('asset:'.length)}.${mimeExt(blob.type)}`] = new Uint8Array(await blob.arrayBuffer());
+    for (const p of live) {
+      const segs = pageSegs.get(p.id)!;
+      files[`pages/${segs.map(encSeg).join('/')}.md`] = enc.encode(pageMd(p));
+    }
+    for (const [id, blob] of assetBlobs) {
+      files[`images/${id}.${assetExt.get(id)}`] = new Uint8Array(await blob.arrayBuffer());
     }
     if (!Object.keys(files).length) { flashDataMsg('没有可导出的内容'); return; }
     const { zipSync } = await import('fflate');
@@ -2052,7 +2117,7 @@ const exportAllMarkdownZip = async () => {
     a.download = `nexus-导出-${new Date().toISOString().slice(0, 10)}.zip`;
     a.click();
     URL.revokeObjectURL(url);
-    flashDataMsg(`已导出 ${pageFiles.length} 篇文档 / ${assetBlobs.size} 张图片（ZIP）`);
+    flashDataMsg(`已导出 ${live.length} 篇文档 / ${assetBlobs.size} 张图片（ZIP，可无损再导入）`);
   } finally {
     exportingZip = false;
   }
@@ -2212,7 +2277,10 @@ onMounted(async () => {
   updateIsMobile();
   window.addEventListener('resize', updateIsMobile);
   // 接管安卓系统/手势返回：内容页→列表页，列表页→退出 App（替代原生默认直接退出）。
-  App.addListener('backButton', onBackButton);
+  // 注册失败不能让整个 onMounted 崩掉——否则后面的初始化全都不执行。
+  App.addListener('backButton', onBackButton).catch((e: unknown) => {
+    console.warn('[nexus] backButton 监听注册失败，返回键将走系统默认行为', e);
+  });
   if (isMobile.value && activePage.value) enterContent();
 
   // 初始同步受控下拉刷新状态（确保原生桥就绪后状态已下发：列表页允许、内容页禁用）
@@ -2985,8 +3053,16 @@ const onHandleTouchStart = (task: Task, e: TouchEvent) => {
   const onEnd = (ev: TouchEvent) => {
     const wasFired = fired;
     cleanup();
-    if (wasFired) finishTouchDrag();
-    else openActionMenuAtTouch(task.id, ev);   // 轻点 → 打开操作菜单
+    if (wasFired) {
+      finishTouchDrag();
+    } else {
+      // 轻点 → 打开操作菜单。关键：阻止浏览器在 touchend 之后派发的「兼容鼠标事件」
+      // （合成 mousedown 会立刻命中全局 mousedown 监听，而此刻菜单 DOM 尚未挂载，
+      // 被判定为「菜单外点击」→ isOpen 被置回 false，表现为「点了没反应」）。
+      // preventDefault 可抑制这一合成事件序列。
+      if (ev.cancelable) ev.preventDefault();
+      openActionMenuAtTouch(task.id, ev);
+    }
   };
   const onCancel = () => { cleanup(); if (fired) { resetDragState(); restoreUserSelect(); } };
   window.addEventListener('touchmove', onMove, TOUCH_MOVE_OPTS);
@@ -3353,7 +3429,24 @@ const importLoading = ref(false);
 const importWizardMsg = ref('');
 const importSelected = ref<Set<string>>(new Set());
 const importConflictIds = ref<Set<string>>(new Set());  // 与现有存活页同名的待导入页（默认不勾选，避免盲目创建重复）
-const importOverwrite = ref(false);  // 覆盖同名页：重新导入时用它「修好已有的那一页」而不是再建副本
+// 重新导入时的「重复文档」处理：开启则自动覆盖已存在的同名页（连同子树），跳过逐页选择。
+// 持久化，免得每次导入都要重新勾——这是为「导出 ZIP → 再导入还原」的无损往返准备的常驻开关。
+const IMPORT_OVERWRITE_KEY = 'nexus_import_overwrite';
+const importOverwrite = ref<boolean>(
+  (() => { try { return localStorage.getItem(IMPORT_OVERWRITE_KEY) === '1'; } catch { return false; } })(),
+);
+const setImportOverwrite = (v: boolean) => {
+  importOverwrite.value = v;
+  try { localStorage.setItem(IMPORT_OVERWRITE_KEY, v ? '1' : '0'); } catch { /* 配额满：本次会话内仍生效 */ }
+  // 已生成预览时立即按新选项级联勾选/取消冲突子树，避免「勾了却没选上 → 什么也没发生」的坑
+  if (importPreview.value) {
+    const s = new Set(importSelected.value);
+    for (const id of importConflictIds.value) {
+      for (const x of importSubtreeIds(id)) { if (v) s.add(x); else s.delete(x); }
+    }
+    importSelected.value = s;
+  }
+};
 // 图片质量：'original' 原样落库，'compressed' 缩放+重编码。持久化，免得每次都要重新选。
 const IMPORT_MODE_KEY = 'nexus_import_image_mode';
 const importImageMode = ref<'original' | 'compressed'>(
@@ -3388,7 +3481,6 @@ const openNotionImportWizard = () => {
   importGroups.value = [];
   importSelected.value = new Set();
   importConflictIds.value = new Set();
-  importOverwrite.value = false;
   importResult.value = null;
   importWizardMsg.value = '';
 };
@@ -3457,12 +3549,15 @@ const onImportFilePicked = async (e: Event) => {
     else { seenTitles.add(t); seenFp.add(fp); }
   }
   importConflictIds.value = conflict;
-  // 默认勾选：同名冲突页不勾；**祖先里有冲突页的整棵子树也不勾**——
-  // 否则子页导进来 parentId 指向一个没导入的父页，在侧边栏里是隐形的。
+  // 默认勾选：同名/同指纹的冲突页及其子树默认不勾（避免反复导入同一 zip 又默默造副本）。
+  // 但若开了「自动覆盖」(importOverwrite)，则反过来说——把冲突子树也一起勾上，导入时直接替换已有页。
   const defaultSel = new Set<string>();
   for (const p of allPages) {
-    if (conflict.has(p.id)) continue;
-    if (importAncestorIds(p.id).some((a) => conflict.has(a))) continue;
+    const inConflictTree = conflict.has(p.id) || importAncestorIds(p.id).some((a) => conflict.has(a));
+    if (inConflictTree) {
+      if (importOverwrite.value) defaultSel.add(p.id); // 覆盖模式：连冲突子树一起选中
+      continue;
+    }
     defaultSel.add(p.id);
   }
   importSelected.value = defaultSel;
@@ -3560,20 +3655,6 @@ const gotoImportIssue = (iss: { pageId: string; taskId: string }) => {
     highlightTaskId.value = iss.taskId;
     armHighlight();
   });
-};
-// 覆盖同名页开关：连带把「已存在」的那几页（含其子树）选上/取消——
-// 勾了却没选它们的话什么也不会发生，是最容易让人以为「重新导入没生效」的坑。
-// 子树也要一起：只覆盖父页的话，子页还是旧内容。
-const toggleImportOverwrite = () => {
-  importOverwrite.value = !importOverwrite.value;
-  const s = new Set(importSelected.value);
-  for (const id of importConflictIds.value) {
-    for (const x of importSubtreeIds(id)) {
-      if (importOverwrite.value) s.add(x);
-      else s.delete(x);
-    }
-  }
-  importSelected.value = s;
 };
 const toggleImportSelectAll = () => {
   if (!importPreview.value) return;

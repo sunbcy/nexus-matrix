@@ -171,6 +171,7 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
 
   const pages: Page[] = [];
   const pageIdByPath = new Map<string, string>();
+  const srcById = new Map<string, string>(); // 页面 id -> 其来源 md 路径，供页间链接按源目录归一化
   const report: ZipImportResult['report'] = [];
   let imageFailures = 0;
   const verifyFailures: ImportAssetIssue[] = [];
@@ -186,18 +187,36 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
     if (!bytes) continue;
     const md = decoder.decode(bytes);
 
+    // 解析 frontmatter（nexus 导出用 --- 包裹的 icon/cover），余下正文再交给解析器。
+    // 无 frontmatter 时（Notion 导出等）原样透传，不影响既有逻辑。
+    let body = md;
+    let fmIcon: string | undefined;
+    let fmCover: string | undefined;
+    const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
+    if (fmMatch) {
+      body = md.slice(fmMatch[0].length);
+      for (const line of fmMatch[1].split('\n')) {
+        const mm = /^([A-Za-z_-]+)\s*:\s*(.*)$/.exec(line.trim());
+        if (!mm) continue;
+        const k = mm[1].toLowerCase();
+        const v = mm[2].trim().replace(/^["']|["']$/g, '');
+        if (k === 'icon') fmIcon = v || undefined;
+        else if (k === 'cover') fmCover = v || undefined;
+      }
+    }
+
     // 复用单文件导入的解析器
     const { parseMarkdown } = await import('./markdownImport');
-    const { blocks, downgraded } = parseMarkdown(md);
+    const { blocks, downgraded } = parseMarkdown(body);
 
-    // 标题（下面的图片失败提示也要用到，故先算）：优先取文件名；若正文首块是 h1 且更具体，用 h1
+    // 标题（下面的图片失败提示也要用到，故先算）：优先取文件名（已解码 %20 等）；正文首块 h1 兜底
     const firstH1 = blocks.find((b) => b.type === 'h1');
-    // 文件名与 H1 兜底都清理，避免 id 以另一条路径渗进标题
-    const fromName = stripNotionId(entry.base.replace(/\.md$/i, ''));
+    const fromName = stripNotionId(safeDecode(entry.base).replace(/\.md$/i, ''));
     const title = fromName || (stripNotionId(firstH1?.content.replace(/<[^>]+>/g, '') || '') || '导入的文档');
 
     // 页面 id 提前生成：图片失败明细要记 pageId，供结果面板「跳到那一块」
     const id = newPageId();
+    srcById.set(id, entry.path);
 
     // 图片处理：包内相对路径与远程 URL 都转为**独立资产**，页面只留 asset: 引用。
     // （此前是转 Base64 内联进 payload.url，会让整页广播与存储配额暴涨。）
@@ -280,11 +299,27 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
       if (f.pageId === id && !f.taskId) f.taskId = tasks[f.block - 1]?.id ?? '';
     }
 
+    // 封面：若是图片路径（nexus 导出，形如 images/xxx.png）则按块图片同样落库；
+    // 否则（渐变键等）原样保留。图标直接保留。
+    let coverVal: string | undefined = fmCover;
+    if (fmCover && (/images\//i.test(fmCover) || isImageName(fmCover))) {
+      const clean = fmCover.split(/[?#]/)[0];
+      const decoded = safeDecode(clean);
+      let hit: string | undefined = fileMap.has(clean) ? clean : (fileMap.has(decoded) ? decoded : undefined);
+      if (!hit) { const b = safeDecode(clean.slice(clean.lastIndexOf('/') + 1)).toLowerCase(); hit = imageByName.get(b); }
+      if (hit) {
+        const cblob = new Blob([new Uint8Array(fileMap.get(hit)!)], { type: mimeOf(hit) });
+        try { const { ref, blob: stored } = await saveImageAssetWithBlob(cblob, saveOpts); blobByRef.set(ref, stored); coverVal = ref; } catch { /* 落库失败保留原值 */ }
+      }
+    }
+
     pages.push({
       id,
       title,
       tasks,
       parentId,
+      icon: fmIcon,
+      cover: coverVal,
       isFavorite: false,
       isExpanded: true,
     });
@@ -295,7 +330,7 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
   // Notion 导出时，A 页面里指向 B 页面的链接写作 [标题](相对路径/B%20标题%20<32位id>.md)。
   // 直接留着就是一个永远打不开的 .md 文件路径；解析成 data-page-id 后
   // 点击即在应用内跳转到导入后的 B 页面（与 [[ 插入的页内链接同款）。
-  resolveImportedPageLinks(pages, pageIdByPath);
+  resolveImportedPageLinks(pages, pageIdByPath, srcById);
 
   // 落库终检：对每个 asset: 引用读回校验，捕捉「保存时成功、之后又丢」的罕见情况。
   // 与保存时的重试不同，这里手里还有原始 blob —— 读不回先就地补写（verifyAssetOrRetry），
@@ -385,7 +420,7 @@ const linkKey = (raw: string): string => {
   return stripNotionId(s).toLowerCase();
 };
 
-const resolveImportedPageLinks = (pages: Page[], pageIdByPath: Map<string, string>) => {
+const resolveImportedPageLinks = (pages: Page[], pageIdByPath: Map<string, string>, srcById: Map<string, string>) => {
   // 路径键 -> 页面 id（完整路径 + basename 都能命中）
   const byKey = new Map<string, string>();
   for (const [path, id] of pageIdByPath) {
@@ -395,6 +430,11 @@ const resolveImportedPageLinks = (pages: Page[], pageIdByPath: Map<string, strin
   }
   if (byKey.size === 0) return;
 
+  // 每页的源目录，用于把 ../ 相对链接归一成 zip 内绝对路径再匹配（支持跨层级页间链接）
+  const srcDirOf = (id: string): string => {
+    const p = srcById.get(id);
+    return p && p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '';
+  };
   const re = /<a\s+[^>]*href="([^"]+)"[^>]*>/gi;
   for (const p of pages) {
     for (const t of p.tasks ?? []) {
@@ -403,8 +443,12 @@ const resolveImportedPageLinks = (pages: Page[], pageIdByPath: Map<string, strin
       const next = t.content.replace(re, (tag, href: string) => {
         // 只处理指向 .md 的相对链接；外链保持原样（点击走新标签打开）
         if (/^(https?:|mailto:)/i.test(href) || !/\.md($|[?#])/i.test(href)) return tag;
-        const key = linkKey(href.split(/[?#]/)[0]);
-        const targetId = byKey.get(key);
+        const cleanHref = href.split(/[?#]/)[0];
+        const abs = resolveRelative(srcDirOf(p.id), cleanHref); // 归一为 zip 内绝对路径
+        const targetId =
+          byKey.get(linkKey(abs)) ??
+          byKey.get(linkKey(cleanHref)) ??
+          byKey.get(linkKey(cleanHref.slice(cleanHref.lastIndexOf('/') + 1)));
         if (!targetId || targetId === p.id) return tag;
         changed = true;
         const label = />([^<]*)<\/a>/i.exec(tag)?.[1] ?? '';
