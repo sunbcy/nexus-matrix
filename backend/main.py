@@ -153,6 +153,33 @@ async def _persist_page(page: Dict, room: str) -> None:
     await db.save_page(page, room)
 
 
+def _page_fingerprint(page: Dict) -> str:
+    """页面内容指纹，用于判断「这一页是否真的变了」。
+
+    sort_keys 使结果与字段插入顺序无关；default=str 兜住 datetime 之类
+    非 JSON 原生类型，避免比对时抛异常。
+    """
+    return json.dumps(page, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _changed_pages(merged: List[Dict], existing: Dict[str, Dict]) -> List[Dict]:
+    """从合并结果里挑出真正发生变化的页。
+
+    _merge_pages 返回的是「incoming ∪ 服务端现有页」的全量并集，但通常
+    只有一两页真的变了。这里按指纹过滤，只保留新增页与内容有差异的页，
+    使落库 / 广播的开销从 O(该房间全部页) 降为 O(变更页)。
+
+    判定偏保守：只要指纹不一致就算变更，宁可多写一次也不会漏写。
+    """
+    changed: List[Dict] = []
+    for p in merged:
+        pid = p.get("id")
+        cur = existing.get(pid) if pid else None
+        if cur is None or _page_fingerprint(cur) != _page_fingerprint(p):
+            changed.append(p)
+    return changed
+
+
 def _heal_prev_id_chain(tasks: List[Dict]) -> List[Dict]:
     """阶段三 F7：prevId 链自愈。
 
@@ -276,6 +303,14 @@ def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]
             cur_del = _norm_ts(cur.get("deletedAt")) if cur.get("deletedAt") else ""
             if cur_del and cur_del > inc_del:
                 merged[pid] = cur              # 本地后删，保留本地
+                continue
+            # 远端墓碑生效：就地给现有页打上删除戳，再放进结果集。
+            # 旧实现在这里直接 continue 丢弃该页，导致服务端始终保留「活着的」
+            # 旧页，并在下次 INITIAL_SYNC 时推回各端 —— 即「删了又复活」。
+            tombstoned = {k: (list(v) if isinstance(v, list) else v) for k, v in cur.items()}
+            tombstoned["deletedAt"] = inc_del
+            tombstoned["updatedAt"] = inc_del
+            merged[pid] = tombstoned
             continue
 
         if cur is None:
@@ -628,7 +663,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         if cur is None or _ts_of(inc) >= _ts_of(cur):
                             accepted_ids.append(pid)
                 merged = _merge_pages(incoming_list, existing_pages)
-                for p in merged:
+                # 只落库真正变化的页：_merge_pages 的结果是全量并集，
+                # 若原样遍历会把「每次按键」放大成对全部页的写。
+                changed = _changed_pages(merged, existing_snap)
+                for p in changed:
                     await _persist_page(p, room)
 
                 # 阶段二 2.1：回 ACK 给发送者（cursor = 该 room 合并后的水位戳）
@@ -640,11 +678,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 }))
 
                 # 触发向同 room 已联网的设备同步数据广播（同步中继）
-                await manager.broadcast(
-                    json.dumps({"type": "SERVER_BROADCAST", "data": merged}),
-                    room=room,
-                    sender=websocket,
-                )
+                #
+                # 只广播变更页（增量），不再发全量。
+                # 前端对 SERVER_BROADCAST 与 INITIAL_SYNC 走的是同一条
+                # mergePages 合并路径（见 useSync.ts），因此发子集是安全的：
+                # 未提及的页在接收端保持原样，不会被删除。
+                # 无变更时不广播，避免空包刷屏（发送方仍会收到上面的 ACK）。
+                if changed:
+                    await manager.broadcast(
+                        json.dumps({"type": "SERVER_BROADCAST", "data": changed}),
+                        room=room,
+                        sender=websocket,
+                    )
 
     except WebSocketDisconnect:
         pass

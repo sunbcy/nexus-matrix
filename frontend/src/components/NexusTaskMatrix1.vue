@@ -1117,8 +1117,8 @@ import {createRemotePage, dataVersion, markDirty, onlineDevices, syncStatus,} fr
 import {setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
 import {App} from '@capacitor/app';
 import {newPageId} from '../composables/ids';
-import SettingsPanel from './SettingsPanel.vue';
 import {getAsset, isAssetRef} from '../composables/assets';
+import SettingsPanel from './SettingsPanel.vue';
 import PageIconPicker from './PageIconPicker.vue';
 import PageCoverPicker from './PageCoverPicker.vue';
 
