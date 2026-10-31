@@ -22,6 +22,7 @@ import json
 import os
 import sqlite3
 import threading
+import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -95,6 +96,36 @@ class Database(ABC):
     async def vacuum(self) -> None:
         """整理存储空间（SQLite 的 VACUUM；Postgres 交给 autovacuum）。"""
 
+    # ---- 账户 / 工作区（多租户账号体系，叠加在 room 隔离之上） ----
+    @abstractmethod
+    async def create_user(self, provider: str, sub: str, email: str, name: str) -> str:
+        """创建用户，返回 user_id（uuid）。"""
+
+    @abstractmethod
+    async def get_user_by_oauth(self, provider: str, sub: str) -> Optional[Dict]:
+        """按 OAuth(provider, sub) 查用户。"""
+
+    @abstractmethod
+    async def get_user_by_email(self, email: str) -> Optional[Dict]:
+        """按邮箱查用户（用于 OAuth 邮箱一致时合并到已有账户）。"""
+
+    @abstractmethod
+    async def get_user_by_id(self, user_id: str) -> Optional[Dict]:
+        """按 id 查用户。"""
+
+    @abstractmethod
+    async def create_membership(self, user_id: str, room: str, role: str,
+                               status: str = "active", label: Optional[str] = None) -> None:
+        """建立用户↔工作区(room) 的成员关系。role: owner/admin/member。"""
+
+    @abstractmethod
+    async def get_memberships(self, user_id: str) -> List[Dict]:
+        """列出用户的所有成员关系（room, role, status, label）。"""
+
+    @abstractmethod
+    async def get_membership(self, user_id: str, room: str) -> Optional[Dict]:
+        """查单条成员关系；get_room 校验 JWT 时用来确认用户对该 room 有权。"""
+
 
 # ============================================================
 # SQLite 实现
@@ -123,6 +154,17 @@ class SQLiteDatabase(Database):
         "(id TEXT NOT NULL, room TEXT NOT NULL DEFAULT 'public', "
         "data BLOB, created_at TEXT, PRIMARY KEY (id, room))"
     )
+    _CREATE_USERS = (
+        "CREATE TABLE IF NOT EXISTS users "
+        "(id TEXT PRIMARY KEY, provider TEXT, sub TEXT, "
+        "email TEXT, name TEXT, created_at TEXT)"
+    )
+    _CREATE_MEMBERSHIPS = (
+        "CREATE TABLE IF NOT EXISTS memberships "
+        "(user_id TEXT NOT NULL, room TEXT NOT NULL, role TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'active', label TEXT, created_at TEXT, "
+        "PRIMARY KEY (user_id, room))"
+    )
 
     def __init__(self, path: str) -> None:
         self._path = path
@@ -140,6 +182,8 @@ class SQLiteDatabase(Database):
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(self._CREATE_PAGES)
         self._conn.execute(self._CREATE_ASSETS)
+        self._conn.execute(self._CREATE_USERS)
+        self._conn.execute(self._CREATE_MEMBERSHIPS)
         self._conn.commit()
         self._sync_migrate()
 
@@ -253,6 +297,74 @@ class SQLiteDatabase(Database):
             self._conn.execute("VACUUM")
             self._conn.commit()
 
+    def _row_to_user(self, row) -> Optional[Dict]:
+        if not row:
+            return None
+        return {"id": row[0], "provider": row[1], "sub": row[2],
+                "email": row[3], "name": row[4], "created_at": row[5]}
+
+    def _sync_create_user(self, provider: str, sub: str, email: str, name: str) -> str:
+        uid = str(uuid.uuid4())
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO users (id, provider, sub, email, name, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (uid, provider, sub, email, name, _now_iso()),
+            )
+            self._conn.commit()
+        return uid
+
+    def _sync_get_user_by_oauth(self, provider: str, sub: str) -> Optional[Dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, provider, sub, email, name, created_at FROM users "
+                "WHERE provider=? AND sub=?", (provider, sub)
+            ).fetchone()
+        return self._row_to_user(row)
+
+    def _sync_get_user_by_email(self, email: str) -> Optional[Dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, provider, sub, email, name, created_at FROM users "
+                "WHERE email=?", (email,)
+            ).fetchone()
+        return self._row_to_user(row)
+
+    def _sync_get_user_by_id(self, uid: str) -> Optional[Dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, provider, sub, email, name, created_at FROM users "
+                "WHERE id=?", (uid,)
+            ).fetchone()
+        return self._row_to_user(row)
+
+    def _sync_create_membership(self, user_id: str, room: str, role: str,
+                               status: str, label: Optional[str]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO memberships (user_id, room, role, status, label, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, room, role, status, label, _now_iso()),
+            )
+            self._conn.commit()
+
+    def _sync_get_memberships(self, user_id: str) -> List[Dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT room, role, status, label FROM memberships WHERE user_id=?", (user_id,)
+            ).fetchall()
+        return [{"room": r[0], "role": r[1], "status": r[2], "label": r[3]} for r in rows]
+
+    def _sync_get_membership(self, user_id: str, room: str) -> Optional[Dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT room, role, status, label FROM memberships "
+                "WHERE user_id=? AND room=?", (user_id, room)
+            ).fetchone()
+        if not row:
+            return None
+        return {"room": row[0], "role": row[1], "status": row[2], "label": row[3]}
+
     # ---- 异步接口实现 ----
     def _run(self, func, *args):
         # 在协程里用 get_running_loop（get_event_loop 在新版本中已废弃/行为不同）
@@ -300,6 +412,28 @@ class SQLiteDatabase(Database):
     async def vacuum(self) -> None:
         await self._run(self._sync_vacuum)
 
+    async def create_user(self, provider: str, sub: str, email: str, name: str) -> str:
+        return await self._run(self._sync_create_user, provider, sub, email, name)
+
+    async def get_user_by_oauth(self, provider: str, sub: str) -> Optional[Dict]:
+        return await self._run(self._sync_get_user_by_oauth, provider, sub)
+
+    async def get_user_by_email(self, email: str) -> Optional[Dict]:
+        return await self._run(self._sync_get_user_by_email, email)
+
+    async def get_user_by_id(self, user_id: str) -> Optional[Dict]:
+        return await self._run(self._sync_get_user_by_id, user_id)
+
+    async def create_membership(self, user_id: str, room: str, role: str,
+                               status: str = "active", label: Optional[str] = None) -> None:
+        await self._run(self._sync_create_membership, user_id, room, role, status, label)
+
+    async def get_memberships(self, user_id: str) -> List[Dict]:
+        return await self._run(self._sync_get_memberships, user_id)
+
+    async def get_membership(self, user_id: str, room: str) -> Optional[Dict]:
+        return await self._run(self._sync_get_membership, user_id, room)
+
 
 # ============================================================
 # Postgres 实现（asyncpg）
@@ -340,6 +474,17 @@ class PostgresDatabase(Database):
     _CREATE_INDEX = (
         "CREATE INDEX IF NOT EXISTS idx_pages_room_updated ON pages (room, updated_at)"
     )
+    _CREATE_USERS = (
+        "CREATE TABLE IF NOT EXISTS users ("
+        "id TEXT PRIMARY KEY, provider TEXT, sub TEXT, "
+        "email TEXT, name TEXT, created_at TEXT)"
+    )
+    _CREATE_MEMBERSHIPS = (
+        "CREATE TABLE IF NOT EXISTS memberships ("
+        "user_id TEXT NOT NULL, room TEXT NOT NULL, role TEXT NOT NULL, "
+        "status TEXT NOT NULL DEFAULT 'active', label TEXT, created_at TEXT, "
+        "PRIMARY KEY (user_id, room))"
+    )
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -357,6 +502,8 @@ class PostgresDatabase(Database):
             await conn.execute(self._CREATE_PAGES)
             await conn.execute(self._CREATE_ASSETS)
             await conn.execute(self._CREATE_INDEX)
+            await conn.execute(self._CREATE_USERS)
+            await conn.execute(self._CREATE_MEMBERSHIPS)
         await self._migrate()
 
     async def _migrate(self) -> None:
@@ -435,6 +582,64 @@ class PostgresDatabase(Database):
         # Postgres 的 VACUUM 不能在事务块内执行，且通常由 autovacuum 处理；
         # 这里不做任何事，需要时由运维用定时任务执行。
         return None
+
+    async def create_user(self, provider: str, sub: str, email: str, name: str) -> str:
+        uid = str(uuid.uuid4())
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (id, provider, sub, email, name, created_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
+                uid, provider, sub, email, name, _now_iso(),
+            )
+        return uid
+
+    async def get_user_by_oauth(self, provider: str, sub: str) -> Optional[Dict]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, provider, sub, email, name, created_at FROM users "
+                "WHERE provider=$1 AND sub=$2", provider, sub
+            )
+        return dict(row) if row else None
+
+    async def get_user_by_email(self, email: str) -> Optional[Dict]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, provider, sub, email, name, created_at FROM users "
+                "WHERE email=$1", email
+            )
+        return dict(row) if row else None
+
+    async def get_user_by_id(self, user_id: str) -> Optional[Dict]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, provider, sub, email, name, created_at FROM users "
+                "WHERE id=$1", user_id
+            )
+        return dict(row) if row else None
+
+    async def create_membership(self, user_id: str, room: str, role: str,
+                               status: str = "active", label: Optional[str] = None) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO memberships (user_id, room, role, status, label, created_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id, room) DO NOTHING",
+                user_id, room, role, status, label, _now_iso(),
+            )
+
+    async def get_memberships(self, user_id: str) -> List[Dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT room, role, status, label FROM memberships WHERE user_id=$1", user_id
+            )
+        return [dict(r) for r in rows]
+
+    async def get_membership(self, user_id: str, room: str) -> Optional[Dict]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT room, role, status, label FROM memberships "
+                "WHERE user_id=$1 AND room=$2", user_id, room
+            )
+        return dict(row) if row else None
 
 
 def create_database() -> Database:

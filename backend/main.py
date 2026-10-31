@@ -13,7 +13,9 @@ from typing import Dict, List, Optional
 
 import monitor
 from db import create_database
-from keys import get_allowed_keys, validate, PUBLIC_ROOM
+from keys import get_allowed_keys, PUBLIC_ROOM
+from auth import set_db, resolve_principal_room, register_auth_routes, JWT_SECRET
+from starlette.middleware.sessions import SessionMiddleware
 
 # 初始化日志记录系统
 logging.basicConfig(level=logging.INFO)
@@ -45,16 +47,19 @@ def _extract_token(authorization: str, api_key: str) -> str:
     return ""
 
 
-def get_room(
+async def get_room(
     authorization: str = Header(default=""),
     api_key: str = Query(default="", alias="api_key"),
 ) -> str:
-    """REST 路由依赖：校验密钥并解析出当前请求的 room。
-    未配置任何 key 时返回 PUBLIC_ROOM（开放模式）；启用鉴权后非法 key 返回 401。"""
+    """REST 路由依赖：解析当前请求的 room。
+
+    优先识别账户 JWT（resolve_principal_room），否则回退到 legacy API Key；
+    两者都返回 room 字符串，因此现有所有 handler 无需改动。
+    未配置任何 key 且非合法 JWT 时返回 401。"""
     token = _extract_token(authorization, api_key)
-    room = validate(token)
+    room = await resolve_principal_room(token)
     if room is None:
-        raise HTTPException(status_code=401, detail="Unauthorized: missing or invalid API key")
+        raise HTTPException(status_code=401, detail="Unauthorized: missing or invalid API key / token")
     return room
 
 
@@ -68,7 +73,27 @@ else:
 
 _ALLOW_CREDENTIALS = CORS_ORIGINS != ["*"]
 
-app = FastAPI(title="Nexus Matrix Sync Server", version=VERSION)
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动事件：初始化数据库并登记本实例的鉴权 / 后端信息（原 on_event("startup") 迁移至此）
+    await db.init()
+    entries = get_allowed_keys()
+    active = sum(1 for e in entries.values() if not e.get("revoked"))
+    mode = "开放(无鉴权)" if active == 0 else f"多租户(有效 key {active} 个)"
+    logger.info(f"[NEXUS] 版本={VERSION} 鉴权模式={mode} 后端={db.backend_name} CORS={CORS_ORIGINS}")
+    yield
+    # 关闭事件：释放数据库连接（原 on_event("shutdown") 迁移至此）
+    await db.close()
+
+
+app = FastAPI(title="Nexus Matrix Sync Server", version=VERSION, lifespan=lifespan)
+
+# 会话中间件：OAuth 的 state/CSRF 校验依赖它（authlib 把 state 存在 session cookie 里）。
+# 放在 CORS 之内、路由之外，保证所有请求都能读写 session。
+app.add_middleware(SessionMiddleware, secret_key=JWT_SECRET)
 
 # 真正注册 CORS 中间件：上面只是算出 CORS_ORIGINS，不 add_middleware 的话跨域请求
 # 永远不会带 Access-Control-Allow-Origin，导致「浏览器在隧道域名、后端地址填了
@@ -90,20 +115,8 @@ app.add_middleware(GZipMiddleware, minimum_size=512)
 
 # 数据持久层：由 DATABASE_URL 决定 SQLite / Postgres，业务代码不感知
 db = create_database()
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    await db.init()
-    entries = get_allowed_keys()
-    active = sum(1 for e in entries.values() if not e.get("revoked"))
-    mode = "开放(无鉴权)" if active == 0 else f"多租户(有效 key {active} 个)"
-    logger.info(f"[NEXUS] 版本={VERSION} 鉴权模式={mode} 后端={db.backend_name} CORS={CORS_ORIGINS}")
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await db.close()
+# 把 db 单例交给 auth 层（避免与 main 循环 import）
+set_db(db)
 
 
 @app.middleware("http")
@@ -658,7 +671,7 @@ async def websocket_endpoint(websocket: WebSocket):
     key = websocket.query_params.get("api_key", "") or ""
     auth = websocket.headers.get("authorization", "")
     token = _extract_token(auth, key)
-    room = validate(token)
+    room = await resolve_principal_room(token)
     if room is None:
         await websocket.close(code=1008, reason="Unauthorized")
         return
@@ -811,6 +824,9 @@ def _mount_frontend() -> None:
     else:
         logger.warning(f"[NEXUS] 未找到前端构建产物（{_FRONTEND_DIST}），仅提供 API 服务")
 
+
+# 账户 / 多租户工作区 / OAuth 路由（必须在挂载前端 "/" 之前注册，否则被 SPA 兜底吞掉）
+register_auth_routes(app)
 
 _mount_frontend()
 

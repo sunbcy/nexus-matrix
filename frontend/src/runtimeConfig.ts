@@ -68,6 +68,11 @@ export function initRuntimeConfig(): void {
     ...stored,
     ...fromQuery,
   };
+  // OAuth 登录 / ?apiKey= 直达：把 URL 携带的 apiKey 回写 localStorage，
+  // 使登录态在刷新 / 重开页面后仍保留（否则仅当次会话有效）。
+  if (fromQuery.apiKey) {
+    try { window.localStorage.setItem(SYNC_API_KEY_STORAGE_KEY, fromQuery.apiKey); } catch {}
+  }
 }
 
 export function getRuntimeConfig(): NexusRuntimeConfig {

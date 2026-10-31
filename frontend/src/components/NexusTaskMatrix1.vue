@@ -1113,14 +1113,14 @@
 
 <script setup lang="ts">
 import {computed, nextTick, onUnmounted, reactive, ref, watch} from 'vue';
-import {createRemotePage, dataVersion, markDirty, onlineDevices, syncStatus,} from '../composables/useSync';
+import {createRemotePage, dataVersion, markDirty, onlineDevices, syncStatus} from '../composables/useSync';
 import {setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
 import {App} from '@capacitor/app';
 import {newPageId} from '../composables/ids';
 import {getAsset, isAssetRef} from '../composables/assets';
+import PageCoverPicker from './PageCoverPicker.vue';
 import SettingsPanel from './SettingsPanel.vue';
 import PageIconPicker from './PageIconPicker.vue';
-import PageCoverPicker from './PageCoverPicker.vue';
 
 // === 数据结构 ===
 interface Task {
