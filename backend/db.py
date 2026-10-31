@@ -132,7 +132,12 @@ class SQLiteDatabase(Database):
     # ---- 同步内部实现（由下面的 async 方法投递到线程执行） ----
     def _sync_init(self) -> None:
         self._conn = sqlite3.connect(self._path, check_same_thread=False)
-        self._conn.execute("PRAGMA busy_timeout=5000")
+        # WAL：读写互不阻塞，多个进程/线程（或误双开的第二个实例）并发访问时不再致命。
+        # busy_timeout 调大到 30s：迁移建表是写事务，若另一实例正持有写锁，本方会等待而非直接报
+        # 「database is locked」退出（之前 5s 在大数据量迁移下偶发不够）。
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=30000")
+        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(self._CREATE_PAGES)
         self._conn.execute(self._CREATE_ASSETS)
         self._conn.commit()

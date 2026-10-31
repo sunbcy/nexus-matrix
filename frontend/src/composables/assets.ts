@@ -27,6 +27,9 @@ import {getRuntimeConfig} from '../runtimeConfig';
 // 与页面同步同源：优先 URL ?syncServer= / 设置面板，否则走同源（Vite 代理）。
 const SYNC_SERVER = (getRuntimeConfig().syncServer || (import.meta as any).env?.VITE_SYNC_SERVER || '').replace(/\/+$/, '');
 const ASSET_API_BASE = SYNC_SERVER ? `${SYNC_SERVER}/api` : '/api';
+// 访问密钥：后端开启鉴权时，资产上传/下载必须带 Authorization，否则会被 401 挡掉（图全破）。
+// 与 useSync.ts 同来源读取（URL ?apiKey= / 构建期 VITE_API_KEY）。
+const SYNC_API_KEY = (getRuntimeConfig().apiKey || (import.meta as any).env?.VITE_API_KEY || '').trim();
 
 export const ASSET_PREFIX = 'asset:';
 
@@ -141,7 +144,10 @@ export const uploadAssetToServer = async (ref: string, blob: Blob): Promise<void
     const b64 = blobToBase64(buf);
     await fetch(`${ASSET_API_BASE}/assets`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(SYNC_API_KEY ? { Authorization: `Bearer ${SYNC_API_KEY}` } : {}),
+      },
       body: JSON.stringify({ id: ref, data: b64 }),
     });
   } catch (e) {
@@ -158,7 +164,9 @@ export const fetchAssetFromServer = async (ref: string): Promise<Blob | null> =>
   if (!SYNC_SERVER) return null;
   const id = ref.slice(ASSET_PREFIX.length);
   try {
-    const res = await fetch(`${ASSET_API_BASE}/assets/${id}`);
+    const res = await fetch(`${ASSET_API_BASE}/assets/${id}`, {
+      headers: SYNC_API_KEY ? { Authorization: `Bearer ${SYNC_API_KEY}` } : {},
+    });
     // 明确 404：记入负缓存，后续不再对同一缺失资产反复回源（消除 404 刷屏）
     if (res.status === 404) { markAssetMissing(ref); return null; }
     if (!res.ok) return null; // 5xx 等瞬时错误：不记录，下次自重试

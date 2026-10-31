@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 import monitor
 from db import create_database
-from keys import get_allowed_keys, validate
+from keys import get_allowed_keys, validate, PUBLIC_ROOM
 
 # 初始化日志记录系统
 logging.basicConfig(level=logging.INFO)
@@ -69,6 +69,24 @@ else:
 _ALLOW_CREDENTIALS = CORS_ORIGINS != ["*"]
 
 app = FastAPI(title="Nexus Matrix Sync Server", version=VERSION)
+
+# 真正注册 CORS 中间件：上面只是算出 CORS_ORIGINS，不 add_middleware 的话跨域请求
+# 永远不会带 Access-Control-Allow-Origin，导致「浏览器在隧道域名、后端地址填了
+# localhost:8010」这类跨域场景直接被 CORS 拦死（报 No 'Access-Control-Allow-Origin'）。
+# 默认放开；公网部署请用 CORS_ORIGINS 环境变量收紧到具体前端源。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=_ALLOW_CREDENTIALS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# GZip 压缩 API 响应：/api/pages 首拉全量经上一步剔除墓碑后仍达数 MB，经 Cloudflare 隧道 /
+# 移动网络极易被拖垮或丢弃。JSON 压缩率极高（3.6MB -> ~1MB），让 HTTP 首拉路径更抗代理。
+# 仅压缩 >=512 字节的响应；WebSocket 不受影响（Starlette GZip 只作用于 HTTP 作用域）。
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=512)
 
 # 数据持久层：由 DATABASE_URL 决定 SQLite / Postgres，业务代码不感知
 db = create_database()
@@ -400,11 +418,6 @@ async def _broadcast_room(room: str) -> None:
     )
 
 
-@app.get("/")
-def read_root():
-    return {"status": "ONLINE", "protocol": "NEXUS_SYNCHRONIZATION_MATRIX"}
-
-
 @app.get("/api/health")
 async def health(response: Response):
     """健康检查 + 简单运行时指标。
@@ -471,13 +484,32 @@ async def metrics_prometheus():
     )
 
 
+# 身份自述：返回当前密钥对应的房间信息（数据量 / 在线设备数）。
+# 前端「保存同步配置」时用它即时校验三态：连不通 / 密钥被拒(401) / 已连但房间为空。
+@app.get("/api/me")
+async def me(room: str = Depends(get_room)):
+    pages = await db.load_pages(room)
+    live = [p for p in pages if not p.get("deletedAt")]
+    return {
+        "ok": True,
+        "room_label": room[:8] if room != PUBLIC_ROOM else "public",
+        "page_count": len(live),
+        "device_count": len(manager.rooms.get(room, [])),
+        "auth_required": bool(get_allowed_keys()),
+    }
+
+
 # REST API: 获取某 room 的所有页面
 # 阶段二 2.2：支持 ?since=<ms 水位戳> 增量拉取。
 @app.get("/api/pages")
 async def get_pages(since: Optional[int] = None, room: str = Depends(get_room)):
     pages = await db.load_pages(room)
     if since is None:
-        return {"success": True, "data": pages, "cursor": await _water_mark(room, pages)}
+        # 首拉全量：对全新设备，墓碑(已删页)无意义，剔除以压缩载荷
+        #（331 页 -> 128 存活页，9MB -> ~3.6MB），更抗 Cloudflare 隧道 / 移动网络的单响应体积限制。
+        # 增量拉取(since>0)仍保留墓碑——其它端删除的页需靠墓碑在本地消化。
+        live = [p for p in pages if not p.get("deletedAt")]
+        return {"success": True, "data": live, "cursor": await _water_mark(room, live)}
     changed = []
     for p in pages:
         ts = _ts_of(p)
@@ -617,6 +649,9 @@ async def gc_tombstones(retention_days: int = 30, room: str = Depends(get_room))
 
 
 # WS 实时同步路由（按 room 隔离广播）
+# INITIAL_SYNC 分片：把「存活页」切成小消息下发。按【字节】切（每片 <= INITIAL_SYNC_MAX_BYTES），
+# 而非按页数——否则单帧仍可能达数 MB，在 Cloudflare 隧道 / 移动网络下被丢弃，导致「连上了却拉不下数据」。
+INITIAL_SYNC_MAX_BYTES = 128 * 1024
 @app.websocket("/ws/sync")
 async def websocket_endpoint(websocket: WebSocket):
     # 握手阶段鉴权（浏览器 WebSocket 不能自定义 header，只用 query）
@@ -629,12 +664,37 @@ async def websocket_endpoint(websocket: WebSocket):
         return
     await manager.connect(websocket, room)
 
-    # 建立连接时，立即将该 room 当前最新数据发给新设备
+    # 建立连接时，立即将该 room 当前最新数据发给新设备。
+    # 只下发「存活页」：墓碑(已删页)对全新设备毫无意义，却会把 INITIAL_SYNC 撑大。
+    # 删除事件本就会通过 SERVER_BROADCAST 实时广播，存活态不需要墓碑也能保持一致。
+    # 进一步分片下发（按字节预算，每片 <=INITIAL_SYNC_MAX_BYTES）：避免单条 WS 消息过大（十几 MB）
+    # 被 Cloudflare 隧道/浏览器丢弃，导致「连上了却拉不下数据」。
     try:
-        await websocket.send_text(json.dumps({
-            "type": "INITIAL_SYNC",
-            "data": await db.load_pages(room),
-        }))
+        all_pages = await db.load_pages(room)
+        live_pages = [p for p in all_pages if not p.get("deletedAt")]
+        # 按字节预算切分：单条 WS 帧 <= INITIAL_SYNC_MAX_BYTES，隧道 / 移动网络友好。
+        # 单页若本身超预算也单独成片（不无限循环），由对端整页接收。
+        chunks: list = []
+        buf: list = []
+        buf_bytes = 0
+        for p in live_pages:
+            pb = len(json.dumps(p, ensure_ascii=False).encode("utf-8"))
+            if buf and buf_bytes + pb > INITIAL_SYNC_MAX_BYTES:
+                chunks.append(buf)
+                buf = []
+                buf_bytes = 0
+            buf.append(p)
+            buf_bytes += pb
+        if buf:
+            chunks.append(buf)
+        chunks = chunks or [[]]
+        for idx, chunk in enumerate(chunks):
+            await websocket.send_text(json.dumps({
+                "type": "INITIAL_SYNC",
+                "data": chunk,
+                "chunk": idx,
+                "chunks": len(chunks),
+            }))
         await websocket.send_text(json.dumps({
             "type": "DEVICE_COUNT",
             "data": len(manager.rooms.get(room, [])),

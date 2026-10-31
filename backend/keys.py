@@ -84,7 +84,7 @@ def get_allowed_keys() -> Dict[str, dict]:
     try:
         mtime = os.stat(KEYS_PATH).st_mtime
     except OSError:
-        mtime = None
+        mtime = 0  # 文件不存在：用 0 作哨兵，避免与初始缓存的 None 相等导致永不加载环境变量里的 key
     if _keys_cache["mtime"] != mtime:
         _keys_cache["entries"] = load_allowed_keys()
         _keys_cache["mtime"] = mtime

@@ -353,6 +353,10 @@ const SYNC_API_KEY = (getRuntimeConfig().apiKey || (import.meta.env.VITE_API_KEY
 export const syncStatus = ref<'offline' | 'connecting' | 'online'>('offline');
 export const onlineDevices = ref<number>(0);
 export const lastSyncError = ref<string>('');
+// 当前账户/房间信息（来自 /api/me），让「访问密钥 = 房间」对用户可见
+export const accountInfo = ref<{ room_label: string; page_count: number; device_count: number } | null>(null);
+// 鉴权失败（密钥被拒 / WS 1008）的明确提示
+export const lastAuthError = ref<string>('');
 
 let socket: WebSocket | null = null;
 let wsUrl = '';
@@ -362,6 +366,11 @@ let remoteApplying = false;   // 标记：正在应用远端数据，避免回�
 let stopWatch: (() => void) | null = null;  // 页面订阅的取消函数，closeSync 时清理，防 HMR 重复订阅
 let currentPagesRef: Ref<Page[]> | null = null;
 let backendReachable = false;   // 探测到确有后端（REST 探针成功或 WS 已连）才做网络推送；纯本地模式一律不推，杜绝 /api 404 噪音
+// INITIAL_SYNC 分片缓冲：后端把大房间数据切成多片下发，客户端拼齐后再合并应用
+let initialSyncBuffer: Page[] | null = null;
+let initialSyncExpected = 0;
+let initialSyncReceived = 0;
+let initialSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * 数据变更计数：任何页面的内容或结构变化都会 +1。
@@ -616,6 +625,29 @@ export const fetchRemotePages = async (since = 0): Promise<Page[] | null> => {
   }
 };
 
+// INITIAL_SYNC 分片收不齐时（隧道 / 移动网络丢帧），改用 REST 全量拉取——
+// HTTP（后端已开 GZip）比数 MB 的 WS 大帧更抗代理，作为首拉兜底的可靠路径。
+const fallbackInitialPull = async () => {
+  if (!currentPagesRef) return;
+  const remote = await fetchRemotePages(0);
+  if (!remote) return;
+  try {
+    const existing = await loadLocal();
+    const base = (existing && existing.length > 0)
+      ? mergePages(existing, sanitizeLoadedPages(remote))
+      : sanitizeLoadedPages(remote);
+    remoteApplying = true;
+    currentPagesRef.value = orderPages(base);
+    await saveLocal(currentPagesRef.value);
+    remoteApplying = false;
+    lastSyncError.value = '';
+  } catch (e) {
+    remoteApplying = false;
+    lastSyncError.value = '同步接收失败：' + (e instanceof Error ? e.message : String(e));
+    console.error('[NEXUS] 初始 REST 兜底失败', e);
+  }
+};
+
 // 推送全量到服务端（服务端会广播给其他设备）
 export const pushAll = async (pages: Page[]) => {
   // 【阶段一修复】同 persistPages：不再无条件给每一页刷 updatedAt。
@@ -698,7 +730,12 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     syncStatus.value = 'online';
     backendReachable = true;   // WS 连上即证明后端可达（后续 pushAll 的 REST 兜底因此放行）
     lastSyncError.value = '';
+    lastAuthError.value = '';
     reconnectAttempts = 0;
+    // 新连接开始：清空可能残留的 INITIAL_SYNC 分片缓冲，避免与旧连接的分片混淆
+    initialSyncBuffer = null; initialSyncReceived = 0; initialSyncExpected = 0;
+    if (initialSyncTimer) { clearTimeout(initialSyncTimer); initialSyncTimer = null; }
+    void refreshAccount();     // 连上即拉取当前房间信息（房间标识 / 数据量 / 在线设备）
     // 阶段二 2.1：重连成功后补发离线期间累积的 outbox。
     // 断线时 persistPages 把最新快照压进 outboxPages，这里一次性上推对齐其它端，
     // 避免「切后台编辑 → 杀进程 → 重连后改动丢失」。
@@ -737,9 +774,32 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
       }
 
       if ((msg.type === 'INITIAL_SYNC' || msg.type === 'SERVER_BROADCAST') && Array.isArray(msg.data)) {
+        // INITIAL_SYNC 可能分片下发（房间数据大时）：先缓冲拼齐，收满再合并应用。
+        // SERVER_BROADCAST（实时增量）不分片，直接处理。
+        let incoming: Page[];
+        if (msg.type === 'INITIAL_SYNC' && typeof msg.chunks === 'number' && msg.chunks > 1) {
+          if (initialSyncReceived === 0) {
+            initialSyncBuffer = []; initialSyncExpected = msg.chunks;
+            // 看门狗：分片 25s 内未收齐（隧道 / 移动网络丢帧），丢弃并用 REST 全量兜底
+            if (initialSyncTimer) clearTimeout(initialSyncTimer);
+            initialSyncTimer = setTimeout(() => {
+              initialSyncTimer = null;
+              initialSyncBuffer = null; initialSyncReceived = 0; initialSyncExpected = 0;
+              lastSyncError.value = '初始数据接收超时，改用 HTTP 重新拉取…';
+              void fallbackInitialPull();
+            }, 25000);
+          }
+          initialSyncBuffer!.push(...sanitizeLoadedPages(msg.data as Page[]));
+          initialSyncReceived++;
+          if (initialSyncReceived < initialSyncExpected) return;  // 等剩余分片
+          if (initialSyncTimer) { clearTimeout(initialSyncTimer); initialSyncTimer = null; }
+          incoming = initialSyncBuffer!;
+          initialSyncBuffer = null; initialSyncReceived = 0; initialSyncExpected = 0;
+        } else {
+          incoming = sanitizeLoadedPages(msg.data as Page[]);
+        }
         // 不再「本地优先整页丢弃」，而是按块合并：本地与远端各自的编辑都尽量保留。
         // 这是从 LWW 整页覆盖走向 CRDT 的第一步；后续接 Yjs 时可整体替换本函数。
-        const incoming = sanitizeLoadedPages(msg.data as Page[]);
         // 阶段二 2.2：用合并数据的最大时间戳更新本地水位，作为下次增量拉取的 since。
         let maxTs = 0;
         for (const p of incoming) {
@@ -750,42 +810,115 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
         }
         if (maxTs > lastSyncCursor.value) { lastSyncCursor.value = maxTs; void saveCursor(); }
         void (async () => {
-          const existing = await loadLocal();
-          if (existing && existing.length > 0) {
-            const merged = mergePages(existing, incoming);
-            // 只在真正有变化时才写回，避免无谓触发 watch -> 广播回环
-            if (JSON.stringify(merged) === JSON.stringify(existing)) { remoteApplying = false; return; }
+          try {
+            const existing = await loadLocal();
+            // 本地有数据则按块合并（尽量双向保留），否则直接采用远端（首次装机/换设备）。
+            // 合并是幂等的，重复应用同一份数据不会有副作用（remoteApplying 已阻断 watch 回环）。
+            const base = (existing && existing.length > 0) ? mergePages(existing, incoming) : incoming;
             remoteApplying = true;
-            pagesRef.value = orderPages(merged);
+            pagesRef.value = orderPages(base);
             await saveLocal(pagesRef.value);
             remoteApplying = false;
-            return;
+          } catch (e) {
+            remoteApplying = false;
+            lastSyncError.value = '同步接收失败：' + (e instanceof Error ? e.message : String(e));
+            console.error('[NEXUS] INITIAL_SYNC 应用失败', e);
           }
-          // 本地为空（首次装机/换设备）：直接采用远端
-          remoteApplying = true;
-          pagesRef.value = orderPages(incoming);
-          await saveLocal(pagesRef.value);
-          remoteApplying = false;
         })();
       }
       if (msg.type === 'DEVICE_COUNT') {
         onlineDevices.value = typeof msg.data === 'number' ? msg.data : 0;
+        if (accountInfo.value) {
+          accountInfo.value = { ...accountInfo.value, device_count: onlineDevices.value };
+        }
       }
     } catch (e) {
       console.error('[NEXUS SYNC] 消息解析失败', e);
     }
   };
 
-  mySocket.onclose = () => {
+  mySocket.onclose = (ev?: CloseEvent) => {
     if (socket !== mySocket) return;  // 已被取代的旧连接，忽略（不触发重连）
+    if (ev && ev.code === 1008) {
+      // 服务端因密钥无效主动断开（见 backend main.py WS 握手 close(1008)）
+      lastAuthError.value = '密钥被拒绝（后端返回 1008）：访问密钥不正确，或后端未启用该密钥';
+    }
     syncStatus.value = 'offline';
     socket = null;
+    accountInfo.value = null;
     scheduleReconnect(pagesRef);
   };
 
   socket.onerror = () => {
     // onclose 会紧随其后触发，统一在 onclose 处理重连
   };
+};
+
+// 拉取当前房间信息（房间标识 / 数据量 / 在线设备），连接成功后调用。
+const refreshAccount = async () => {
+  try {
+    const headers: Record<string, string> = {};
+    if (SYNC_API_KEY) headers['Authorization'] = `Bearer ${SYNC_API_KEY}`;
+    const res = await fetch(`${API_BASE}/me`, { headers });
+    if (res.ok) {
+      const d = await res.json();
+      accountInfo.value = {
+        room_label: d.room_label,
+        page_count: d.page_count,
+        device_count: d.device_count,
+      };
+    }
+  } catch { /* 忽略：纯本地或后端不可达时不影响编辑 */ }
+};
+
+// 保存同步配置前的即时校验：返回四态之一，供设置面板明确告知用户。
+//   unreachable  → 地址/网络连不通（含后端 5xx）
+//   unauthorized → 密钥被拒（HTTP 401）
+//   empty        → 已连，但本房间无数据（多半用错了密钥/模式）
+//   ok           → 已连且有数据
+export const probeServer = async (
+  server: string,
+  key: string,
+): Promise<{
+  state: 'unreachable' | 'unauthorized' | 'empty' | 'ok';
+  message: string;
+  info?: { room_label: string; page_count: number; device_count: number };
+}> => {
+  const s = (server || '').replace(/\/+$/, '');
+  const base = s ? `${s}/api` : '/api';
+  // 1) 连通性
+  try {
+    const h = await fetch(`${base}/health`);
+    if (!h.ok) return { state: 'unreachable', message: '无法连接后端：请检查服务器地址或网络' };
+  } catch {
+    return { state: 'unreachable', message: '无法连接后端：请检查服务器地址或网络' };
+  }
+  // 2) 鉴权 + 数据量
+  const k = (key || '').trim();
+  const headers: Record<string, string> = {};
+  if (k) headers['Authorization'] = `Bearer ${k}`;
+  let res: Response;
+  try {
+    res = await fetch(`${base}/me`, { headers });
+  } catch {
+    return { state: 'unreachable', message: '无法连接后端：请检查服务器地址或网络' };
+  }
+  if (res.status === 401) {
+    return { state: 'unauthorized', message: '密钥被拒绝（401）：访问密钥不正确，或后端未启用该密钥' };
+  }
+  if (!res.ok) {
+    return { state: 'unreachable', message: `后端返回错误（HTTP ${res.status}）` };
+  }
+  const d = await res.json();
+  const info = { room_label: d.room_label, page_count: d.page_count, device_count: d.device_count };
+  if (d.page_count === 0) {
+    return {
+      state: 'empty',
+      message: '已连接，但本房间暂无数据——可能访问密钥/模式与创建数据时不同（旧数据或落在「开放模式」公共房间）',
+      info,
+    };
+  }
+  return { state: 'ok', message: `已连接 · 房间 ${d.room_label} · ${d.page_count} 页`, info };
 };
 
 // 自动重连上限。超过后停止重试——LocalFirst 模式下纯本地编辑完全可用，

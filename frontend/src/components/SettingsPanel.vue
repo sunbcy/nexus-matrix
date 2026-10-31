@@ -18,10 +18,14 @@
 import {computed, onMounted, ref} from 'vue';
 import {useMobileInput} from '../composables/useMobileInput';
 import {
+  accountInfo,
   exportBackup,
   importBackup,
   importMarkdown,
+  lastAuthError,
+  lastSyncError,
   onlineDevices,
+  probeServer,
   retrySync,
   storageError,
   syncStatus
@@ -96,16 +100,56 @@ const formatBytes = (n: number): string => {
 };
 
 const syncLabel = computed(() => {
+  if (lastAuthError.value) return '密钥被拒绝';
   if (syncStatus.value === 'online') return `已连接 · 在线设备 ${onlineDevices.value}`;
   if (syncStatus.value === 'connecting') return '正在连接…';
   return '未连接（纯本地模式）';
 });
 
-const saveServer = () => {
+// 账户/房间明细：让「访问密钥 = 房间」对用户可见，并提示空房间
+const syncDetail = computed(() => {
+  if (lastAuthError.value) return lastAuthError.value;
+  if (lastSyncError.value) return lastSyncError.value;
+  if (syncStatus.value === 'online' && accountInfo.value) {
+    const a = accountInfo.value;
+    const dataTip = a.page_count === 0 ? '本房间暂无数据' : `${a.page_count} 页`;
+    return `房间 ${a.room_label} · ${dataTip}`;
+  }
+  return '';
+});
+
+// 跨域提醒：后端地址与当前页面不同源时（常见于经公网域名访问却填了 localhost/内网 IP），
+// 在手机/其它设备上「localhost」会指向那台设备自身而连不上，且易触发 CORS。经域名访问应留空走同源。
+const crossOriginWarn = computed(() => {
+  const v = (serverInput.value || '').trim();
+  if (!v) return '';
+  try {
+    const u = new URL(v);
+    if (u.origin === window.location.origin) return '';
+    return `当前页面来自 ${window.location.origin}，你填的后端是 ${u.origin}（跨域）。经域名访问建议留空，自动走同源；否则在手机/其它设备上「localhost」会指向那台设备自身而连不上。`;
+  } catch {
+    return '';
+  }
+});
+
+const probeMsg = ref('');
+const probeState = ref<'idle' | 'unreachable' | 'unauthorized' | 'empty' | 'ok'>('idle');
+
+const saveServer = async () => {
   const v = serverInput.value.trim().replace(/\/+$/, '');
+  const k = apiKeyInput.value.trim();
+  // 保存前先校验，给用户明确反馈：连不通 / 密钥被拒 / 房间为空 / 正常
+  savedMsg.value = '正在校验连接…';
+  const r = await probeServer(v, k);
+  probeState.value = r.state;
+  probeMsg.value = r.message;
+  if (r.state === 'unreachable' || r.state === 'unauthorized') {
+    savedMsg.value = '';
+    return;  // 配置无效，不写入，避免把坏配置固化
+  }
+  // 校验通过（含「房间为空」——可能是用户想用的全新房间）：保存并重载生效
   if (v) localStorage.setItem(SYNC_KEY, v);
   else localStorage.removeItem(SYNC_KEY);
-  const k = apiKeyInput.value.trim();
   if (k) localStorage.setItem(API_KEY_STORAGE, k);
   else localStorage.removeItem(API_KEY_STORAGE);
   savedMsg.value = '已保存，正在重新加载以生效…';
@@ -264,10 +308,12 @@ const onRestoreKilledBlocks = () => {
           <div class="text-[11px] font-['Rajdhani',sans-serif] text-dim uppercase tracking-wider mb-2">同步</div>
           <div class="flex items-center justify-between gap-3 mb-2">
             <span class="text-muted">状态</span>
-            <span class="font-['JetBrains_Mono',monospace] text-xs text-muted">{{ syncLabel }}</span>
+            <span class="font-['JetBrains_Mono',monospace] text-xs" :class="lastAuthError ? 'text-danger' : 'text-muted'">{{ syncLabel }}</span>
           </div>
-          <label class="block text-xs text-dim mb-1">后端地址（留空则纯本地）</label>
-          <input v-model="serverInput" type="text" inputmode="url" placeholder="http://192.168.1.10:8010"
+          <p v-if="syncDetail" class="text-xs text-dim mb-2 font-['JetBrains_Mono',monospace]">{{ syncDetail }}</p>
+          <p v-if="crossOriginWarn" class="mt-1 text-xs text-warn">{{ crossOriginWarn }}</p>
+          <label class="block text-xs text-dim mb-1">后端地址（通过公网域名访问时通常留空，走同源）</label>
+          <input v-model="serverInput" type="text" inputmode="url" placeholder="http://192.168.1.10:8010 或留空(同源)"
                  class="w-full bg-surface border border-line focus:border-accent outline-none px-2 py-2 text-sm text-display rounded-sm transition-colors placeholder:text-dim/60" />
           <label class="block text-xs text-dim mb-1 mt-3">访问密钥（后端启用鉴权时填写）</label>
           <input v-model="apiKeyInput" type="password" placeholder="与后端 NEXUS_API_KEY 一致"
@@ -282,6 +328,11 @@ const onRestoreKilledBlocks = () => {
               立即重试
             </button>
           </div>
+          <p v-if="probeMsg" class="mt-2 text-xs font-['JetBrains_Mono',monospace]" :class="{
+            'text-danger': probeState === 'unreachable' || probeState === 'unauthorized',
+            'text-warn': probeState === 'empty',
+            'text-success': probeState === 'ok',
+          }">{{ probeMsg }}</p>
           <p v-if="savedMsg" class="mt-2 text-xs text-accent">{{ savedMsg }}</p>
         </section>
 
