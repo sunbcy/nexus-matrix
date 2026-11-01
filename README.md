@@ -277,6 +277,61 @@ cd android
 - 前端配置：「设置」面板「访问密钥」输入框，或 URL 加 `?apiKey=<key>`；构建期可用 `VITE_API_KEY` 注入。空密钥即开放模式。
 - 建议：配合 Cloudflare Access / Tailscale 做二次访问控制；公网务必用 wss/https（TLS）避免明文传输文档。
 
+## 公网部署（Cloudflare Tunnel 快速路径）
+
+不想租 VPS、家里有一台**常开机**机器时，用 Cloudflare Tunnel 把 `localhost:8010` 暴露成公网 `https://你的域名`——**无需公网 IP、端口转发、TLS 证书**（由 Cloudflare 边缘自动签发/续期）。完整版（含 VPS + Caddy 方案）见 `PUBLIC_DEPLOYMENT.md`。
+
+**前置**：后端按上文「启动方式」跑起来，并设置 `NEXUS_API_KEY`（公网必须鉴权）；前端用 `STATIC_DIR` 同源托管（`yarn build` 后指向 `frontend/dist`），这样只暴露一个源、`wss` 自动生效。
+
+```bash
+# 1) 装 cloudflared
+brew install cloudflare/cloudflare/cloudflared   # macOS
+# sudo apt install cloudflared                    # Debian/Ubuntu
+# winget install Cloudflare.cloudflared           # Windows
+
+# 2) 零配置临时域名，先验证整条链路（每次重启变化，仅用于验证）
+cloudflared tunnel --url http://localhost:8010
+# 终端打印 https://<随机>.trycloudflare.com → 浏览器打开应看到同源前端；
+# 再访问 https://<随机>.trycloudflare.com/api/pages 应返回 JSON。
+
+# 3) 绑固定域名（稳定使用）
+cloudflared tunnel login
+cloudflared tunnel create nexus
+# 写 ~/.cloudflared/config.yml（参考仓库 backend/tunnel-example-config.yml）
+cloudflared tunnel route dns nexus nexus.example.com
+cloudflared service install && sudo systemctl start cloudflared
+```
+
+配置文件 `~/.cloudflared/config.yml`：
+
+```yaml
+tunnel: nexus
+credentials-file: ~/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: nexus.example.com
+    service: http://localhost:8010   # 后端已同源托管前端，/api、/ws、静态都走这一个源
+  - service: http_status:404
+```
+
+> 临时子域每次重启都变、且可能限速，仅用于验证；长期用第 3 步绑固定域名。机器断网/睡眠 = 服务不可达，务必保证常开 + 禁止睡眠。
+
+### Google 登录（OAuth）注意事项
+
+「用 Google 登录」的回调地址必须是 **HTTPS 且不能是裸 IP**，因此必须经 Cloudflare（或自有域名）拿到对外 HTTPS 地址：
+
+- 在 **Google Cloud Console** 把 `https://你的域名/api/auth/oauth/google/callback` 注册为回调（OAuth 同意屏幕把你的账号加进「测试用户」）；
+- 后端设置：
+  ```bash
+  OAUTH_GOOGLE_ID=<Client ID>
+  OAUTH_GOOGLE_SECRET=<Client Secret>
+  # 经 Tunnel / 反代时必填：后端看到的是 http://localhost，必须用公网 base 覆盖
+  OAUTH_REDIRECT_BASE=https://nexus.example.com
+  ```
+  三项齐全后 `/api/auth/config` 返回 `{"google_oauth":true}`，「用 Google 登录」按钮即生效。
+- 开发期不想配 Google 时，设 `NEXUS_DEV_LOGIN=1` 启用免密 `/api/auth/dev-login`（**生产务必关掉**，否则任何人可免密登录）。
+
+---
+
 ## 说明与后续方向
 
 - 后端已落地 **SQLite 持久化**（`nexus.db`，全局锁防并发），重启不丢数据；如需水平扩展再考虑 Postgres。

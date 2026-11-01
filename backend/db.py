@@ -22,6 +22,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -126,6 +127,37 @@ class Database(ABC):
     async def get_membership(self, user_id: str, room: str) -> Optional[Dict]:
         """查单条成员关系；get_room 校验 JWT 时用来确认用户对该 room 有权。"""
 
+    @abstractmethod
+    async def get_members_by_room(self, room: str) -> List[Dict]:
+        """列出某工作区的全部成员（含 joined 的 user 信息：user_id/email/name/role/status/label）。"""
+
+    @abstractmethod
+    async def update_membership(self, user_id: str, room: str,
+                               role: Optional[str] = None,
+                               status: Optional[str] = None) -> None:
+        """更新成员的角色/状态（改角色或接受邀请时把 status 置为 active）。"""
+
+    @abstractmethod
+    async def delete_membership(self, user_id: str, room: str) -> None:
+        """移除某成员（删除成员关系行）。"""
+
+    @abstractmethod
+    async def create_invite_link(self, token: str, room: str, role: str,
+                                created_by: str, expires_at: float) -> None:
+        """写入一条开放邀请链接（任何已登录用户持 token 即可加入该 room）。"""
+
+    @abstractmethod
+    async def get_invite_link(self, token: str) -> Optional[Dict]:
+        """按 token 取邀请链接；不存在返回 None。"""
+
+    @abstractmethod
+    async def list_invite_links(self, room: str) -> List[Dict]:
+        """列出某工作区当前仍有效的邀请链接（未过期）。"""
+
+    @abstractmethod
+    async def revoke_invite_link(self, token: str) -> None:
+        """撤销（删除）一条邀请链接。"""
+
 
 # ============================================================
 # SQLite 实现
@@ -166,6 +198,12 @@ class SQLiteDatabase(Database):
         "PRIMARY KEY (user_id, room))"
     )
 
+    _CREATE_INVITE_LINKS = (
+        "CREATE TABLE IF NOT EXISTS invite_links "
+        "(token TEXT PRIMARY KEY, room TEXT NOT NULL, role TEXT NOT NULL, "
+        "created_by TEXT, created_at REAL, expires_at REAL)"
+    )
+
     def __init__(self, path: str) -> None:
         self._path = path
         self._lock = threading.Lock()
@@ -184,6 +222,7 @@ class SQLiteDatabase(Database):
         self._conn.execute(self._CREATE_ASSETS)
         self._conn.execute(self._CREATE_USERS)
         self._conn.execute(self._CREATE_MEMBERSHIPS)
+        self._conn.execute(self._CREATE_INVITE_LINKS)
         self._conn.commit()
         self._sync_migrate()
 
@@ -365,6 +404,74 @@ class SQLiteDatabase(Database):
             return None
         return {"room": row[0], "role": row[1], "status": row[2], "label": row[3]}
 
+    def _sync_get_members_by_room(self, room: str) -> List[Dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT m.user_id, u.email, u.name, m.role, m.status, m.label "
+                "FROM memberships m LEFT JOIN users u ON u.id=m.user_id "
+                "WHERE m.room=?", (room,)
+            ).fetchall()
+        return [{"user_id": r[0], "email": r[1], "name": r[2],
+                 "role": r[3], "status": r[4], "label": r[5]} for r in rows]
+
+    def _sync_update_membership(self, user_id: str, room: str,
+                                role: Optional[str], status: Optional[str]) -> None:
+        with self._lock:
+            if role is not None and status is not None:
+                self._conn.execute(
+                    "UPDATE memberships SET role=?, status=? WHERE user_id=? AND room=?",
+                    (role, status, user_id, room))
+            elif role is not None:
+                self._conn.execute(
+                    "UPDATE memberships SET role=? WHERE user_id=? AND room=?",
+                    (role, user_id, room))
+            elif status is not None:
+                self._conn.execute(
+                    "UPDATE memberships SET status=? WHERE user_id=? AND room=?",
+                    (status, user_id, room))
+            self._conn.commit()
+
+    def _sync_delete_membership(self, user_id: str, room: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM memberships WHERE user_id=? AND room=?", (user_id, room))
+            self._conn.commit()
+
+    def _sync_create_invite_link(self, token: str, room: str, role: str,
+                                created_by: str, expires_at: float) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO invite_links "
+                "(token, room, role, created_by, created_at, expires_at) VALUES (?,?,?,?,?,?)",
+                (token, room, role, created_by, time.time(), expires_at))
+            self._conn.commit()
+
+    def _sync_get_invite_link(self, token: str) -> Optional[Dict]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT token, room, role, created_by, created_at, expires_at "
+                "FROM invite_links WHERE token=?", (token,)
+            ).fetchone()
+        if not row:
+            return None
+        return {"token": row[0], "room": row[1], "role": row[2], "created_by": row[3],
+                "created_at": row[4], "expires_at": row[5]}
+
+    def _sync_list_invite_links(self, room: str) -> List[Dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT token, room, role, created_by, created_at, expires_at "
+                "FROM invite_links WHERE room=? AND (expires_at IS NULL OR expires_at > ?) "
+                "ORDER BY created_at DESC", (room, time.time())
+            ).fetchall()
+        return [{"token": r[0], "room": r[1], "role": r[2], "created_by": r[3],
+                 "created_at": r[4], "expires_at": r[5]} for r in rows]
+
+    def _sync_revoke_invite_link(self, token: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM invite_links WHERE token=?", (token,))
+            self._conn.commit()
+
     # ---- 异步接口实现 ----
     def _run(self, func, *args):
         # 在协程里用 get_running_loop（get_event_loop 在新版本中已废弃/行为不同）
@@ -434,6 +541,30 @@ class SQLiteDatabase(Database):
     async def get_membership(self, user_id: str, room: str) -> Optional[Dict]:
         return await self._run(self._sync_get_membership, user_id, room)
 
+    async def get_members_by_room(self, room: str) -> List[Dict]:
+        return await self._run(self._sync_get_members_by_room, room)
+
+    async def update_membership(self, user_id: str, room: str,
+                               role: Optional[str] = None,
+                               status: Optional[str] = None) -> None:
+        await self._run(self._sync_update_membership, user_id, room, role, status)
+
+    async def delete_membership(self, user_id: str, room: str) -> None:
+        await self._run(self._sync_delete_membership, user_id, room)
+
+    async def create_invite_link(self, token: str, room: str, role: str,
+                                created_by: str, expires_at: float) -> None:
+        await self._run(self._sync_create_invite_link, token, room, role, created_by, expires_at)
+
+    async def get_invite_link(self, token: str) -> Optional[Dict]:
+        return await self._run(self._sync_get_invite_link, token)
+
+    async def list_invite_links(self, room: str) -> List[Dict]:
+        return await self._run(self._sync_list_invite_links, room)
+
+    async def revoke_invite_link(self, token: str) -> None:
+        await self._run(self._sync_revoke_invite_link, token)
+
 
 # ============================================================
 # Postgres 实现（asyncpg）
@@ -486,6 +617,12 @@ class PostgresDatabase(Database):
         "PRIMARY KEY (user_id, room))"
     )
 
+    _CREATE_INVITE_LINKS = (
+        "CREATE TABLE IF NOT EXISTS invite_links ("
+        "token TEXT PRIMARY KEY, room TEXT NOT NULL, role TEXT NOT NULL, "
+        "created_by TEXT, created_at DOUBLE PRECISION, expires_at DOUBLE PRECISION)"
+    )
+
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._pool: Any = None
@@ -504,6 +641,7 @@ class PostgresDatabase(Database):
             await conn.execute(self._CREATE_INDEX)
             await conn.execute(self._CREATE_USERS)
             await conn.execute(self._CREATE_MEMBERSHIPS)
+            await conn.execute(self._CREATE_INVITE_LINKS)
         await self._migrate()
 
     async def _migrate(self) -> None:
@@ -640,6 +778,67 @@ class PostgresDatabase(Database):
                 "WHERE user_id=$1 AND room=$2", user_id, room
             )
         return dict(row) if row else None
+
+    async def get_members_by_room(self, room: str) -> List[Dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT m.user_id, u.email, u.name, m.role, m.status, m.label "
+                "FROM memberships m LEFT JOIN users u ON u.id=m.user_id "
+                "WHERE m.room=$1", room
+            )
+        return [dict(r) for r in rows]
+
+    async def update_membership(self, user_id: str, room: str,
+                               role: Optional[str] = None,
+                               status: Optional[str] = None) -> None:
+        async with self._pool.acquire() as conn:
+            if role is not None and status is not None:
+                await conn.execute(
+                    "UPDATE memberships SET role=$3, status=$4 WHERE user_id=$1 AND room=$2",
+                    user_id, room, role, status)
+            elif role is not None:
+                await conn.execute(
+                    "UPDATE memberships SET role=$3 WHERE user_id=$1 AND room=$2",
+                    user_id, room, role)
+            elif status is not None:
+                await conn.execute(
+                    "UPDATE memberships SET status=$3 WHERE user_id=$1 AND room=$2",
+                    user_id, room, status)
+
+    async def delete_membership(self, user_id: str, room: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM memberships WHERE user_id=$1 AND room=$2", user_id, room)
+
+    async def create_invite_link(self, token: str, room: str, role: str,
+                                created_by: str, expires_at: float) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO invite_links (token, room, role, created_by, created_at, expires_at) "
+                "VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (token) DO UPDATE SET "
+                "room=$2, role=$3, created_by=$4, created_at=$5, expires_at=$6",
+                token, room, role, created_by, time.time(), expires_at)
+
+    async def get_invite_link(self, token: str) -> Optional[Dict]:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT token, room, role, created_by, created_at, expires_at "
+                "FROM invite_links WHERE token=$1", token
+            )
+        return dict(row) if row else None
+
+    async def list_invite_links(self, room: str) -> List[Dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT token, room, role, created_by, created_at, expires_at "
+                "FROM invite_links WHERE room=$1 AND (expires_at IS NULL OR expires_at > $2) "
+                "ORDER BY created_at DESC", room, time.time()
+            )
+        return [dict(r) for r in rows]
+
+    async def revoke_invite_link(self, token: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute("DELETE FROM invite_links WHERE token=$1", token)
 
 
 def create_database() -> Database:
