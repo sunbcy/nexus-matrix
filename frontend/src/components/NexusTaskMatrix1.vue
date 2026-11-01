@@ -1112,15 +1112,24 @@
 </template>
 
 <script setup lang="ts">
-import {computed, nextTick, onUnmounted, reactive, ref, watch} from 'vue';
-import {createRemotePage, dataVersion, markDirty, onlineDevices, syncStatus,} from '../composables/useSync';
-import {setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
+import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue';
+import {
+  createRemotePage, dataVersion, markDirty, onlineDevices, syncStatus,
+  retrySync, setStorageWarning, initSync, flushPendingSave, setReconcilePage,
+  closeSync, writePrevIds, writePagePrevIds, previewNotionZip, commitImportPages,
+  type PageVersion, getPageHistory, deletePageVersion, clearPageHistory,
+} from '../composables/useSync';
+import {installNativeBridge, setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
 import {App} from '@capacitor/app';
-import {newPageId} from '../composables/ids';
-import {getAsset, isAssetRef} from '../composables/assets';
+import {useMobileInput} from '../composables/useMobileInput';
+import {newBlockId, newPageId} from '../composables/ids';
+import {randomEmoji} from '../composables/emoji';
+import {getAsset, isAssetRef, resolveAsset, saveImageAsset, warmAssets} from '../composables/assets';
+import {hasNotionIdSuffix, stripNotionId} from '../composables/zipImport';
+import {blockContentKey, docFingerprint, planDuplicatePages, planWronglyKilledBlocks} from '../composables/importMerge';
 import SettingsPanel from './SettingsPanel.vue';
 import PageIconPicker from './PageIconPicker.vue';
-import PageCoverPicker from './PageCoverPicker.vue';
+import PageCoverPicker, {COVER_GRADIENTS} from './PageCoverPicker.vue';
 
 // === 数据结构 ===
 interface Task {
@@ -4186,23 +4195,33 @@ const deleteBlockAndFocus = (task: Task) => {
   const idx = list.findIndex((t: Task) => t.id === task.id);
   if (idx === -1) return;
 
-  list.splice(idx, 1);
+  // 软删：打 deletedAt 墓碑，而不是硬 splice。
+  // 原因：_merge_pages（前端 mergePages / 后端 _tasks_lww）是「块级尽量保留双方」，
+  // 硬删让块从 tasks 消失后上推，合并时发现其他端仍持有该块就会把它恢复，
+  // 表现为「叉掉又复活 / 其他设备删不掉」。墓碑随上推到达各端，合并逻辑会就地
+  // 给对应块打相同墓碑（前端 142 行 / 后端 359 行），删除才能正确传播。
+  // 注意：只改块属性不会触发 pageWatch 的浅订阅，必须显式 markDirty 才会上推。
+  const now = Date.now();
+  task.deletedAt = now;
+  task.updatedAt = now;
   selectedMediaId.value = null;
 
-  // 删除图片块时同步清掉资产，否则 IndexedDB 会无限堆积孤儿图片
-  if (task.type === 'image' && isAssetRef(task.payload?.url)) {
-    void deleteAsset(task.payload.url);
-  }
+  // 不再本地删除资产：块墓碑仍引用该 asset，且其他端可能正在显示 / 回源，
+  // 删本地 blob 会导致其他端破图。孤儿资产由独立的未使用清理处理。
 
-  // 向前找最近的文本块；没有则向后找；都没有则新建一个，保证永远有可落点
-  const prevEditable = [...list.slice(0, idx)].reverse().find((t: Task) => EDITABLE_TYPES.includes(t.type));
-  if (prevEditable) { setFocusConfig(prevEditable.id, 'end'); return; }
-  const nextEditable = list.slice(idx).find((t: Task) => EDITABLE_TYPES.includes(t.type));
-  if (nextEditable) { setFocusConfig(nextEditable.id, 'start'); return; }
+  const mark = () => { if (activePage.value) markDirty(activePage.value.id); };
+  // 焦点跳到前一个 / 后一个「活」的可编辑块（跳过已软删的块）
+  const before = [...list.slice(0, idx)].reverse()
+    .find((t: Task) => EDITABLE_TYPES.includes(t.type) && !t.deletedAt);
+  if (before) { setFocusConfig(before.id, 'end'); mark(); return; }
+  const after = list.slice(idx + 1)
+    .find((t: Task) => EDITABLE_TYPES.includes(t.type) && !t.deletedAt);
+  if (after) { setFocusConfig(after.id, 'start'); mark(); return; }
 
   const newId = newBlockId();
   list.push({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0, prevId: null });
   setFocusConfig(newId, 'start');
+  mark();
 };
 const duplicateTask = (id: string) => {
   if (!activePage.value) return;
@@ -4377,6 +4396,11 @@ const insertImageBlock = (file: File, afterIndex: number) => {
   });
 };
 
+// 粘贴图片去重：浏览器 / 代理（如 Cloudflare）环境可能把「同一次图片粘贴」派发成
+// 两次 paste 事件，导致一次粘贴插入两张图。按「文件名+大小+类型」在近 600ms 内去重。
+let lastImagePasteSig = '';
+let lastImagePasteAt = 0;
+
 // 多行粘贴自动拆块（对齐 Notion：多行文本粘贴后按行拆成多个块）
 const handlePaste = (e: ClipboardEvent, task: Task, index: number) => {
   if (!activePage.value) return;
@@ -4392,6 +4416,11 @@ const handlePaste = (e: ClipboardEvent, task: Task, index: number) => {
     const imageFile = Array.from(files).find((f: File) => f.type.startsWith('image/'));
     if (imageFile) {
       e.preventDefault();
+      const sig = `${imageFile.name}|${imageFile.size}|${imageFile.type}`;
+      const tnow = Date.now();
+      if (sig === lastImagePasteSig && tnow - lastImagePasteAt < 600) return; // 同一次粘贴被重复派发，跳过
+      lastImagePasteSig = sig;
+      lastImagePasteAt = tnow;
       insertImageBlock(imageFile, index);
       return;
     }

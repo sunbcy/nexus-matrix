@@ -25,7 +25,15 @@ import {getRuntimeConfig} from '../runtimeConfig';
 
 // 阶段二 2.3：把图片 Blob 同步到后端，使其它设备能解析 asset: 引用。
 // 与页面同步同源：优先 URL ?syncServer= / 设置面板，否则走同源（Vite 代理）。
-const SYNC_SERVER = (getRuntimeConfig().syncServer || (import.meta as any).env?.VITE_SYNC_SERVER || '').replace(/\/+$/, '');
+// 未显式配置时回退到「页面同源」(location.origin)，与 useSync.ts 保持一致——
+// 否则标准自托管（前端与后端同源 / 同一 Tunnel）下 SYNC_SERVER 为空，
+// uploadAssetToServer / fetchAssetFromServer 会直接 return，图片永不上传也不回源，
+// 表现为「文字能同步、图片不能」。file:// 等非 http(s) 源无可用后端，保持空（纯本地）。
+const _assetPageOrigin =
+  typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)
+    ? window.location.origin
+    : '';
+const SYNC_SERVER = (getRuntimeConfig().syncServer || (import.meta as any).env?.VITE_SYNC_SERVER || _assetPageOrigin || '').replace(/\/+$/, '');
 const ASSET_API_BASE = SYNC_SERVER ? `${SYNC_SERVER}/api` : '/api';
 // 访问密钥：后端开启鉴权时，资产上传/下载必须带 Authorization，否则会被 401 挡掉（图全破）。
 // 与 useSync.ts 同来源读取（URL ?apiKey= / 构建期 VITE_API_KEY）。
