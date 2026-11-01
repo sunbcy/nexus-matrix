@@ -196,8 +196,33 @@ async function consumeInviteLink(invite: string): Promise<void> {
 }
 
 function loginWithGoogle(): void {
-  // 后端中转：跳 Google → 回调 → 回跳 /?apiKey=<jwt>（runtimeConfig 会写回 localStorage）
-  window.location.assign('/api/auth/oauth/google');
+  const isNative = !!(window as any).Capacitor?.isNativePlatform?.();
+  if (isNative) {
+    // 安卓：谷歌 OAuth 无法在 WebView 内完成——Google 会以 disallowed_useragent 拒绝
+    // embedded WebView 的 OAuth 请求。改为走「系统浏览器代理 + 自定义 scheme 深链」方案
+    // （详见 backend/auth.py 与 MainActivity 深链处理）：
+    // 1) 把后端（OAuth 入口，须为公网 https）地址交给原生层，供深链回跳时构造回调 URL；
+    // 2) 以 com.nexusmatrix.app://oauth/callback 作为 Google 回跳地址，由原生层拦截转交。
+    // 关键修复：必须用「系统浏览器」打开 OAuth 入口，而非 WebView 内 window.location.assign
+    // （后者既会被 Google 拒绝，又会在 file:// 协议下退化为 /api 相对路径跳到无效地址）。
+    const syncServer = (
+      getRuntimeConfig().syncServer ||
+      (import.meta as any).env?.VITE_SYNC_SERVER ||
+      ''
+    ).replace(/\/+$/, '');
+    (window as any).NexusNativeBridge?.setOAuthBackend?.(syncServer);
+    const redirectUri = 'com.nexusmatrix.app://oauth/callback';
+    // 用 syncServer 构造绝对 http(s) URL，避免 file:// 下相对路径失效。
+    const oauthUrl = syncServer
+      ? `${syncServer}/api/auth/oauth/google?redirect_uri=${encodeURIComponent(redirectUri)}`
+      : `/api/auth/oauth/google?redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const opened = (window as any).NexusNativeBridge?.openExternal?.(oauthUrl);
+    // 兜底（老版本原生无 openExternal 桥）：仍尝试在 WebView 内跳转（可能失败，仅降级路径）。
+    if (!opened && syncServer) window.location.assign(oauthUrl);
+    return;
+  }
+  // Web：后端中转，跳 Google → 回调 → 回跳 /?apiKey=<jwt>（runtimeConfig 写回 localStorage）
+  window.location.assign(`${API_BASE}/auth/oauth/google`);
 }
 
 async function switchWorkspace(room: string): Promise<void> {

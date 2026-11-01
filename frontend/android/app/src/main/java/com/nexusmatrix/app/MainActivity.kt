@@ -1,10 +1,15 @@
 package com.nexusmatrix.app
 
+import android.content.Intent
 import android.graphics.Color
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup
 import android.webkit.WebView
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.ui.platform.ComposeView
@@ -25,6 +30,10 @@ import com.nexusmatrix.app.ui.PullRefreshController
  * 现在是全屏 WebView，把垂直空间全部留给编辑器；设置入口迁到 Web 侧边栏右上角。
  */
 class MainActivity : BridgeActivity() {
+    // 深链 OAuth 状态
+    private var jsBridge: NexusJsBridge? = null
+    private var localBase: String? = null          // App 自身本地服务源（https://localhost[:port]）
+    private var lastOAuthData: String? = null       // 防止 onResume 重复处理同一条深链
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // 首行兜底：确保任何代码（enableEdgeToEdge 的 window.decorView 访问等）
@@ -55,7 +64,9 @@ class MainActivity : BridgeActivity() {
         // 原生据此只在文档列表页顶部启用 SwipeRefreshLayout，触发时走 Web 侧重新同步。
         val pullRefresh = PullRefreshController()
         try {
-            webView.addJavascriptInterface(NexusJsBridge(pullRefresh), "NexusNativeBridge")
+            val bridge = NexusJsBridge(pullRefresh, this::openInBrowser)
+            webView.addJavascriptInterface(bridge, "NexusNativeBridge")
+            jsBridge = bridge
         } catch (e: Throwable) {
             Log.e(TAG, "注册 NexusNativeBridge 失败", e)
         }
@@ -99,6 +110,120 @@ class MainActivity : BridgeActivity() {
         } catch (e: Throwable) {
             // 任何意外都保留 Capacitor 默认布局，保证「能装能开能连」
             Log.e(TAG, "原生壳加载失败，保留 Capacitor 默认布局", e)
+        }
+
+        // 记录 App 自身本地服务源（用于把令牌 apiKey 带回 localhost 的 SPA）。
+        localBase = deriveLocalBase()
+        // 注册系统/手势返回（OnBackInvokedCallback），把返回交给 Web 处理。
+        registerBackInvoked()
+        // 冷启动即由深链唤起（用户已在浏览器完成 Google 登录后回跳）时也需处理。
+        handleOAuthDeepLink(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOAuthDeepLink(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // onResume 每次回到前台都会触发；用 lastOAuthData 去重，避免重复处理。
+        handleOAuthDeepLink(intent)
+    }
+
+    /**
+     * 处理 OAuth 深链 com.nexusmatrix.app://oauth/callback：
+     *  - 带 code  ：浏览器已拿到 Google 授权码，但令牌交换须由「携带 OAuth session cookie
+     *    的同一浏览器」完成。故这里再把浏览器拉起来访问后端回调端点。
+     *  - 带 apiKey：后端已换发 JWT，把它带回 App 自己的 WebView（localhost 源）写入
+     *    localStorage，完成登录。
+     */
+    private fun handleOAuthDeepLink(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme != "com.nexusmatrix.app") return
+        val full = data.toString()
+        if (full == lastOAuthData) return
+        val webView = bridge?.webView ?: return
+        val code = data.getQueryParameter("code")
+        val apiKey = data.getQueryParameter("apiKey")
+        when {
+            !code.isNullOrEmpty() -> {
+                val backend = jsBridge?.oauthBackend
+                if (backend.isNullOrEmpty()) {
+                    Log.e(TAG, "OAuth 深链收到 code，但原生层未记录后端地址（请先在 Web 侧点登录）")
+                    return
+                }
+                val callback = "$backend/api/auth/oauth/google/callback?${data.encodedQuery}"
+                if (openInBrowser(callback)) lastOAuthData = full
+            }
+            !apiKey.isNullOrEmpty() -> {
+                lastOAuthData = full
+                val base = localBase ?: deriveLocalBase()
+                val target = "$base/?apiKey=$apiKey"
+                Log.i(TAG, "OAuth 完成，回跳 SPA：$target")
+                webView.post { webView.loadUrl(target) }
+            }
+        }
+    }
+
+    /** 推算 App 本地服务源（scheme://host[:port]）。优先用 Capacitor 的 serverUrl。 */
+    private fun deriveLocalBase(): String {
+        val s = bridge?.serverUrl?.takeIf { it.isNotEmpty() }?.removeSuffix("/")
+        if (!s.isNullOrEmpty() && s.startsWith("http")) {
+            val u = Uri.parse(s)
+            val port = if (u.port != -1) ":${u.port}" else ""
+            return "${u.scheme}://${u.host}$port"
+        }
+        val w = bridge?.webView?.url?.takeIf { it.isNotEmpty() }
+        if (!w.isNullOrEmpty() && w.startsWith("http")) {
+            val u = Uri.parse(w)
+            val port = if (u.port != -1) ":${u.port}" else ""
+            return "${u.scheme}://${u.host}$port"
+        }
+        return "https://localhost"
+    }
+
+    /** 用系统默认浏览器打开 URL（OAuth 代理：复用其持有的 session cookie）。返回是否成功发起。 */
+    private fun openInBrowser(url: String): Boolean {
+        return try {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            startActivity(i)
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "打开浏览器失败: $url", e)
+            false
+        }
+    }
+
+    // === 安卓系统/手势返回（内容页→列表页，列表页→退出 App）===
+    // 预测性返回手势（Android 13+ / targetSdk>=34）：系统不再回调 onBackPressed，而改为回调
+    // OnBackInvokedCallback。若不显式注册，从屏幕边缘向内划的返回手势不会触发任何逻辑——
+    // 这正是此前「内容页滑回列表」失效的回归根因。这里注册后把返回交给 Web 侧的
+    // window.__nexusBack 处理（见前端 onBackButton）。
+    private var backCallback: OnBackInvokedCallback? = null
+
+    private fun registerBackInvoked() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            val cb = OnBackInvokedCallback { dispatchBackToWeb() }
+            backCallback = cb
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb)
+        }
+    }
+
+    // 兜底：旧系统 / 未启用预测性返回时，系统仍走 onBackPressed；同样交给 Web 处理。
+    // 不调用 super——返回逻辑完全由 Web 决定（内容页→列表页，其余→App.exitApp）。
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        dispatchBackToWeb()
+    }
+
+    /** 把返回手势交给 Web 侧的 window.__nexusBack（内容页→列表页，其余→退出 App）。 */
+    private fun dispatchBackToWeb() {
+        val webView = bridge?.webView ?: return
+        webView.post {
+            webView.evaluateJavascript("window.__nexusBack && window.__nexusBack()", null)
         }
     }
 

@@ -193,14 +193,35 @@ def _json(status: int, body: Dict) -> JSONResponse:
 # ---------------- 路由注册 ----------------
 def register_auth_routes(app) -> None:
     @app.get("/api/auth/oauth/google")
-    async def google_login(request: Request):
+    async def google_login(request: Request, redirect_uri: str = ""):
         if oauth is None or not getattr(oauth, "google", None):
             return RedirectResponse("/?auth_error=google_not_configured")
-        # 无论用环境变量还是 request.base_url，统一去掉结尾斜杠，避免拼出 //callback
-        base = os.getenv("OAUTH_REDIRECT_BASE", str(request.base_url)).rstrip("/")
-        redirect_uri = base + "/api/auth/oauth/google/callback"
+        # 允许的回调白名单：防止开放重定向 / OAuth 回跳被篡改。
+        # - Web：OAUTH_REDIRECT_BASE（生产）或请求自带 base（开发）下的 /callback
+        # - Android：自定义 scheme 深链（由原生层拦截后转交 WebView），见 MainActivity
+        allowed = set()
+        base = os.getenv("OAUTH_REDIRECT_BASE", "").rstrip("/")
+        if base:
+            allowed.add(base + "/api/auth/oauth/google/callback")
+        allowed.add(str(request.base_url).rstrip("/") + "/api/auth/oauth/google/callback")
+        android_uri = os.getenv(
+            "OAUTH_ANDROID_REDIRECT_URI", "com.nexusmatrix.app://oauth/callback"
+        )
+        allowed.add(android_uri)
+        if redirect_uri and redirect_uri not in allowed:
+            logger.warning(f"[NEXUS] 拒绝非白名单 OAuth 回跳：{redirect_uri}")
+            return RedirectResponse("/?auth_error=oauth_failed")
+        effective = (
+            redirect_uri
+            or (base + "/api/auth/oauth/google/callback" if base else str(request.base_url).rstrip("/") + "/api/auth/oauth/google/callback")
+        )
+        # 记住本次登录最终回跳方式，供 callback 决定是回 localhost 还是深链。
+        # 会话 cookie 落在浏览器（安卓走外部浏览器代理），callback 时同源可取回。
+        request.session["nexus_oauth_final"] = (
+            "android" if effective.startswith("com.nexusmatrix.app://") else "web"
+        )
         # select_account：每次登录都弹账户选择器，便于切换/重新登录（不影响已授权 scope）
-        return await oauth.google.authorize_redirect(request, redirect_uri, prompt="select_account")
+        return await oauth.google.authorize_redirect(request, effective, prompt="select_account")
 
     @app.get("/api/auth/oauth/google/callback")
     async def google_callback(request: Request):
@@ -226,6 +247,14 @@ def register_auth_routes(app) -> None:
         room = await ensure_personal_room(user["id"], f"{name or email} 的空间")
         jwt_token = issue_token(user["id"], room, email, name, "google")
         record_login(True)
+        # 安卓走自定义 scheme 深链：JWT 经深链带回 App 的 localhost WebView 写入 localStorage；
+        # Web 则同源回跳 /?apiKey=，由 runtimeConfig 写回。最终方式由 google_login 记录。
+        final = request.session.get("nexus_oauth_final", "web")
+        if final == "android":
+            android_uri = os.getenv(
+                "OAUTH_ANDROID_REDIRECT_URI", "com.nexusmatrix.app://oauth/callback"
+            )
+            return RedirectResponse(f"{android_uri}?apiKey={jwt_token}")
         return RedirectResponse(f"/?apiKey={jwt_token}")
 
     @app.get("/api/auth/config")
