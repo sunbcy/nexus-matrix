@@ -73,7 +73,7 @@
 **数据流说明**
 
 1. **启动同步（LocalFirst）**：`NexusTaskMatrix1.vue` 在 `onMounted` 调用 `initSync(pages)`——先读本地存储（IndexedDB/localStorage），再向 `/api/pages` 拉取远端全量，经 `mergePages`（最后写入者胜出 + 块级 LWW）合并后回写本地。整条链路离线可用，联网时自动对齐。
-2. **实时同步路径**：后端将页面持久化到 `nexus.db`(SQLite)，REST（`/api/pages`）提供 CRUD，WebSocket（`/ws/sync`）在设备建连时下发 `INITIAL_SYNC`、任何端变更后 `SERVER_BROADCAST` 全量广播；前端编辑经防抖后通过 `CLIENT_UPDATE` 上推。
+2. **实时同步路径**：后端将页面持久化到 `nexus.db`(SQLite)，REST（`/api/pages`）提供 CRUD，WebSocket（`/ws/sync`）在设备建连时下发 `INITIAL_SYNC`、任何端变更后 `SERVER_BROADCAST` 增量广播；前端编辑经「首发即推 + 停手 300ms 收尾」防抖后通过 `CLIENT_UPDATE` 上推变化页。
 3. **统一组件**：`App.vue` 当前直接挂载 `NexusTaskMatrix1.vue`，它已内置 `useSync` 同步层（不依赖 `NotionPlus.vue` 旧参考实现）。后端地址可在「设置」面板或 `?syncServer=` 配置，留空即纯本地模式。
 
 ---
@@ -137,9 +137,25 @@ nexus-matrix/
 ### 实时同步协议（WebSocket `/ws/sync`）
 | 消息 | 方向 | 说明 |
 | --- | --- | --- |
-| `INITIAL_SYNC` | 服务端→客户端 | 建连即推送全量 `pages_db` |
-| `SERVER_BROADCAST` | 服务端→客户端 | 任意端变更后广播最新全量矩阵 |
-| `CLIENT_UPDATE` | 客户端→服务端 | 编辑经防抖（约 500ms）后上推，服务端落 SQLite 后广播 |
+| `INITIAL_SYNC` | 服务端→客户端 | 建连即按 **128KB/帧** 分片推送该 room 的「存活页」（墓碑不发，避免撑大单帧被隧道/移动网丢弃），客户端缓冲收齐后块级合并 |
+| `SERVER_BROADCAST` | 服务端→客户端 | 任意端变更后**增量**广播变化的页（不发全量），其余端按同一合并路径并入 |
+| `CLIENT_UPDATE` | 客户端→服务端 | 编辑经「首发即推 + 停手 300ms 收尾」防抖后**只上推变化页**，服务端按页 LWW 合并、回 `ACK`（水位 cursor + 采纳页 id）后广播 |
+
+### 同步刷新频率与防漏机制
+**同步是推送式（事件驱动），没有定时轮询**——客户端不会周期性地去服务器"拉一遍"，完全依赖 WebSocket 广播。各方向节奏如下：
+
+- **你的编辑 → 服务端：事件驱动 + 首发即推**。`markDirty(id)` 把该页加入脏集合并触发 `debouncedCommit = debounce(commitPages, 300)`（**leading + trailing** 防抖）：首次改动**立即**上推 `CLIENT_UPDATE`（首字符近零延迟，逼近 Notion 的实时感），之后 300ms 内的连续输入合并到尾缘再发一次收尾——一段连续输入整段只在「首发 + 停手」各推一次，且每次仍只推变化的页（指纹未变则不发），不影响冲突模型。
+- **他人/其他设备 → 你：实时推送（0 间隔）**。对方一保存，服务端立即 `SERVER_BROADCAST` 增量页，接收方在亚秒级（取决于网络）并入本地，无轮询延迟。
+- **本地落盘**：与首发/收尾同一时机写存储抽象（localStorage/IndexedDB），离线也能完整编辑。
+- **4s 本地对账（兜底网）**：`setInterval(reconcile, 4000)` 每 4 秒只检查**当前激活页**是否漏标脏（指纹 ≠ 上次提交戳且未显式标脏时补一次提交），**隐藏标签页跳过**。它是防漏网的保险，不是主同步路径；确认显式标脏已覆盖全部路径后可整体移除。
+- **断线补偿**：
+  - 离线期间本地最新快照压入 `outboxPages`；`onopen` 重连成功后 `pushAll` 一次性补发，对齐其他端（避免「切后台编辑→杀进程→重连丢改」）。
+  - 增量水位游标 `lastSyncCursor`（持久化到 kv）用于 `fetchRemotePages(since)` 只拉错过的变更，重连后无需整表回退。
+  - `INITIAL_SYNC` 分片 25s 看门狗：隧道/移动网丢帧收不齐时，丢弃并降级为 REST 全量拉取（`fallbackInitialPull`）。
+- **断线重连退避**：指数退避，上限 15s，最多 5 次；超过后转入「纯本地模式」（同步状态提示可手动重试），不再空刷后端。
+- **图片资产**：页面 JSON 只存 `asset:<id>` 引用，二进制 Blob 走独立 `POST /api/assets`，用到时经 `warmAssets` 懒加载，不进 WS 同步载荷（避免 Base64 把单帧撑到 MB 级）。
+
+> 实践含义：WS 一长连不断，多端即近实时一致；一旦 WS 断，该端仅本地可用，期间看不到他人新改，但改动不会丢（靠 outbox + 游标在重连后补齐）。
 
 ### 删除与恢复（墓碑机制）
 - 页面/块删除采用**软删除**：打 `deletedAt` 时间戳而非物理删除，便于跨端合并与恢复。
@@ -331,6 +347,19 @@ ingress:
 - 开发期不想配 Google 时，设 `NEXUS_DEV_LOGIN=1` 启用免密 `/api/auth/dev-login`（**生产务必关掉**，否则任何人可免密登录）。
 
 > **退出 / 重新登录**：App 里的「退出登录」只清除本地的 JWT（`localStorage`），**不会**注销 Google 本身的会话。再点「用 Google 登录」时，后端已加 `prompt=select_account`，会弹出账户选择器让你重新选择/切换账号；若仍想强制换号，可在无痕窗口登录，或在 Google 官网先退出 Google 账号。
+
+---
+
+### 管理面板（性能 / 用量 / 异常）
+
+后端自带轻量可观测与运维面板，便于一眼看清服务状态：
+
+- 在 `.env` 设置 **`ADMIN_TOKEN`** 后，访问 `https://你的域名/admin?token=<ADMIN_TOKEN>` 打开面板；`/api/admin/dashboard` 返回同样结构的 JSON（供外部监控拉取）。未设置则面板禁用（返回 503），`?token=` 错误或缺失返回 401。
+- 面板展示：**数据库连通性**、后端/版本/运行时长、**在线房间与 WS 连接数**、**用量统计**（注册用户 / 工作区 / 页面 / 资产数 / 资产存储量 / 成员关系 / 邀请链接）、**性能指标**（累计请求、错误、错误率、同步冲突、资产上传、登录成败、慢请求 ≥1s、WS 消息）、**异常**（慢请求 TopN、最近错误）。
+- 指标为**进程内计数器**（重启清零）；多实例需外部聚合。所有计数已在 `/api/metrics` 以 Prometheus 文本格式导出，接 Prometheus + Grafana 即可做持久化图表与告警。
+- 面板**仅展示聚合计数与运行指标，不含任何用户内容**，适合运维自查。要做内容安审（违规图片 / 泄密检测）属于另一层，需在资产写入路径接入哈希/分类管线（见上文合规讨论）。
+
+> 安全提示：`ADMIN_TOKEN` 等同于运维权限，生产务必用强随机值（如 `python -c "import secrets;print(secrets.token_urlsafe(32))"`），并配合反向代理限制 `/admin` 与 `/api/admin/*` 仅内网/监控网可达。
 
 ---
 

@@ -339,7 +339,15 @@ const LOCAL_STORAGE_KEY = 'nexus_matrix_pages_v3';
 //   Electron 打包：同上
 // 运行时注入（URL ?syncServer= 或 window.__NEXUS_CONFIG__）优先于构建期 env，
 // 便于同一份产物切换环境；注入逻辑见 runtimeConfig.ts
-const SYNC_SERVER = (getRuntimeConfig().syncServer || import.meta.env.VITE_SYNC_SERVER || '').replace(/\/+$/, '');
+// 未显式配置时，默认回退到「页面所在的源」(location.origin)：标准自托管里前端由后端
+// 同源托管（或经同一 Tunnel 暴露），后端就在该源提供 /api 与 /ws/sync，开箱即连，
+// 省去手工填地址。仅当「前端与后端跨域分离部署」时才需要显式配置 syncServer。
+// file:// 等非 http(s) 源没有可用后端，保持空（纯本地模式），避免无意义重连。
+const _pageOrigin =
+  typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)
+    ? window.location.origin
+    : '';
+const SYNC_SERVER = (getRuntimeConfig().syncServer || import.meta.env.VITE_SYNC_SERVER || _pageOrigin || '').replace(/\/+$/, '');
 const API_BASE = SYNC_SERVER ? `${SYNC_SERVER}/api` : '/api';
 // ws 与 http 的协议映射：https -> wss（混合内容会被浏览器拦截）
 const WS_ORIGIN = SYNC_SERVER
@@ -479,31 +487,53 @@ export const saveLocal = async (pages: Page[]): Promise<void> => {
 
 // === 防抖工具（带 flush） ===
 // flush 是必需的：原本只有防抖，且全仓无 visibilitychange/pagehide 处理，
-// 于是「编辑后立刻切走 / 进程被杀」会丢掉最后 500ms 内的改动。
-// 移动端进程更易被回收，这个窗口是真实的数据丢失点。
+// 于是「编辑后立刻切走 / 进程被杀」会丢掉最后改动。移动端进程更易被回收，这个窗口是真实的数据丢失点。
+// 升级为 leading + trailing：首次调用立即执行（leading，首字符零延迟上推），
+// 之后 wait 内的连续调用合并到尾缘再执行一次（trailing，停手收尾）。
+// 既能把「首个改动」近乎实时同步出去（解决原先纯尾缘防抖带来的感知延迟），
+// 又不会因连续击键产生高频发送——一段连续输入整段只在「首发 + 停手」各推一次，且每次仍只推变化页。
 function debounce<T extends (...args: any[]) => void>(fn: T, wait: number) {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let pending: Parameters<T> | null = null;
 
   const debounced = (...args: Parameters<T>) => {
     pending = args;
-    if (timer) clearTimeout(timer);
+    if (timer) {
+      // 已排程尾缘：重置计时以合并连续调用，不重复首发
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        pending = null;
+        void fn(...args);
+      }, wait);
+      return;
+    }
+    // 首次调用：立即首发（leading）
+    void fn(...args);
+    pending = null;
     timer = setTimeout(() => {
       timer = null;
-      pending = null;
-      void fn(...args);
+      if (pending) {
+        const a = pending;
+        pending = null;
+        void fn(...a);
+      }
     }, wait);
   };
 
-  // 立即执行挂起的调用（若有），返回是否真的执行过
+  // 立即执行挂起的尾缘调用（若有），返回是否真的执行过；pagehide/切后台时兜底，避免丢最后改动。
+  // leading 已即时发出，pending 为空表示没有挂起的新内容，返回 false 即可（数据不丢）。
   debounced.flush = (): boolean => {
-    if (!timer || !pending) return false;
-    const args = pending;
+    if (!timer) return false;
     clearTimeout(timer);
     timer = null;
-    pending = null;
-    void fn(...args);
-    return true;
+    if (pending) {
+      const a = pending;
+      pending = null;
+      void fn(...a);
+      return true;
+    }
+    return false;
   };
 
   return debounced;
@@ -528,7 +558,9 @@ const commitPages = (pages: Page[]): void => {
   void snapshotPages(pages, changed);          // 页面历史：对变化页节流存档
   void persistPages(pages, changed);
 };
-const debouncedCommit = debounce(commitPages, 500);
+// 发送窗口 300ms：首发零延迟 + 停手 300ms 收尾，连续输入合并只发两次（首/尾），
+// 在「实时感」与「发送频率」间取平衡（Notion 类体验约 150~300ms 阈值内即感知为实时）。
+const debouncedCommit = debounce(commitPages, 300);
 
 // P1 块级隔离：显式标脏 + 触发防抖提交，取代「每页 deep watch 隐式触发整页遍历」。
 // 编辑器知道某页被改时调 markDirty(id)；浅 watch 只兜页面对象整体替换；4s 对账兜其余漏网。

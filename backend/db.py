@@ -158,6 +158,12 @@ class Database(ABC):
     async def revoke_invite_link(self, token: str) -> None:
         """撤销（删除）一条邀请链接。"""
 
+    @abstractmethod
+    async def get_stats(self) -> Dict[str, int]:
+        """聚合统计（用量概览）：返回 users_total / rooms_total / pages_total /
+        assets_total / assets_bytes_total / memberships_total / invite_links_total。
+        不含任何用户内容，供管理面板与 /api/health 展示。"""
+
 
 # ============================================================
 # SQLite 实现
@@ -565,6 +571,27 @@ class SQLiteDatabase(Database):
     async def revoke_invite_link(self, token: str) -> None:
         await self._run(self._sync_revoke_invite_link, token)
 
+    async def get_stats(self) -> Dict[str, int]:
+        return await self._run(self._sync_get_stats)
+
+    def _sync_get_stats(self) -> Dict[str, int]:
+        with self._lock:
+            cur = self._conn
+            def _one(sql: str) -> int:
+                row = cur.execute(sql).fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+            return {
+                "users_total": _one("SELECT COUNT(*) FROM users"),
+                "rooms_total": _one("SELECT COUNT(DISTINCT room) FROM memberships"),
+                "pages_total": _one("SELECT COUNT(*) FROM pages"),
+                "assets_total": _one("SELECT COUNT(*) FROM assets"),
+                "assets_bytes_total": _one(
+                    "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM assets"
+                ),
+                "memberships_total": _one("SELECT COUNT(*) FROM memberships"),
+                "invite_links_total": _one("SELECT COUNT(*) FROM invite_links"),
+            }
+
 
 # ============================================================
 # Postgres 实现（asyncpg）
@@ -839,6 +866,29 @@ class PostgresDatabase(Database):
     async def revoke_invite_link(self, token: str) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM invite_links WHERE token=$1", token)
+
+    async def get_stats(self) -> Dict[str, int]:
+        async with self._pool.acquire() as conn:
+            users = await conn.fetchval("SELECT COUNT(*) FROM users")
+            rooms = await conn.fetchval(
+                "SELECT COUNT(DISTINCT room) FROM memberships"
+            )
+            pages = await conn.fetchval("SELECT COUNT(*) FROM pages")
+            assets = await conn.fetchval("SELECT COUNT(*) FROM assets")
+            asset_bytes = await conn.fetchval(
+                "SELECT COALESCE(SUM(OCTET_LENGTH(data)), 0) FROM assets"
+            )
+            memberships = await conn.fetchval("SELECT COUNT(*) FROM memberships")
+            invite_links = await conn.fetchval("SELECT COUNT(*) FROM invite_links")
+            return {
+                "users_total": int(users or 0),
+                "rooms_total": int(rooms or 0),
+                "pages_total": int(pages or 0),
+                "assets_total": int(assets or 0),
+                "assets_bytes_total": int(asset_bytes or 0),
+                "memberships_total": int(memberships or 0),
+                "invite_links_total": int(invite_links or 0),
+            }
 
 
 def create_database() -> Database:

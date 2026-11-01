@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
@@ -153,11 +154,28 @@ db = create_database()
 # 把 db 单例交给 auth 层（避免与 main 循环 import）
 set_db(db)
 
+# 管理面板令牌：设置后 /api/admin/* 与 /admin 需携带；留空则面板禁用（返回 503）。
+ADMIN_TOKEN = (os.getenv("ADMIN_TOKEN") or "").strip()
+
+
+async def require_admin(request: Request) -> bool:
+    """保护管理端点：?token= 或 Authorization: Bearer 携带 ADMIN_TOKEN。"""
+    if not ADMIN_TOKEN:
+        raise HTTPException(status_code=503, detail="admin panel disabled (set ADMIN_TOKEN)")
+    token = request.query_params.get("token") or ""
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip() or token
+    if not token or not hmac.compare_digest(token, ADMIN_TOKEN):
+        raise HTTPException(status_code=401, detail="invalid admin token")
+    return True
+
 
 @app.middleware("http")
 async def _metrics_middleware(request: Request, call_next):
-    """计数 + 错误捕获：给 /api/health 的 metrics 提供素材。"""
+    """计数 + 错误捕获 + 慢请求记录：给 /api/health 与 /api/metrics 提供素材。"""
     monitor.record_request()
+    start = time.time()
     try:
         response = await call_next(request)
         if response.status_code >= 500:
@@ -165,7 +183,11 @@ async def _metrics_middleware(request: Request, call_next):
         return response
     except Exception as e:
         monitor.record_error(f"{request.method} {request.url.path}: {e}")
-    raise
+        raise
+    finally:
+        elapsed_ms = (time.time() - start) * 1000
+        if elapsed_ms >= 1000:
+            monitor.record_slow_request(request.url.path, elapsed_ms)
 
 
 # ============================================================
@@ -532,6 +554,151 @@ async def metrics_prometheus():
     )
 
 
+# ============================================================
+# 管理面板（受 ADMIN_TOKEN 保护）
+# ============================================================
+@app.get("/api/admin/dashboard")
+async def admin_dashboard(_: bool = Depends(require_admin)):
+    """聚合概览：性能 / 用量 / 异常，供 /admin 页或外部监控拉取。"""
+    try:
+        db_ok = await db.ping()
+    except Exception:
+        db_ok = False
+    stats: Dict[str, int] = {}
+    try:
+        stats = await db.get_stats()
+    except Exception as e:
+        monitor.record_error(f"admin get_stats: {e}")
+    bs = monitor.business_snapshot()
+    return {
+        "version": VERSION,
+        "backend": db.backend_name,
+        "db_up": db_ok,
+        "uptime_seconds": round(time.time() - START_TIME, 1),
+        "live_rooms": len(manager.rooms),
+        "live_connections": sum(len(v) for v in manager.rooms.values()),
+        "db_stats": stats,
+        "monitor": bs,
+    }
+
+
+@app.get("/admin")
+async def admin_page(_: bool = Depends(require_admin)):
+    """极简管理面板页面（数据内联，无需额外静态资源）。"""
+    try:
+        db_ok = await db.ping()
+    except Exception:
+        db_ok = False
+    stats: Dict[str, int] = {}
+    try:
+        stats = await db.get_stats()
+    except Exception as e:
+        monitor.record_error(f"admin get_stats: {e}")
+    bs = monitor.business_snapshot()
+    data = {
+        "version": VERSION,
+        "backend": db.backend_name,
+        "db_up": db_ok,
+        "uptime_seconds": round(time.time() - START_TIME, 1),
+        "live_rooms": len(manager.rooms),
+        "live_connections": sum(len(v) for v in manager.rooms.values()),
+        "db_stats": stats,
+        "monitor": bs,
+    }
+    return _render_admin_html(data)
+
+
+def _render_admin_html(d: Dict) -> "HTMLResponse":
+    """生成深色主题管理面板 HTML（指标由后端内联，纯展示）。"""
+    def _fmt_bytes(n: int) -> str:
+        n = int(n or 0)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+            n /= 1024
+        return str(n)
+
+    s = d.get("db_stats", {})
+    m = d.get("monitor", {})
+    error_rate = m.get("error_rate", 0)
+    slow_top = m.get("slow_top", [])
+    slow_rows = "".join(
+        f"<tr><td class='p'>{x['path']}</td><td>{x['ms']:.0f} ms</td><td>{x['at']}</td></tr>"
+        for x in slow_top
+    ) or "<tr><td colspan='3' class='dim'>暂无</td></tr>"
+
+    cards = [
+        ("数据库", "up" if d["db_up"] else "down", "OK" if d["db_up"] else "断"),
+        ("后端", d["backend"], ""),
+        ("版本", d["version"], ""),
+        ("运行时长", f"{d['uptime_seconds']:.0f}s", ""),
+        ("在线房间(WS)", d["live_rooms"], ""),
+        ("WS 连接数", d["live_connections"], ""),
+        ("注册用户", s.get("users_total", 0), ""),
+        ("工作区(room)", s.get("rooms_total", 0), ""),
+        ("页面总数", s.get("pages_total", 0), ""),
+        ("资产数", s.get("assets_total", 0), ""),
+        ("资产存储", _fmt_bytes(s.get("assets_bytes_total", 0)), ""),
+        ("成员关系", s.get("memberships_total", 0), ""),
+        ("邀请链接", s.get("invite_links_total", 0), ""),
+        ("累计请求", m.get("requests", 0), ""),
+        ("累计错误", m.get("errors", 0), ""),
+        ("错误率", f"{error_rate*100:.2f}%", ""),
+        ("同步冲突", m.get("sync_conflicts", 0), ""),
+        ("资产上传", m.get("asset_uploads", 0), ""),
+        ("登录成功", m.get("logins", 0), ""),
+        ("登录失败", m.get("login_failures", 0), ""),
+        ("慢请求(≥1s)", m.get("slow_requests", 0), ""),
+        ("WS 消息", m.get("ws_messages", 0), ""),
+    ]
+    card_html = "".join(
+        f"<div class='card'><div class='k'>{k}</div><div class='v {c}'>{v}</div></div>"
+        for (k, v, c) in cards
+    )
+    last_err = m.get("last_error")
+    last_err_at = m.get("last_error_at")
+    err_html = (
+        f"<div class='err'>最近错误：<b>{last_err}</b><br><span class='dim'>{last_err_at}</span></div>"
+        if last_err else "<div class='err dim'>最近无错误</div>"
+    )
+    html = f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nexus Matrix · 管理面板</title>
+<style>
+*{{box-sizing:border-box}}
+body{{margin:0;background:#0e0f13;color:#e6e7ea;font:13px/1.5 'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace}}
+.wrap{{max-width:1080px;margin:0 auto;padding:24px}}
+h1{{font-size:18px;margin:0 0 4px}}
+.sub{{color:#8a8f98;margin-bottom:18px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}}
+.card{{background:#16181d;border:1px solid #23262d;border-radius:6px;padding:12px}}
+.k{{color:#8a8f98;font-size:11px}}
+.v{{font-size:20px;margin-top:4px}}
+.v.up{{color:#3fb950}}.v.down{{color:#f85149}}
+section{{margin-top:22px}}
+h2{{font-size:14px;color:#c9cdd4;border-bottom:1px solid #23262d;padding-bottom:6px}}
+table{{width:100%;border-collapse:collapse;margin-top:8px}}
+th,td{{text-align:left;padding:6px 8px;border-bottom:1px solid #1c1f26;font-size:12px}}
+th{{color:#8a8f98;font-weight:400}}
+.p{{color:#e6e7ea}}
+.dim{{color:#6b7079}}
+.err{{margin-top:14px;padding:10px 12px;background:#16181d;border:1px solid #23262d;border-radius:6px}}
+.foot{{margin-top:24px;color:#6b7079;font-size:11px}}
+</style></head><body><div class="wrap">
+<h1>Nexus Matrix · 管理面板</h1>
+<div class="sub">性能 / 用量 / 异常一览（指标为进程内计数器，重启清零；多实例需外部聚合）</div>
+<div class="grid">{card_html}</div>
+<section><h2>异常 · 慢请求 TopN</h2>
+<table><thead><tr><th>路径</th><th>耗时</th><th>时间(UTC)</th></tr></thead>
+<tbody>{slow_rows}</tbody></table>
+{err_html}
+</section>
+<div class="foot">说明：本面板仅展示聚合计数与运行指标，不含任何用户内容。如需持久化审计/告警，请接 Prometheus + Grafana（/api/metrics 已导出）。</div>
+</div></body></html>"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(html)
+
+
 # 身份自述：返回当前密钥对应的房间信息（数据量 / 在线设备数）。
 # 前端「保存同步配置」时用它即时校验三态：连不通 / 密钥被拒(401) / 已连但房间为空。
 @app.get("/api/me")
@@ -651,6 +818,8 @@ async def upload_asset(request: Request, room: str = Depends(get_room)):
     if not aid:
         aid = f"asset-{int(time.time() * 1000)}-{os.urandom(4).hex()}"
     await db.save_asset(aid, blob, room)
+    monitor.record_asset_upload()
+    monitor.record_asset_bytes(len(blob))
     return {"success": True, "id": f"asset:{aid}"}
 
 

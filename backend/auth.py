@@ -24,6 +24,7 @@ from typing import Dict, Optional
 from urllib.parse import urlencode
 
 from keys import validate
+from monitor import record_login
 
 logger = logging.getLogger("NexusSync")
 
@@ -224,6 +225,7 @@ def register_auth_routes(app) -> None:
         user = await find_or_create_oauth_user("google", sub, email, name)
         room = await ensure_personal_room(user["id"], f"{name or email} 的空间")
         jwt_token = issue_token(user["id"], room, email, name, "google")
+        record_login(True)
         return RedirectResponse(f"/?apiKey={jwt_token}")
 
     @app.get("/api/auth/config")
@@ -237,6 +239,7 @@ def register_auth_routes(app) -> None:
         """本地测试用：无需 Google 凭据即可走完「账户→工作区→JWT」全链路。
         仅当 NEXUS_DEV_LOGIN=1 时启用，生产务必关闭。"""
         if os.getenv("NEXUS_DEV_LOGIN") != "1":
+            record_login(False)
             return _json(401, {"error": "dev-login disabled"})
         email = (payload.get("email") or "").strip()
         if not email:
@@ -245,6 +248,7 @@ def register_auth_routes(app) -> None:
         user = await find_or_create_oauth_user("dev", email, email, name)
         room = await ensure_personal_room(user["id"], f"{name} 的空间")
         jwt_token = issue_token(user["id"], room, email, name, "dev")
+        record_login(True)
         return _json(200, {"token": jwt_token, "user": user, "room": room})
 
     @app.get("/api/auth/me")
