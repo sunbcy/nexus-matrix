@@ -189,6 +189,15 @@ const saveServer = async () => {
 
 const onRetry = () => { void retrySync(); };
 
+// 访问密钥模式下没有「退出登录」入口：这里提供「清除密钥并退出」——
+// 删除本地密钥并去掉 URL 上的 ?apiKey=，重载回到未登录态（runtimeConfig 不会再回写）。
+const clearKeyAndExit = () => {
+  const u = new URL(window.location.href);
+  u.searchParams.delete('apiKey');
+  localStorage.removeItem(API_KEY_STORAGE);
+  window.location.href = u.pathname + u.search + u.hash;
+};
+
 // === 数据与备份（导入 / 导出） ===
 // Notion ZIP 走预览式导入向导（emit 给父组件打开），不在此处直接解析。
 const jsonInput = ref<HTMLInputElement | null>(null);
@@ -393,6 +402,10 @@ const onRestoreKilledBlocks = () => {
             <p v-if="isLegacyKey" class="text-xs text-warn leading-snug">
               当前以「访问密钥」直接访问某工作区。登录 Google 账号会切换到一个新的账号空间；原密钥数据仍保留在后端，可在下方「同步」重新填回密钥访问。
             </p>
+            <button v-if="isLegacyKey" @click="clearKeyAndExit()"
+                    class="mt-1 px-3 py-1.5 rounded-sm bg-surface border border-line text-dim hover:text-danger hover:border-danger text-xs transition-colors">
+              清除密钥并退出
+            </button>
             <p v-else class="text-xs text-dim leading-snug">
               登录后可在多设备间同步，并邀请他人协作，无需记忆密钥。
             </p>

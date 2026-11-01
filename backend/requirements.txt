@@ -4,6 +4,8 @@ websockets==16.0
 pydantic==2.13.4
 # 账户 / OAuth / JWT 鉴权（P0 多租户账号体系）
 authlib
+# authlib 的 Starlette 集成（服务端 OAuth 中转）依赖 httpx
+httpx
 PyJWT
 # Starlette 的 SessionMiddleware（OAuth state 校验）依赖，部分精简安装缺失，显式声明
 itsdangerous

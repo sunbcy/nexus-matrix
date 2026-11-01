@@ -330,6 +330,8 @@ ingress:
   三项齐全后 `/api/auth/config` 返回 `{"google_oauth":true}`，「用 Google 登录」按钮即生效。
 - 开发期不想配 Google 时，设 `NEXUS_DEV_LOGIN=1` 启用免密 `/api/auth/dev-login`（**生产务必关掉**，否则任何人可免密登录）。
 
+> **退出 / 重新登录**：App 里的「退出登录」只清除本地的 JWT（`localStorage`），**不会**注销 Google 本身的会话。再点「用 Google 登录」时，后端已加 `prompt=select_account`，会弹出账户选择器让你重新选择/切换账号；若仍想强制换号，可在无痕窗口登录，或在 Google 官网先退出 Google 账号。
+
 ---
 
 ## 说明与后续方向

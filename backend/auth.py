@@ -195,9 +195,11 @@ def register_auth_routes(app) -> None:
     async def google_login(request: Request):
         if oauth is None or not getattr(oauth, "google", None):
             return RedirectResponse("/?auth_error=google_not_configured")
-        base = os.getenv("OAUTH_REDIRECT_BASE", str(request.base_url).rstrip("/"))
+        # 无论用环境变量还是 request.base_url，统一去掉结尾斜杠，避免拼出 //callback
+        base = os.getenv("OAUTH_REDIRECT_BASE", str(request.base_url)).rstrip("/")
         redirect_uri = base + "/api/auth/oauth/google/callback"
-        return await oauth.google.authorize_redirect(request, redirect_uri)
+        # select_account：每次登录都弹账户选择器，便于切换/重新登录（不影响已授权 scope）
+        return await oauth.google.authorize_redirect(request, redirect_uri, prompt="select_account")
 
     @app.get("/api/auth/oauth/google/callback")
     async def google_callback(request: Request):

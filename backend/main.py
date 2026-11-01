@@ -11,6 +11,41 @@ from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from typing import Dict, List, Optional
 
+
+# 统一从 .env 读取配置：优先 backend/.env，其次项目根 .env（若存在）。
+# 必须在 import db/keys/auth 之前执行，因为这三个模块在导入期就会读环境变量。
+# override=False：不覆盖已存在的真实环境变量（命令行 / systemd 注入优先），
+# 因此命令行显式传入的值仍可覆盖文件中的值。
+def _load_env_files():
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    root_env = os.path.join(os.path.dirname(backend_dir), ".env")
+    backend_env = os.path.join(backend_dir, ".env")
+    for path in (backend_env, root_env):
+        if not os.path.exists(path):
+            continue
+        try:
+            # 优先使用 python-dotenv（仓库已可选依赖）；未安装时回退到极简解析器
+            from dotenv import load_dotenv
+            load_dotenv(path, override=False)
+            continue
+        except ImportError:
+            pass
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key, val = key.strip(), val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+        except FileNotFoundError:
+            pass
+
+
+_load_env_files()
+
 import monitor
 from db import create_database
 from keys import get_allowed_keys, PUBLIC_ROOM
