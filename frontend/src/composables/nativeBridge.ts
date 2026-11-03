@@ -39,6 +39,8 @@ declare global {
       setPullRefresh(enabled: boolean): void;
       setListScrollAtTop(atTop: boolean): void;
       finishPullRefresh(): void;
+      /** 用系统浏览器打开外部 URL（安卓 Google OAuth 必须用外部浏览器，WebView 内会被拒） */
+      openExternal(url: string): boolean;
     };
   }
 }

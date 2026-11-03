@@ -391,14 +391,16 @@ const onRestoreKilledBlocks = () => {
 
           <!-- 未登录：可登录，或沿用访问密钥 -->
           <div v-else class="space-y-3">
-            <button v-if="googleEnabled" @click="loginWithGoogle()"
+            <!-- 始终渲染登录按钮：未检测到后端启用时也可点击（后端未配置会在登录后明确报错），
+                 避免整块按钮消失让用户误以为没有登录入口 -->
+            <button @click="loginWithGoogle()"
                     class="w-full h-11 flex items-center justify-center gap-2 rounded-sm bg-surface border border-line text-display hover:border-accent active:bg-panel transition-colors text-sm font-['JetBrains_Mono',monospace]">
               <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.65l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.84 14.11a6.6 6.6 0 0 1 0-4.22V7.05H2.18a11 11 0 0 0 0 9.9l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.05l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z"/></svg>
               用 Google 登录
             </button>
-            <div v-else class="w-full h-11 flex items-center justify-center rounded-sm bg-surface border border-line text-dim text-xs font-['JetBrains_Mono',monospace]">
-              Google 登录未启用（后端需配置 OAUTH_GOOGLE_ID / OAUTH_GOOGLE_SECRET）
-            </div>
+            <p v-if="!googleEnabled" class="text-xs text-dim leading-snug">
+              未检测到后端启用 Google 登录：请先在下方「同步」填写后端地址并保存（安卓需公网 https），且后端需配置 OAUTH_GOOGLE_ID / OAUTH_GOOGLE_SECRET。
+            </p>
             <p v-if="isLegacyKey" class="text-xs text-warn leading-snug">
               当前以「访问密钥」直接访问某工作区。登录 Google 账号会切换到一个新的账号空间；原密钥数据仍保留在后端，可在下方「同步」重新填回密钥访问。
             </p>

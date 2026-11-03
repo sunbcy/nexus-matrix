@@ -210,15 +210,21 @@ function loginWithGoogle(): void {
       (import.meta as any).env?.VITE_SYNC_SERVER ||
       ''
     ).replace(/\/+$/, '');
+    // 没有后端地址时无法发起 OAuth（相对路径会打到 WebView 本地，必然失败）。
+    // 给出明确指引而不是静默失败。
+    if (!syncServer) {
+      error.value = '安卓端 Google 登录需要后端：请先在下方「同步」填写后端地址（须为公网 https）并保存后再登录';
+      return;
+    }
     (window as any).NexusNativeBridge?.setOAuthBackend?.(syncServer);
-    const redirectUri = 'com.nexusmatrix.app://oauth/callback';
-    // 用 syncServer 构造绝对 http(s) URL，避免 file:// 下相对路径失效。
-    const oauthUrl = syncServer
-      ? `${syncServer}/api/auth/oauth/google?redirect_uri=${encodeURIComponent(redirectUri)}`
-      : `/api/auth/oauth/google?redirect_uri=${encodeURIComponent(redirectUri)}`;
+    // 发给 Google 的 redirect_uri 必须是 https（Google 的 Web OAuth 客户端拒绝自定义 scheme），
+    // 所以这里用「后端 https 回调」；令牌换发后后端会再用自定义 scheme 深链把 JWT 带回 App。
+    // final=android 告诉后端最终走深链（见 backend/auth.py）。
+    const redirectUri = `${syncServer}/api/auth/oauth/google/callback`;
+    const oauthUrl = `${syncServer}/api/auth/oauth/google?redirect_uri=${encodeURIComponent(redirectUri)}&final=android`;
     const opened = (window as any).NexusNativeBridge?.openExternal?.(oauthUrl);
-    // 兜底（老版本原生无 openExternal 桥）：仍尝试在 WebView 内跳转（可能失败，仅降级路径）。
-    if (!opened && syncServer) window.location.assign(oauthUrl);
+    // 兜底（老版本原生无 openExternal 桥）：仍尝试在 WebView 内跳转（可能被 Google 拒，仅降级）。
+    if (!opened) window.location.assign(oauthUrl);
     return;
   }
   // Web：后端中转，跳 Google → 回调 → 回跳 /?apiKey=<jwt>（runtimeConfig 写回 localStorage）

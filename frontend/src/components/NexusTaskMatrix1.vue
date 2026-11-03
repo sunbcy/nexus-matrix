@@ -1255,20 +1255,63 @@ const startSidebarResize = (e: MouseEvent) => {
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
 };
-// 安卓系统/手势返回（由 Capacitor App 插件的 backButton 事件驱动，见 onMounted）：
+// 安卓系统/手势返回（由 OnBackInvokedCallback / onBackPressed 驱动 window.__nexusBack）：
 // 浮层打开时先收起浮层；否则内容页 → 回列表页；其余情况（列表页 / 桌面分栏形态）→ 退出 App。
 //
-// 【绝不能因 isMobile 为假就提前 return】只要注册了 backButton 监听，插件就不再走
-// 系统默认的「finish activity」；此时若不调用 App.exitApp()，返回键会彻底失灵
-// （表现为「点进文档后怎么按都退不出去」）。所以退出是兜底分支，不是条件分支。
-const onBackButton = () => {
+// 【绝不能因 isMobile 为假就提前 return】只要注册了返回监听，原生就不再走系统默认的「finish
+// activity」；此时若不调用 App.exitApp()，返回键会彻底失灵（表现为「点进文档后怎么按都退不出去」）。
+// 所以退出是兜底分支，不是条件分支。
+//
+// 同一次「返回手势」可能被系统回调与下方应用内滑动手势同时触发，用 400ms 去抖避免重复执行
+// （尤其避免 content→list 后被第二次触发而误退 App）。
+let lastBackAt = 0;
+const performBack = (allowExit: boolean): void => {
+  const now = Date.now();
+  if (now - lastBackAt < 400) return;
+  lastBackAt = now;
   if (closeTopmostOverlay()) return;
   if (isMobile.value && mobileView.value === 'content') {
     mobileView.value = 'list';
     return;
   }
-  App.exitApp();
+  if (allowExit) App.exitApp();
 };
+const onBackButton = () => performBack(true);
+
+// 应用内「从左边缘右滑返回」手势：弥补部分 ROM / Android 12 系统手势不生效的情况，
+// 也让用户在任何界面都能用触屏滑动返回（设置页关浮层、文档内容页回列表）。
+// 仅识别「左边缘起手 + 向右滑 + 水平主导 + 短时」的滑动；阅读下滑、封面拖拽等不拦截。
+let swipeStartX = 0;
+let swipeStartY = 0;
+let swipeStartT = 0;
+let swipeFromEdge = false;
+const SWIPE_EDGE = 36;      // 起手距左边缘阈值(px)
+const SWIPE_MIN_DX = 56;    // 最小水平位移(px)
+const SWIPE_MAX_DY = 90;    // 最大垂直偏移(px)
+const SWIPE_MAX_T = 600;    // 最大时长(ms)
+const onSwipeBackStart = (e: TouchEvent): void => {
+  if (!isMobile.value) return;
+  const t = e.touches[0];
+  if (!t) return;
+  swipeStartX = t.clientX;
+  swipeStartY = t.clientY;
+  swipeStartT = Date.now();
+  swipeFromEdge = t.clientX <= SWIPE_EDGE;
+};
+const onSwipeBackEnd = (e: TouchEvent): void => {
+  if (!isMobile.value || !swipeFromEdge) { swipeFromEdge = false; return; }
+  swipeFromEdge = false;
+  const t = e.changedTouches[0];
+  if (!t) return;
+  const dx = t.clientX - swipeStartX;
+  const dy = t.clientY - swipeStartY;
+  const dt = Date.now() - swipeStartT;
+  if (dx >= SWIPE_MIN_DX && Math.abs(dy) <= SWIPE_MAX_DY && dt <= SWIPE_MAX_T) {
+    // 滑动手势不应退 App（避免误触直接退出），仅做「关浮层 / 回列表」。
+    performBack(false);
+  }
+};
+
 
 // === 移动端：输入法弹起时，滑动文档自动收起输入法 ===
 // 安卓常见交互：键盘占了半屏，此时再滑动文档的意图多半是「去看内容 / 让出屏幕」，应自动收起，
@@ -1318,12 +1361,17 @@ const onListScroll = (e: Event) => {
     setNativeListAtTop(atTop);
   });
 };
-watch(mobileView, (v) => {
+// 受控下拉刷新：仅「移动端 + 列表页 + 无浮层」时允许。浮层（设置 / 菜单 / 导入向导等）
+// 自带滚动，下拉应是滚动其内容而非触发全局刷新——尤其设置界面，下滑应滚设置而非刷新。
+// overlayOpen 在下方定义，故 mobileView 的 watch 不取 immediate（避免 const 暂时性死区），
+// 初值在 onMounted 中基于 overlayOpen 设置；overlayOpen 的变化在下方单独 watch。
+const syncPullRefresh = () => {
   if (!isMobile.value) return;
-  setNativePullRefresh(v === 'list');
+  setNativePullRefresh(mobileView.value === 'list' && !overlayOpen.value);
   const el = listScrollRef.value;
   setNativeListAtTop(!el || el.scrollTop <= 0);
-}, { immediate: true });
+};
+watch(mobileView, syncPullRefresh);
 
 // === 全局搜索 ===
 // 匹配范围：页面标题 + 所有块的正文（转纯文本后匹配）。
@@ -2286,15 +2334,20 @@ onMounted(async () => {
   updateIsMobile();
   window.addEventListener('resize', updateIsMobile);
   // 接管安卓系统/手势返回：内容页→列表页，列表页→退出 App（替代原生默认直接退出）。
-  // 注册失败不能让整个 onMounted 崩掉——否则后面的初始化全都不执行。
-  App.addListener('backButton', onBackButton).catch((e: unknown) => {
-    console.warn('[nexus] backButton 监听注册失败，返回键将走系统默认行为', e);
-  });
+  // 不再依赖 Capacitor 的 backButton 事件：在 targetSdk>=34 的预测性返回手势下，系统不再回调
+  // onBackPressed（Capacitor 据此发 backButton），导致手势返回失灵（即此前「边缘滑回失效」的回归）。
+  // 改为由原生层（MainActivity）注册 OnBackInvokedCallback 后调用 window.__nexusBack，
+  // 这里把返回逻辑挂到该全局函数上即可（见 MainActivity 的 dispatchBackToWeb）。
+  (window as any).__nexusBack = onBackButton;
+  // 应用内边缘右滑返回（触屏手势）：capture 阶段捕获，不拦截正常滚动/点按。
+  document.addEventListener('touchstart', onSwipeBackStart, {capture: true, passive: true});
+  document.addEventListener('touchend', onSwipeBackEnd, {capture: true, passive: true});
+  document.addEventListener('touchcancel', onSwipeBackEnd, {capture: true, passive: true});
   if (isMobile.value && activePage.value) enterContent();
 
-  // 初始同步受控下拉刷新状态（确保原生桥就绪后状态已下发：列表页允许、内容页禁用）
+  // 初始同步受控下拉刷新状态（确保原生桥就绪后状态已下发：列表页允许、内容页禁用、浮层打开时禁用）
   if (isMobile.value) {
-    setNativePullRefresh(mobileView.value === 'list');
+    setNativePullRefresh(mobileView.value === 'list' && !overlayOpen.value);
     const lel = listScrollRef.value;
     setNativeListAtTop(!lel || lel.scrollTop <= 0);
   }
@@ -2474,6 +2527,9 @@ watch(activePage, (ap) => {
 onUnmounted(() => {
   closeSync();
   window.removeEventListener('resize', updateIsMobile);
+  document.removeEventListener('touchstart', onSwipeBackStart, {capture: true} as EventListenerOptions);
+  document.removeEventListener('touchend', onSwipeBackEnd, {capture: true} as EventListenerOptions);
+  document.removeEventListener('touchcancel', onSwipeBackEnd, {capture: true} as EventListenerOptions);
 });
 
 // === Sidebar 树状逻辑 ===
@@ -3398,6 +3454,9 @@ const closePageHistory = () => { historyOpen.value = false; };
 // 任一「菜单 / 模态」浮层打开时，锁定背景（主编辑区 + 侧边栏）滚动，
 // 避免鼠标在浮层外滚轮时背景跟着滑（对齐 Notion：弹出菜单后背景不滚动）。
 // 浮层自身是 fixed 独立容器、自带滚动，不受影响；小下拉（slash/mention/格式栏）不纳入，避免影响编辑滚动。
+// 提前声明：overlayOpen（下方 computed）会在 setup 期被 immediate watch 读取，
+// 其 getter 引用了 importWizardOpen，故须在 overlayOpen 之前初始化，否则暂时性死区 → 白屏。
+const importWizardOpen = ref(false);
 const overlayOpen = computed(() =>
   actionMenuConfig.value.isOpen ||
   pageMenuConfig.value.isOpen ||
@@ -3407,6 +3466,9 @@ const overlayOpen = computed(() =>
   historyOpen.value ||
   backlinksOpen.value
 );
+// 浮层开关也需即时刷新下拉刷新状态：浮层打开（如设置界面）时禁用原生下拉刷新，
+// 否则下滑是在滚浮层内容却触发全局刷新。
+watch(overlayOpen, syncPullRefresh);
 // 用历史快照覆盖当前页（深拷贝，触发 watch -> stampUpdated -> 上推同步）
 const restoreVersion = (v: PageVersion) => {
   if (!activePage.value) return;
@@ -3430,7 +3492,6 @@ const formatVersionTime = (ts: number): string => {
 };
 
 // === Notion 导入向导（预览式：先解析展示页面树，勾选确认后再导入） ===
-const importWizardOpen = ref(false);
 const importFileInput = ref<HTMLInputElement | null>(null);
 const importPreview = ref<{ pages: Page[]; report: Array<{ title: string; blocks: number; images: number; downgraded: number }>; imageFailures: number; imageVerifyFailures: number; verifyFailures: Array<{ title: string; block: number }>; sources: Array<{ file: string; count: number; error?: string }> } | null>(null);
 const importGroups = ref<Array<{ file: string; pages: Page[]; error?: string }>>([]);  // 多文件按来源分组预览

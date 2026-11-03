@@ -193,21 +193,18 @@ def _json(status: int, body: Dict) -> JSONResponse:
 # ---------------- 路由注册 ----------------
 def register_auth_routes(app) -> None:
     @app.get("/api/auth/oauth/google")
-    async def google_login(request: Request, redirect_uri: str = ""):
+    async def google_login(request: Request, redirect_uri: str = "", final: str = ""):
         if oauth is None or not getattr(oauth, "google", None):
             return RedirectResponse("/?auth_error=google_not_configured")
-        # 允许的回调白名单：防止开放重定向 / OAuth 回跳被篡改。
-        # - Web：OAUTH_REDIRECT_BASE（生产）或请求自带 base（开发）下的 /callback
-        # - Android：自定义 scheme 深链（由原生层拦截后转交 WebView），见 MainActivity
+        # 回调白名单（仅用于「发给 Google 的 redirect_uri」）：
+        # Google 的 Web OAuth 客户端只接受 https 回跳，所以安卓与 Web 统一用「后端 https 回调」。
+        # 令牌换发后，callback 会再用自定义 scheme 深链把 JWT 带回 App（见 google_callback），
+        # 这一步不涉及 Google，故自定义 scheme 无需（也不能）登记为 Google 的 redirect_uri。
         allowed = set()
         base = os.getenv("OAUTH_REDIRECT_BASE", "").rstrip("/")
         if base:
             allowed.add(base + "/api/auth/oauth/google/callback")
         allowed.add(str(request.base_url).rstrip("/") + "/api/auth/oauth/google/callback")
-        android_uri = os.getenv(
-            "OAUTH_ANDROID_REDIRECT_URI", "com.nexusmatrix.app://oauth/callback"
-        )
-        allowed.add(android_uri)
         if redirect_uri and redirect_uri not in allowed:
             logger.warning(f"[NEXUS] 拒绝非白名单 OAuth 回跳：{redirect_uri}")
             return RedirectResponse("/?auth_error=oauth_failed")
@@ -215,11 +212,10 @@ def register_auth_routes(app) -> None:
             redirect_uri
             or (base + "/api/auth/oauth/google/callback" if base else str(request.base_url).rstrip("/") + "/api/auth/oauth/google/callback")
         )
-        # 记住本次登录最终回跳方式，供 callback 决定是回 localhost 还是深链。
-        # 会话 cookie 落在浏览器（安卓走外部浏览器代理），callback 时同源可取回。
-        request.session["nexus_oauth_final"] = (
-            "android" if effective.startswith("com.nexusmatrix.app://") else "web"
-        )
+        # 最终回跳方式：安卓用自定义 scheme 深链把 JWT 带回 App；Web 同源回跳 /?apiKey=。
+        # 由前端在登录入口显式传 final=android 决定（而非靠 redirect_uri 是不是自定义 scheme——
+        # 因为发给 Google 的始终是这个 https 回调，否则 Google 会拒绝自定义 scheme 登录）。
+        request.session["nexus_oauth_final"] = "android" if final == "android" else "web"
         # select_account：每次登录都弹账户选择器，便于切换/重新登录（不影响已授权 scope）
         return await oauth.google.authorize_redirect(request, effective, prompt="select_account")
 

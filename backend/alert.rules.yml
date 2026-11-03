@@ -1,0 +1,110 @@
+# ============================================================
+# Nexus Matrix —— Prometheus 告警规则示例
+# ------------------------------------------------------------
+# 放置：/etc/prometheus/alert.rules.yml
+# 并在 prometheus.yml 中引用：
+#
+#   rule_files:
+#     - /etc/prometheus/alert.rules.yml
+#   scrape_configs:
+#     - job_name: nexus
+#       metrics_path: /api/metrics
+#       static_configs:
+#         - targets: ['127.0.0.1:8010']
+#
+# 说明：
+#   - up / scrape_duration_seconds 由 Prometheus 自动生成（针对每个 target）。
+#   - nexus_* 为后端 /api/metrics 自己暴露的指标（见 backend/monitor.py）。
+#   - 下面阈值按「个人 / 小规模自用」给的默认，按实际流量调。
+# ============================================================
+groups:
+  # ----------------------------------------------------------
+  # 可用性：后端进程 / 抓取链路
+  # ----------------------------------------------------------
+  - name: nexus.availability
+    rules:
+      # 后端进程不可达（抓取失败）。最严重：全端都不同步。
+      - alert: NexusBackendDown
+        expr: up{job="nexus"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nexus 后端不可达"
+          description: "target={{ $labels.instance }} 已连续 1 分钟抓取失败，所有设备停止同步。"
+
+      # 抓取变慢：可能是 SQLite 锁竞争、磁盘压力或网络问题。
+      - alert: NexusScrapeSlow
+        expr: scrape_duration_seconds{job="nexus"} > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nexus 抓取耗时偏高"
+          description: "当前 {{ $value | printf \"%.3f\" }}s（阈值 1s），可能拖慢告警及时性。"
+
+  # ----------------------------------------------------------
+  # 数据库：连通性与整理
+  # ----------------------------------------------------------
+  - name: nexus.database
+    rules:
+      # /api/health 探测数据库失败（db_up=0）。
+      - alert: NexusDatabaseDown
+        expr: nexus_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nexus 数据库连通性异常"
+          description: "后端无法读写 pages / assets，同步中断。检查 SQLite 文件权限、磁盘空间与锁竞争。"
+
+      # 墓碑（已删页）堆积过多 → 每次广播/增量同步的 payload 被抬高。
+      # 运行 `POST /api/admin/gc?retention_days=30` 清理。
+      - alert: NexusTombstonesPilingUp
+        expr: nexus_tombstones > 500
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "墓碑数量偏多"
+          description: "当前 {{ $value }} 条，建议执行 GC：curl -X POST .../api/admin/gc"
+
+  # ----------------------------------------------------------
+  # 错误率：稳定复现的故障
+  # ----------------------------------------------------------
+  - name: nexus.errors
+    rules:
+      # 5 分钟窗口内错误速率超过 0.05/s。
+      - alert: NexusHighErrorRate
+        expr: rate(nexus_errors_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nexus 错误率上升"
+          description: "5 分钟错误速率 {{ $value | printf \"%.3f\" }}/s，超过 0.05/s。"
+
+      # 短时间内新增错误较多（突发故障）。
+      - alert: NexusErrorBurst
+        expr: increase(nexus_errors_total[10m]) > 20
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nexus 出现错误突发"
+          description: "10 分钟内新增 {{ $value }} 次错误。"
+
+  # ----------------------------------------------------------
+  # 连接：设备是否连得上（弱告警，避免误报）
+  # ----------------------------------------------------------
+  - name: nexus.connections
+    rules:
+      # 长时间没有任何设备在线。夜间/无人使用会误报，故放 info 级且阈值较长。
+      - alert: NexusNoDevicesOnline
+        expr: nexus_connections == 0
+        for: 6h
+        labels:
+          severity: info
+        annotations:
+          summary: "长时间没有设备在线"
+          description: "可能是 WebSocket 连不上——检查 Caddy 是否正确透传 Upgrade/Connection，以及 443 是否放行。"

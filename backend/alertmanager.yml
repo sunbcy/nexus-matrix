@@ -1,0 +1,85 @@
+# ============================================================
+# Nexus Matrix —— Alertmanager 配置示例
+# ------------------------------------------------------------
+# 放置：/etc/alertmanager/alertmanager.yml
+# 启动：alertmanager --config.file=/etc/alertmanager/alertmanager.yml
+# 校验：amtool check-config /etc/alertmanager/alertmanager.yml
+#
+# Prometheus 侧需要指向它（见 PUBLIC_DEPLOYMENT.md §12）：
+#   alerting:
+#     alertmanagers:
+#       - static_configs:
+#           - targets: ['127.0.0.1:9093']
+#
+# 安全提醒：
+#   - bot_token / smtp 密码属于凭据，不要把本文件提交进公开仓库；
+#     建议用环境变量或 secret 注入。
+#   - 若 Alertmanager 端口（9093）暴露在公网，务必加认证 / 反向代理限制。
+# ============================================================
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: default-webhook
+  group_by: ['alertname', 'job']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # critical：立即发邮件（1 小时内重复提醒）
+    - matchers:
+        - severity="critical"
+      receiver: critical-email
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true
+
+    # warning：发 Telegram
+    - matchers:
+        - severity="warning"
+      receiver: telegram
+      continue: true
+
+    # info：只走兜底 webhook（如日志归档 / 看板）
+    - matchers:
+        - severity="info"
+      receiver: default-webhook
+
+receivers:
+  # ---------- 邮件（critical）----------
+  # 注意：多数邮箱需用「应用专用密码」，不是登录密码。
+  - name: critical-email
+    email_configs:
+      - to: 'ops@example.com'
+        from: 'alerts@example.com'
+        smarthost: 'smtp.example.com:587'
+        auth_username: 'alerts@example.com'
+        auth_password: '应用专用密码'
+        require_tls: true
+        send_resolved: true
+
+  # ---------- Telegram（warning）----------
+  # 需要 Alertmanager >= 0.24（原生 telegram_configs）。
+  # 旧版本请改用 webhook 桥接（如 alertmanager-bot）。
+  - name: telegram
+    telegram_configs:
+      - bot_token: '<BOT_TOKEN>'
+        chat_id: -1000000000
+        parse_mode: 'HTML'
+        send_resolved: true
+
+  # ---------- 兜底 webhook（info）----------
+  # 接任意可收 POST 的服务：自建通知脚本、企业微信/钉钉机器人等。
+  - name: default-webhook
+    webhook_configs:
+      - url: 'http://127.0.0.1:5001/'
+      send_resolved: true
+
+# 抑制规则：后端整体挂掉时，不要再刷「无设备在线」这类派生告警
+inhibit_rules:
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="info"
+    equal: ['job']

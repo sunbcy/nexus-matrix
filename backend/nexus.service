@@ -1,0 +1,20 @@
+[Unit]
+Description=Nexus Matrix Sync Server
+After=network.target
+
+[Service]
+# 按实际部署路径修改 User / WorkingDirectory / EnvironmentFile / ExecStart
+User=nexus
+WorkingDirectory=/opt/nexus/backend
+EnvironmentFile=/opt/nexus/backend/.env
+# 单 worker：后端用进程内 ConnectionManager 维护 room 连接表，多 worker 会让
+# 各进程房间互相看不见，导致同 room 设备收不到广播。WS 服务务必单进程。
+ExecStart=/opt/nexus/backend/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8010 --workers 1
+Restart=on-failure
+RestartSec=5
+# 标准输出入 journald，便于 `journalctl -u nexus -f` 看日志
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

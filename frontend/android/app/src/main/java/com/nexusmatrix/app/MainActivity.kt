@@ -3,13 +3,11 @@ package com.nexusmatrix.app
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.ViewGroup
 import android.webkit.WebView
-import android.window.OnBackInvokedCallback
-import android.window.OnBackInvokedDispatcher
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.ui.platform.ComposeView
@@ -114,8 +112,8 @@ class MainActivity : BridgeActivity() {
 
         // 记录 App 自身本地服务源（用于把令牌 apiKey 带回 localhost 的 SPA）。
         localBase = deriveLocalBase()
-        // 注册系统/手势返回（OnBackInvokedCallback），把返回交给 Web 处理。
-        registerBackInvoked()
+        // 注册系统/手势返回（androidx OnBackPressedDispatcher），把返回交给 Web 处理。
+        registerBackHandler()
         // 冷启动即由深链唤起（用户已在浏览器完成 Google 登录后回跳）时也需处理。
         handleOAuthDeepLink(intent)
     }
@@ -197,26 +195,18 @@ class MainActivity : BridgeActivity() {
     }
 
     // === 安卓系统/手势返回（内容页→列表页，列表页→退出 App）===
-    // 预测性返回手势（Android 13+ / targetSdk>=34）：系统不再回调 onBackPressed，而改为回调
-    // OnBackInvokedCallback。若不显式注册，从屏幕边缘向内划的返回手势不会触发任何逻辑——
-    // 这正是此前「内容页滑回列表」失效的回归根因。这里注册后把返回交给 Web 侧的
-    // window.__nexusBack 处理（见前端 onBackButton）。
-    private var backCallback: OnBackInvokedCallback? = null
-
-    private fun registerBackInvoked() {
-        if (Build.VERSION.SDK_INT >= 33) {
-            val cb = OnBackInvokedCallback { dispatchBackToWeb() }
-            backCallback = cb
-            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-                OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb)
-        }
-    }
-
-    // 兜底：旧系统 / 未启用预测性返回时，系统仍走 onBackPressed；同样交给 Web 处理。
-    // 不调用 super——返回逻辑完全由 Web 决定（内容页→列表页，其余→App.exitApp）。
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        dispatchBackToWeb()
+    // 统一走 androidx OnBackPressedDispatcher：API 33+ 且 manifest 开启
+    // enableOnBackInvokedCallback 时，系统把预测性返回手势派发给 ComponentActivity 注册的
+    // 系统 OnBackInvokedCallback，再由它转发到 dispatcher 上「最后注册」的回调；旧系统则经
+    // Activity.onBackPressed 进入同一条链。此前用裸 OnBackInvokedCallback 直接注册，
+    // 与 androidx 的系统回调存在注册顺序竞争（后注册者胜出），返回手势可能被吞——
+    // 这正是「滑回失效」的根因之一。统一走 dispatcher 后两条路径都收敛到同一回调。
+    private fun registerBackHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                dispatchBackToWeb()
+            }
+        })
     }
 
     /** 把返回手势交给 Web 侧的 window.__nexusBack（内容页→列表页，其余→退出 App）。 */

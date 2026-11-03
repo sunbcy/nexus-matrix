@@ -1,0 +1,50 @@
+# ============================================================
+# Nexus Matrix 公网部署 —— Caddyfile 示例
+# ------------------------------------------------------------
+# 使用：把 nexus.example.com 换成你的域名，保存为 /etc/caddy/Caddyfile，
+#       然后 `systemctl reload caddy`。
+#       或本地调试：caddy run --config Caddyfile
+#
+# 前提：DNS A / AAAA 记录已指向本机公网 IP；防火墙放行 80 / 443。
+#
+# 关键点：Caddy v2 的 reverse_proxy **原生透传** Upgrade / Connection 头，
+#        所以 /ws/sync 的 WebSocket 不需要任何额外配置就能正常工作。
+# ============================================================
+
+nexus.example.com {
+	# 自动 HTTPS：Caddy 自动向 Let's Encrypt 申请并续期证书，无需 certbot
+	# 同时自动把 80 端口重定向到 443
+	encode zstd gzip
+
+	# 反向代理到本机 uvicorn。
+	# 生产建议后端只监听 127.0.0.1（BACKEND_HOST=127.0.0.1），
+	# 公网只暴露 Caddy，后端端口不对外。
+	reverse_proxy 127.0.0.1:8010 {
+		# WebSocket：Caddy 默认已透传，下面两行是显式保险，留着无害
+		header_up Connection {http.request.header.Connection}
+		header_up Upgrade {http.request.header.Upgrade}
+	}
+
+	# 安全响应头（按需调整 X-Frame-Options）
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "no-referrer"
+	}
+
+	# 访问日志（确保 /var/log/caddy 存在且 caddy 用户可写）
+	log {
+		output file /var/log/caddy/nexus.log
+	}
+}
+
+# ------------------------------------------------------------
+# 备选：如果前端**没有**同源托管（未设 STATIC_DIR），
+# 前端独立部署在别的域名（如 GitHub Pages / Netlify）时，
+# 后端必须显式放行该源（改 backend/.env 的 CORS_ORIGINS），例如：
+#
+#   CORS_ORIGINS=https://nexus.example.com,https://app.example.com
+#
+# 前端同源托管（设了 STATIC_DIR）时，CORS_ORIGINS 保持默认/为空即可。
+# ------------------------------------------------------------
