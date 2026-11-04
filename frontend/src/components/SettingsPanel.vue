@@ -31,6 +31,7 @@ import {
   syncStatus
 } from '../composables/useSync';
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
+import {checkAssetIntegrity, gcOrphanAssets} from '../composables/assetIntegrity';
 import {applyTheme, currentThemeId, type ThemeId, THEMES} from '../composables/theme';
 import {useAuth} from '../composables/auth';
 
@@ -48,6 +49,24 @@ const emit = defineEmits<{
 }>();
 
 const { isCoarsePointer } = useMobileInput();
+
+// 资产层体检 / GC（Phase 0 止血）：定位破图引用与可回收孤儿资产
+const integrityResult = ref<{ referenced_count: number; total_assets: number; missing_refs: string[]; orphan_assets: string[] } | null>(null);
+const checkingAssets = ref(false);
+const gcResult = ref<{ deleted: number; orphan_count: number } | null>(null);
+const gcBusy = ref(false);
+async function onAssetHealth() {
+  checkingAssets.value = true;
+  try { integrityResult.value = await checkAssetIntegrity(); }
+  catch { integrityResult.value = null; }
+  finally { checkingAssets.value = false; }
+}
+async function onGcOrphans(dry: boolean) {
+  gcBusy.value = true;
+  try { gcResult.value = await gcOrphanAssets(dry); if (!dry) integrityResult.value = null; }
+  catch { gcResult.value = null; }
+  finally { gcBusy.value = false; }
+}
 
 // 账户 / 多工作区（P2/P3）：token 复用 nexus_sync_api_key，登录即换成账户 JWT
 const {
@@ -563,6 +582,31 @@ const onRestoreKilledBlocks = () => {
             </button>
           </div>
           <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID、变成 `href="#"` 的页内死链、与反复导入导致的重复块，可分别用上面的按钮一键修复。</p>
+          <div class="mt-3 pt-3 border-t border-line">
+            <div class="text-[11px] font-['Rajdhani',sans-serif] text-dim uppercase tracking-wider mb-2">资产层体检</div>
+            <div class="flex flex-wrap gap-2">
+              <button @click="onAssetHealth" :disabled="checkingAssets"
+                      class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                资产体检
+              </button>
+              <button @click="onGcOrphans(true)" :disabled="gcBusy"
+                      class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-warn enabled:hover:border-warn active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                预览清理孤儿资产
+              </button>
+              <button @click="onGcOrphans(false)" :disabled="gcBusy"
+                      class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-warn enabled:hover:border-warn active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+                执行清理
+              </button>
+            </div>
+            <div v-if="integrityResult" class="text-[11px] text-dim mt-2 leading-snug">
+              引用 {{ integrityResult.referenced_count }} · 资产 {{ integrityResult.total_assets }} ·
+              <span :class="integrityResult.missing_refs.length ? 'text-warn' : ''">破图引用 {{ integrityResult.missing_refs.length }}</span> ·
+              <span :class="integrityResult.orphan_assets.length ? 'text-accent' : ''">孤儿 {{ integrityResult.orphan_assets.length }}</span>
+            </div>
+            <div v-if="gcResult" class="text-[11px] text-dim mt-1">
+              孤儿资产 {{ gcResult.orphan_count }} 张，已清理 {{ gcResult.deleted }} 张（预览模式不删）
+            </div>
+          </div>
           <p v-if="dataMsg" class="mt-2 text-xs text-accent font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
           <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />
           <input ref="mdInput" type="file" accept=".md,.markdown,text/markdown" class="hidden" @change="onMdImport" />

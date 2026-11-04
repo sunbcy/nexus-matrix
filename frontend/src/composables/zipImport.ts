@@ -12,7 +12,7 @@
 
 import type {ImportAssetIssue, Page} from './useSync';
 import {newBlockId, newPageId} from './ids';
-import {clearAssetMissing, getAsset, type ImageSaveOptions, saveImageAssetWithBlob, verifyAssetOrRetry} from './assets';
+import {clearAssetMissing, getAsset, type ImageSaveOptions, saveImageAssetWithBlob, verifyAssetOnServer, verifyAssetOrRetry} from './assets';
 
 /**
  * 导入选项。
@@ -46,6 +46,8 @@ export interface ZipImportResult {
   imageVerifyFailures: number;
   /** 具体哪些没存上（含定位用的 pageId/taskId），用于明确提示与一键跳转 */
   verifyFailures: ImportAssetIssue[];
+  /** 本地存好、但后端未收到的图片数（上传失败/离线），其他设备会破图 */
+  imageUploadFailures: number;
 }
 
 const decoder = new TextDecoder();
@@ -178,6 +180,8 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
   // asset 引用 -> 真正落库的那份 Blob。终检发现「引用在、blob 不在」时，
   // 靠它就地把图补回去，而不是只能报一句没存上。导入结束即释放。
   const blobByRef = new Map<string, Blob>();
+  // 本次成功生成的 asset 引用，用于导入后「后端终检」：确认云端也收到了，否则其他设备破图
+  const uploadedRefs: string[] = [];
 
   // 先按路径深度排序，保证父页面先创建（parentId 引用时已存在）
   const sorted = [...mdByPath.values()].sort((a, b) => a.path.split('/').length - b.path.split('/').length);
@@ -260,6 +264,7 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
           // saveImageAssetWithBlob 内部已「写入→读回校验→同 id 重试」，真正没落库会抛错
           const { ref, blob: stored } = await saveImageAssetWithBlob(blob, saveOpts);
           blobByRef.set(ref, stored);
+          uploadedRefs.push(ref);
           // 必须显式清掉 pendingDownload：parseMarkdown 会预置该标记，
           // 只覆盖 url 会让它残留为 true，导致编辑器仍把它当作待下载的外链
           b.payload = { ...b.payload, url: ref, alt: b.payload?.alt ?? '', pendingDownload: false };
@@ -309,7 +314,7 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
       if (!hit) { const b = safeDecode(clean.slice(clean.lastIndexOf('/') + 1)).toLowerCase(); hit = imageByName.get(b); }
       if (hit) {
         const cblob = new Blob([new Uint8Array(fileMap.get(hit)!)], { type: mimeOf(hit) });
-        try { const { ref, blob: stored } = await saveImageAssetWithBlob(cblob, saveOpts); blobByRef.set(ref, stored); coverVal = ref; } catch { /* 落库失败保留原值 */ }
+        try { const { ref, blob: stored } = await saveImageAssetWithBlob(cblob, saveOpts); blobByRef.set(ref, stored); coverVal = ref; uploadedRefs.push(ref); } catch { /* 落库失败保留原值 */ }
       }
     }
 
@@ -351,9 +356,26 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
     }
   }
 
+  // 第三步：后端终检——本地存好但后端没收到（上传失败/离线）的图，其他设备会破图。
+  // 必须明确提示，而非静默留下「本地有、云端无」的死链。仅以状态码判断存在性。
+  let imageUploadFailures = 0;
+  for (const ref of [...new Set(uploadedRefs)]) {
+    if (await verifyAssetOnServer(ref)) { clearAssetMissing(ref); continue; }
+    imageUploadFailures++;
+    for (const p of pages) {
+      const tasks = p.tasks ?? [];
+      for (let ti = 0; ti < tasks.length; ti++) {
+        if (tasks[ti].payload?.url === ref) {
+          verifyFailures.push({ title: p.title, block: ti + 1, pageId: p.id, taskId: tasks[ti].id, upload: true });
+          break;
+        }
+      }
+    }
+  }
+
   blobByRef.clear(); // 归还内存：解析阶段结束了，blob 不必再留着
 
-  return { pages, report, imageFailures, imageVerifyFailures: verifyFailures.length, verifyFailures };
+  return { pages, report, imageFailures, imageVerifyFailures: verifyFailures.length, verifyFailures, imageUploadFailures };
 };
 
 /**

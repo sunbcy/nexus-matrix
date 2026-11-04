@@ -145,22 +145,50 @@ const blobToBase64 = (buf: ArrayBuffer): string => {
  * 离线或后端不可用时静默失败——本地已存，待下次有网时由 resolveAsset 的回源
  * 路径触发补传（另一设备来取时本端不一定在线，故采用「按需回源」而非预推送）。
  */
-export const uploadAssetToServer = async (ref: string, blob: Blob): Promise<void> => {
-  if (!SYNC_SERVER) return; // 纯本地模式（无 syncServer）无需上传
+export const uploadAssetToServer = async (ref: string, blob: Blob): Promise<boolean> => {
+  if (!SYNC_SERVER) return false; // 纯本地模式（无 syncServer）无需上传
+  const once = async (): Promise<boolean> => {
+    try {
+      const buf = await blob.arrayBuffer();
+      const b64 = blobToBase64(buf);
+      const res = await fetch(`${ASSET_API_BASE}/assets`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(SYNC_API_KEY ? { Authorization: `Bearer ${SYNC_API_KEY}` } : {}),
+        },
+        body: JSON.stringify({ id: ref, data: b64 }),
+      });
+      return res.ok;
+    } catch (e) {
+      // 离线/后端挂了：返回 false，由调用方计入「后端未收到」提示
+      console.warn('[NEXUS ASSET] 上传失败（将有网时由对端按需回源）', e);
+      return false;
+    }
+  };
+  // 重试一次，规避瞬时网络抖动；仍失败则如实返回 false
+  return (await once()) || (await once());
+};
+
+/**
+ * 确认后端是否真的持有该资产（导入终检用）。
+ * 仅看状态码：200/2xx 视为存在；404 记入负缓存；其余（5xx/网络）保守返回 false 但不记负缓存。
+ * 不读取 body，避免为大图浪费流量。
+ */
+export const verifyAssetOnServer = async (ref: string): Promise<boolean> => {
+  if (!SYNC_SERVER) return false;
+  const id = ref.slice(ASSET_PREFIX.length);
   try {
-    const buf = await blob.arrayBuffer();
-    const b64 = blobToBase64(buf);
-    await fetch(`${ASSET_API_BASE}/assets`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(SYNC_API_KEY ? { Authorization: `Bearer ${SYNC_API_KEY}` } : {}),
-      },
-      body: JSON.stringify({ id: ref, data: b64 }),
+    const res = await fetch(`${ASSET_API_BASE}/assets/${id}`, {
+      method: 'GET',
+      headers: SYNC_API_KEY ? { Authorization: `Bearer ${SYNC_API_KEY}` } : {},
     });
+    if (res.status === 404) { markAssetMissing(ref); return false; }
+    res.body?.cancel?.(); // 不消费正文，仅取状态码
+    return res.ok;
   } catch (e) {
-    // 静默：离线/后端挂了都不影响本地编辑；其它端来取时再走 resolveAsset 回源
-    console.warn('[NEXUS ASSET] 上传失败（将有网时由对端按需回源）', e);
+    console.warn('[NEXUS ASSET] 回源探测失败', e);
+    return false;
   }
 };
 

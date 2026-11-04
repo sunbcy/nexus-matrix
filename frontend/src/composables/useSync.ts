@@ -1148,6 +1148,8 @@ export interface ImportAssetIssue {
   block: number;
   pageId: string;
   taskId: string;
+  /** true=本地已存但后端未收到（上传失败/离线），其他设备会破图 */
+  upload?: boolean;
 }
 
 // 提交预览中勾选的页面（追加语义，不动已有内容），落盘 + 上推。

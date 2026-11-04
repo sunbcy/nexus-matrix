@@ -97,6 +97,10 @@ class Database(ABC):
     async def vacuum(self) -> None:
         """整理存储空间（SQLite 的 VACUUM；Postgres 交给 autovacuum）。"""
 
+    @abstractmethod
+    async def list_asset_ids(self, room: str) -> List[str]:
+        """列出该 room 下所有资产 id（用于引用完整性扫描与 GC）。"""
+
     # ---- 账户 / 工作区（多租户账号体系，叠加在 room 隔离之上） ----
     @abstractmethod
     async def create_user(self, provider: str, sub: str, email: str, name: str) -> str:
@@ -522,6 +526,15 @@ class SQLiteDatabase(Database):
     async def delete_asset(self, asset_id: str, room: str) -> None:
         await self._run(self._sync_delete_asset, asset_id, room)
 
+    def _sync_list_asset_ids(self, room: str) -> List[str]:
+        rows = self._conn.execute(
+            "SELECT id FROM assets WHERE room=?", (room,)
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    async def list_asset_ids(self, room: str) -> List[str]:
+        return await self._run(self._sync_list_asset_ids, room)
+
     async def vacuum(self) -> None:
         await self._run(self._sync_vacuum)
 
@@ -742,6 +755,11 @@ class PostgresDatabase(Database):
     async def delete_asset(self, asset_id: str, room: str) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM assets WHERE id=$1 AND room=$2", asset_id, room)
+
+    async def list_asset_ids(self, room: str) -> List[str]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch("SELECT id FROM assets WHERE room=$1", room)
+        return [r["id"] for r in rows]
 
     async def vacuum(self) -> None:
         # Postgres 的 VACUUM 不能在事务块内执行，且通常由 autovacuum 处理；

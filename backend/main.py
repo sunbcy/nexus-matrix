@@ -841,6 +841,63 @@ async def remove_asset(asset_id: str, room: str = Depends(get_room)):
     return {"success": True}
 
 
+# === 资产引用完整性扫描 + GC（Phase 0 资产层止血）===
+# pages 只存 asset:<id> 引用，assets 表无「谁引用我」记录，故需主动扫描：
+#   - missing_refs：引用了但库里没有 blob → 破图
+#   - orphan_assets：库里有但无任何页面引用 → 可回收空间
+_ASSET_REF_RE = __import__("re").compile(r"asset:([0-9a-fA-F-]+)")
+
+def _collect_asset_ids(page: dict) -> set:
+    """提取页面里所有**无前缀**的 asset id（与 db.list_asset_ids 对齐，便于直接求差集）。"""
+    ids: set = set()
+    for t in (page.get("tasks") or []):
+        if not isinstance(t, dict):
+            continue
+        pl = t.get("payload") or {}
+        u = pl.get("url") if isinstance(pl, dict) else None
+        if isinstance(u, str) and u.startswith("asset:"):
+            ids.add(u[6:])
+        c = t.get("content")
+        if isinstance(c, str):
+            for m in _ASSET_REF_RE.findall(c):
+                ids.add(m)
+    cover = page.get("cover")
+    if isinstance(cover, str) and cover.startswith("asset:"):
+        ids.add(cover[6:])
+    return ids
+
+@app.get("/api/assets/integrity")
+async def asset_integrity(room: str = Depends(get_room)):
+    pages = await db.load_pages(room)
+    referenced: set = set()
+    for p in pages:
+        referenced |= _collect_asset_ids(p)
+    asset_ids = set(await db.list_asset_ids(room))
+    return {
+        "success": True,
+        "referenced_count": len(referenced),
+        "total_assets": len(asset_ids),
+        "missing_refs": sorted(referenced - asset_ids),
+        "orphan_assets": sorted(asset_ids - referenced),
+    }
+
+@app.post("/api/assets/gc")
+async def gc_assets(dry_run: bool = True, room: str = Depends(get_room)):
+    pages = await db.load_pages(room)
+    referenced: set = set()
+    for p in pages:
+        referenced |= _collect_asset_ids(p)
+    asset_ids = set(await db.list_asset_ids(room))
+    orphans = sorted(asset_ids - referenced)
+    deleted = 0
+    if not dry_run:
+        for aid in orphans:
+            await db.delete_asset(aid, room)
+        await db.vacuum()
+        deleted = len(orphans)
+    return {"success": True, "dry_run": dry_run, "deleted": deleted, "orphan_count": len(orphans)}
+
+
 # === 阶段三：墓碑 GC（垃圾回收）===
 # 仅清理 deletedAt 早于 retention_days（默认30天）的墓碑；不自动运行，避免误删
 # 尚未同步到离线设备的墓碑。
