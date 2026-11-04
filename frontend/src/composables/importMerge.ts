@@ -185,11 +185,31 @@ export const planWronglyKilledBlocks = (pages: Page[]): { byPage: Map<string, st
     if (p.deletedAt) continue;
     const tasks = p.tasks ?? [];
     const aliveKeys = new Set<string>();
-    for (const t of tasks) if (!t.deletedAt) aliveKeys.add(blockContentKey(t));
+    // 已存在的图片：按 alt 与 url 各记一份索引。同一张图的压缩版 / 裁坏版 / 重复副本
+    // 属于主动清理结果，不是「被误杀的独有内容」，不应由恢复按钮重新拉回来。
+    const aliveImageKeys = new Set<string>();
+    for (const t of tasks) {
+      if (t.deletedAt) continue;
+      aliveKeys.add(blockContentKey(t));
+      if (t.type === 'image') {
+        const alt = String(t.payload?.alt ?? '').trim();
+        const url = String(t.payload?.url ?? '').trim();
+        if (alt) aliveImageKeys.add('alt:' + alt);
+        if (url) aliveImageKeys.add('url:' + url);
+      }
+    }
     const restore: string[] = [];
     const restoredKeys = new Set<string>();
     for (const t of tasks) {
       if (!t.deletedAt) continue;
+      if (t.type === 'image') {
+        const alt = String(t.payload?.alt ?? '').trim();
+        const url = String(t.payload?.url ?? '').trim();
+        if ((alt && aliveImageKeys.has('alt:' + alt)) || (url && aliveImageKeys.has('url:' + url))) continue;
+        // 无有效图源（既不是 asset: 引用也不是 http(s): 外链）的图片墓碑，复活也显示不出图，
+        // 属于破图，不应被「恢复误删块」重新拉回。
+        if (!/^asset:/i.test(url) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) continue;
+      }
       // 有实际内容才值得恢复：正文 / 图片URL / 代码 至少一项非空
       const hasContent = Boolean(
         String(t.content ?? '').replace(/<[^>]+>/g, '').trim() ||

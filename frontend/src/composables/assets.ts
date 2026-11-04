@@ -210,6 +210,9 @@ const blobUrlCache = new Map<string, string>();
 const ASSET_MISS_KEY = 'nexus_asset_miss_v1';
 const ASSET_MISS_TTL = 7 * 24 * 60 * 60 * 1000; // 7 天
 const assetMissCache = new Set<string>();
+// 每个页面会话对「已知缺失」的资产允许重新探测一次：后端后来补上资产时，
+// 用户刷新即可自愈；同时保留同一会话内不反复 404 的去噪效果。
+const missRetryDone = new Set<string>();
 try {
   const raw = localStorage.getItem(ASSET_MISS_KEY);
   if (raw) {
@@ -246,9 +249,14 @@ export const resolveAsset = async (ref: string): Promise<string> => {
   const cached = blobUrlCache.get(ref);
   if (cached) return cached;
   let blob = await getAsset(ref);
-  // 阶段二 2.3：本地 miss → 从后端回源；已知缺失（负缓存）的跳过，避免反复 404
-  if (!blob && !assetMissCache.has(ref)) {
-    blob = await fetchAssetFromServer(ref);
+  // 阶段二 2.3：本地 miss → 从后端回源。负缓存命中时本会话仍重试一次，
+  // 使「资产后来被补上」能自动恢复；单会话内不反复 404。
+  if (!blob) {
+    const knownMissing = assetMissCache.has(ref);
+    if (!knownMissing || !missRetryDone.has(ref)) {
+      if (knownMissing) missRetryDone.add(ref);
+      blob = await fetchAssetFromServer(ref);
+    }
   }
   if (!blob) return '';
   clearAssetMissing(ref); // 找到了（含后来补上传的）：移出负缓存
