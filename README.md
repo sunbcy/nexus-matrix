@@ -284,6 +284,38 @@ cd android
 
 ---
 
+## 数据备份与恢复（本机）
+
+后端为**单文件 SQLite**（`backend/nexus.db`，WAL 模式），数据库里 `users` / `memberships` / `pages` / `assets` 共同决定「Google 账号 ↔ workspace ↔ 笔记」的映射关系，因此备份必须把它们与鉴权凭据一起打包。
+
+| 脚本 | 职责 |
+|---|---|
+| `backend/backup.sh` | 生成 **WAL 安全的一致性快照**（`sqlite3 .backup`，**绝不能裸 `cp nexus.db`**，会丢 WAL 中未 checkpoint 的数据）；打包「四件套」写 `manifest.json`（sha256 + `integrity_check` + 源库/快照统计对比 + `restore_map`）；清理过期包 |
+| `backend/restore_drill.sh` | 恢复演练：解压到临时目录 → 校验 sha256 / `integrity_check` / 账号映射完整性 → **起临时后端实例**连副本实测 `/api/health`，全程不碰真实库 |
+| `backend/backup_scheduler.sh` | 定时守护：默认每 12h 备份一次，保留 15 天 |
+
+**四件套（缺一不可）**：`nexus.db`、`backend/jwt_secret`（JWT 与 SessionMiddleware 密钥，丢了所有登录态失效）、根目录 `.env`（OAuth / API Key 配置）、`backend/keys.json`（若启用）。压缩包权限 `600`，内含密钥。
+
+```bash
+cd backend
+./backup.sh --now                       # 立即备份一次
+./backup.sh --list                      # 列出备份
+./backup.sh --install                   # 安装定时（每 12h）+ 登录自启
+./backup.sh --uninstall                 # 卸载定时
+./backup_scheduler.sh --status          # 查看守护状态
+./restore_drill.sh                      # 演练最新备份
+./restore_drill.sh <备份包路径>          # 演练指定备份
+```
+
+备份产物在 `backend/backups/`，`LATEST` 指向最新包。可调环境变量：`BACKUP_RETENTION_DAYS`（默认 15）、`BACKUP_INTERVAL_SECONDS`（默认 43200）、`BACKUP_NO_COMPRESS=1`（大数据量时跳过 gzip）、`DB_PATH` / `BACKUP_DIR`。
+
+> **为什么不用 launchd（macOS）**：本项目位于可移除卷 `/Volumes/4TSATADisk`，macOS TCC 会拒绝 launchd 派生的后台进程读写该卷（实测连 `.env`、`nexus.db` 都返回 `Operation not permitted`，任务退出码 78），但终端会话启动的进程正常。因此改用「由终端启动的常驻守护 + `~/.zprofile` 登录自启」。
+> 若要恢复使用 launchd，需二选一：① 在「系统设置 → 隐私与安全性 → 完全磁盘访问」中为对应可执行文件授权；② 把 `nexus.db` 与备份目录迁到内置盘（设 `DB_PATH` 指向 `~/Library/Application Support/...`）。
+
+**真实恢复 SOP**：停后端 `pkill -f 'main.py'` → 解压备份、按 `manifest.restore_map` 放回四件套 → **删除残留的 `nexus.db-wal` / `nexus.db-shm`**（否则旧 WAL 会覆盖恢复后的库）→ `./start_backend.sh` → 用 Google 账号登录确认 workspace 列表与笔记数量。
+
+**已知边界**：当前备份落在外置卷**同一块盘**上，只防误删/误改，不防磁盘或机器损毁；异地容灾（加密后上传对象存储）尚未接入。迁入 171MB 附件后实测：单次快照约 348MB、压缩包约 337MB、耗时约 10s；按每 12h 一次保留 15 天（约 30 份）约需 10GB。可设 `BACKUP_NO_COMPRESS=1` 减少 CPU 开销（图片类附件本身压缩率很低）。
+
 ## 公网暴露与访问鉴权
 
 将后端经隧道 / 反向代理暴露到公网或上云时，**务必启用共享密钥鉴权**，否则任何能连上的人都能读写你的 `nexus.db`。
@@ -330,6 +362,50 @@ ingress:
 ```
 
 > 临时子域每次重启都变、且可能限速，仅用于验证；长期用第 3 步绑固定域名。机器断网/睡眠 = 服务不可达，务必保证常开 + 禁止睡眠。
+
+### 一键部署脚本（macOS / Linux）
+
+仓库提供了两个封装脚本，**用途完全不同，别混用**：
+
+| 脚本 | 隧道类型 | 公网地址 | `.env` 是否每次重写 | 适用场景 |
+|---|---|---|---|---|
+| `deploy_cloudflare.sh` | 快速隧道（临时 `*.trycloudflare.com`） | 每次重启都变 | **是**（自动写 `OAUTH_REDIRECT_BASE` / `CORS_ORIGINS` 并重启后端） | **临时公网测试 / 验证链路** |
+| `run_tunnel.sh` | 命名隧道（固定域名，如 `nexus.sunbcy.homes`） | 永久不变 | **仅首次/值变化时才写**（幂等，重启隧道不会动 `.env`） | **稳定长期使用** |
+
+#### `deploy_cloudflare.sh` —— 快速隧道（临时公网测试用）
+
+零配置临时域名，用来快速验证「整库同步 + 跨设备实时」是否跑通。**注意：地址每次重启都会变，且可能限速，仅限临时测试，不要作为长期方案。**
+
+```bash
+./deploy_cloudflare.sh            # 装 cloudflared（首次）→ 起后端 → 起快速隧道 → 自动把新地址写进 .env → 重启后端
+./deploy_cloudflare.sh --stop    # 停止隧道与后端
+```
+
+脚本会自动把每次生成的新 `https://<随机>.trycloudflare.com` 写回 `.env` 的 `OAUTH_REDIRECT_BASE` 与 `CORS_ORIGINS`，并打印需在 Google Cloud Console 添加的「已获授权的重定向 URI」。**因为地址会变，每次重跑都要去控制台同步更新那条重定向 URI。**
+
+#### `run_tunnel.sh` —— 固定域名隧道（稳定生产用，Token 模式）
+
+走 Cloudflare **命名隧道 + 自有域名**，地址永久固定（`nexus.sunbcy.homes`），重启不再变，因此 `.env` 只需配一次。采用 **Token 模式**，绕开 `cloudflared tunnel login` 的浏览器回调解密（某些网络下本机访问 `login.cloudflareaccess.org` 会超时）。
+
+**前置（在 Cloudflare / 阿里云控制台完成）：**
+1. 域名加入 Cloudflare，NS 指向 Cloudflare（阿里云把域名的 DNS 服务器改成 Cloudflare 给的两个 `*.ns.cloudflare.com`）；
+2. 完成阿里云**实名认证 / 邮箱验证**解除 `serverHold`（否则域名不解析）；
+3. Cloudflare Zero Trust → **Networks → Tunnels → Create a tunnel** → 选 Cloudflared，命名 `nexus`，Public Hostname 配 `nexus.<你的域名> → http://localhost:8010`，复制给出的 `--token` 值。
+
+```bash
+# Token 写法二选一：
+mkdir -p ~/.cloudflared
+# 把控制台给的 --token 后面那段粘进 tunnel_token.txt
+vim ~/.cloudflared/tunnel_token.txt
+# 或：CLOUDFLARE_TUNNEL_TOKEN='eyJhbG...' ./run_tunnel.sh
+
+TUNNEL_HOSTNAME=nexus.sunbcy.homes ./run_tunnel.sh   # 默认子域名即 nexus.sunbcy.homes
+./run_tunnel.sh --stop                                # 停止隧道与后端
+```
+
+脚本行为（适配固定域名场景）：只有 `.env` 里 `OAUTH_REDIRECT_BASE` / `CORS_ORIGINS` **缺失或与当前域名不一致时才改写并重启后端**；地址不变时重启隧道只会提示「无需改动」，不会无谓弹后端。
+
+> 切换固定域名后，`.env` 里若仍是旧的快速隧道地址，首次跑 `run_tunnel.sh` 会触发一次改写 + 后端重启，之后稳定不变。
 
 ### Google 登录（OAuth）注意事项
 
