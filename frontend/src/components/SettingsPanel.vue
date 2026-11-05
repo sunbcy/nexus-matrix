@@ -32,6 +32,8 @@ import {
 } from '../composables/useSync';
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
 import {checkAssetIntegrity, gcOrphanAssets} from '../composables/assetIntegrity';
+import YjsPilot from '../components/YjsPilot.vue';
+const showYjsPilot = ref(false);
 import {applyTheme, currentThemeId, type ThemeId, THEMES} from '../composables/theme';
 import {useAuth} from '../composables/auth';
 
@@ -608,6 +610,13 @@ const onRestoreKilledBlocks = () => {
             </div>
           </div>
           <p v-if="dataMsg" class="mt-2 text-xs text-accent font-['JetBrains_Mono',monospace]">{{ dataMsg }}</p>
+          <div class="mt-3 pt-3 border-t border-line">
+            <button @click="showYjsPilot = !showYjsPilot"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              Yjs 试点（本地）
+            </button>
+            <YjsPilot v-if="showYjsPilot" />
+          </div>
           <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />
           <input ref="mdInput" type="file" accept=".md,.markdown,text/markdown" class="hidden" @change="onMdImport" />
         </section>

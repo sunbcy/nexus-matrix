@@ -1091,6 +1091,11 @@ register_auth_routes(app)
 
 _mount_frontend()
 
+# Phase 2：Yjs 实时协同 WebSocket 端点（复用 auth + 房间隔离）
+from yjs_server import yjs_app
+
+app.mount("/ws/yjs", yjs_app)
+
 
 if __name__ == "__main__":
     import uvicorn
