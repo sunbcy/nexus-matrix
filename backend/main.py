@@ -1089,12 +1089,14 @@ def _mount_frontend() -> None:
 # 账户 / 多租户工作区 / OAuth 路由（必须在挂载前端 "/" 之前注册，否则被 SPA 兜底吞掉）
 register_auth_routes(app)
 
-_mount_frontend()
-
-# Phase 2：Yjs 实时协同 WebSocket 端点（复用 auth + 房间隔离）
+# Phase 2：Yjs 实时协同 WebSocket 端点（复用 auth + 房间隔离）。
+# 必须在 "_mount_frontend()" 的 "/" SPA 兜底挂载之前注册——
+# 否则根挂载会优先匹配并吞掉 /ws/yjs 的 WebSocket 连接（StaticFiles 不处理 websocket）。
 from yjs_server import yjs_app
 
 app.mount("/ws/yjs", yjs_app)
+
+_mount_frontend()
 
 
 if __name__ == "__main__":

@@ -10,6 +10,11 @@ PyJWT
 # Starlette 的 SessionMiddleware（OAuth state 校验）依赖，部分精简安装缺失，显式声明
 itsdangerous
 
+# Yjs 实时协同（Phase 2 /ws/yjs 端点，yjs_server.py 在 main.py import 期即挂载，
+# 干净环境必须装，否则整个后端起不来）。ypy-websocket 依赖 y-py，二者版本需匹配。
+ypy-websocket==0.12.4
+y-py==0.6.2
+
 # 可选：仅当设置 DATABASE_URL（postgres://...）时才需要，
 # 用于切换到 PostgresDatabase 实现。用 SQLite 时可跳过。
 asyncpg

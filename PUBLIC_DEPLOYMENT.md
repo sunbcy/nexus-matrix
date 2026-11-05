@@ -214,6 +214,12 @@ JWT_SECRET=
 # 登录 JWT 有效期（天），默认 7
 JWT_EXP_DAYS=7
 
+# ===== Yjs 实时协同（/ws/yjs 端点）=====
+# 联调 / 可信内网可临时设 1：跳过 JWT 鉴权直接放行 WebSocket 连接（仅本地验证用，
+# 见 backend/yjs_server.py 的 _auth_connect）。生产环境必须删除此变量或设为 0，
+# 否则任意连接都能读写所有房间，房间隔离形同虚设。
+YJS_AUTH_DISABLED=0
+
 # Google OAuth（可选）：三项都填才启用「用 Google 登录」按钮。
 # 在 Google Cloud Console 创建 OAuth 客户端，回调填 https://你的域名/api/auth/oauth/google/callback
 OAUTH_GOOGLE_ID=
