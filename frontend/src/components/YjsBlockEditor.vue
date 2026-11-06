@@ -5,7 +5,7 @@
 //  - yCursorPlugin  : 远端协作光标（读取 awareness 的 user.name/color）
 //  - yUndoPlugin     : 协同级撤销（关闭 StarterKit 自带 history 以免与 Yjs 绑定冲突）
 // 与 pilot 共享同一 handle（同一房间 / 同一份后端 /ws/yjs）。
-import { onBeforeUnmount, onMounted, ref, reactive, computed, watch } from 'vue';
+import { onBeforeUnmount, onMounted, reactive, computed, watch } from 'vue';
 import { EditorContent, Extension, useEditor } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';

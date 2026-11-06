@@ -75,7 +75,7 @@ function removeSnapshot(id: string) {
 const fileInput = ref<HTMLInputElement | null>(null);
 function onExport() {
   const bytes = yExportDoc(handle);
-  const blob = new Blob([bytes], { type: 'application/octet-stream' });
+  const blob = new Blob([bytes as BlobPart], { type: 'application/octet-stream' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

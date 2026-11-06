@@ -799,8 +799,8 @@
       <button v-if="isCollapsible(actionMenuTask!)" class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="toggleCollapse(actionMenuTask!); actionMenuConfig.isOpen = false">
         <span class="font-['JetBrains_Mono',monospace] text-dim">▸</span> {{ actionMenuTask?.payload?.collapsed ? '展开' : '折叠' }}
       </button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), -1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↑</span> 上移</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(realIndexOf({ id: actionMenuConfig.taskId } as Task), 1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↓</span> 下移</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(actionMenuConfig.taskId, -1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↑</span> 上移</button>
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(actionMenuConfig.taskId, 1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↓</span> 下移</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, 1)"><span class="font-['JetBrains_Mono',monospace] text-dim">→</span> 向右缩进</button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, -1)"><span class="font-['JetBrains_Mono',monospace] text-dim">←</span> 向左缩进</button>
       <div class="border-t border-line/50 my-1"></div>
@@ -4291,15 +4291,18 @@ const duplicateTask = (id: string) => {
   actionMenuConfig.value.isOpen = false;
 };
 // 上下移动块（Cmd/Ctrl + Shift + ↑/↓ / 移动端菜单上移下移）
-const moveBlock = (index: number, dir: number) => {
+const moveBlock = (taskId: string, dir: number) => {
   if (!activePage.value) return;
   const list = activePage.value.tasks;
+  // 按 id 定位原始数组索引：避免把“可见/过滤后”索引误当原始数组下标
+  // （文档存在折叠块时二者不同，会导致移动错块或越界）。
+  const index = list.findIndex((t: Task) => t.id === taskId);
+  if (index < 0) return;
   const target = index + dir;
-  if (index < 0 || target < 0 || target >= list.length) return;
+  if (target < 0 || target >= list.length) return;
   const [item] = list.splice(index, 1);
   list.splice(target, 0, item);
   // 顺序已变：重写整条 prevId 链，保证三端合并时块顺序一致。
-  // 修复：原先只裸 splice，移动后 prevId 链错乱，多端同步时块顺序会乱。
   list.splice(0, list.length, ...writePrevIds(list));
 };
 
@@ -4524,7 +4527,10 @@ const handlePaste = (e: ClipboardEvent, task: Task, index: number) => {
 // 键盘高级拦截 (Tab 层级引擎 & 级联退格)
 const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
   if (!activePage.value) return; const tasksList = activePage.value.tasks;
-  index = realIndexOf(task); // 折叠会跳过块，必须以数据索引为准
+  index = realIndexOf(task); // 可见(已剔除折叠/墓碑)索引，用于取上/下“可见”相邻块
+  // 原始数组索引：仅当文档存在折叠(隐藏)块时与 index 不同。Enter 拆分插入必须落在原始数组的
+  // 正确偏移处（随后 writePrevIds 按原始数组重写 prevId 链），否则新块会插错位置——即“末尾按 Enter 异常”的根因。
+  const rawIndex = tasksList.findIndex((t: Task) => t.id === task.id);
 
   // IME 组合期（拼音候选尚未上屏）不拦截任何按键，否则会吞掉候选词确认、方向键与换行
   if (e.isComposing || isComposing.value) return;
@@ -4585,7 +4591,7 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
   if (e.ctrlKey || e.metaKey) {
     const k = e.key.toLowerCase();
     if (k === 'd' && !e.shiftKey) { e.preventDefault(); duplicateTask(task.id); return; }
-    if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); moveBlock(index, e.key === 'ArrowUp' ? -1 : 1); return; }
+    if (e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); moveBlock(task.id, e.key === 'ArrowUp' ? -1 : 1); return; }
     if (e.key === 'Enter' && task.type === 'todo') { e.preventDefault(); updateTask(task.id, { completed: !task.completed }); return; }
   }
 
@@ -4632,7 +4638,7 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
       if ((task.indentLevel || 0) > 0) updateTask(task.id, { indentLevel: (task.indentLevel || 0) - 1 });
     } else {
       if (index > 0) {
-        const prevTask = tasksList[index - 1];
+        const prevTask = visibleTasks.value[index - 1];
         const maxIndent = (prevTask.indentLevel || 0) + 1;
         if ((task.indentLevel || 0) < maxIndent) updateTask(task.id, { indentLevel: (task.indentLevel || 0) + 1 });
       }
@@ -4666,7 +4672,7 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
     updateTask(task.id, { content: before });
 
     // 在当前行之后插入新行，内容为光标后的部分
-    tasksList.splice(index + 1, 0, {
+    tasksList.splice(rawIndex + 1, 0, {
       id: newId,
       type: newType,
       content: after,
@@ -4676,7 +4682,7 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
       // 三端并发插入时靠这条链确定性重建顺序（见 useSync.orderTasks）
       prevId: task.id,
     });
-    const nextBlock = tasksList[index + 2];
+    const nextBlock = tasksList[rawIndex + 2];
     if (nextBlock) updateTask(nextBlock.id, { prevId: newId });
     // 一次性重写整条链，兜底修复历史数据里缺失/错乱的 prevId
     tasksList.splice(0, tasksList.length, ...writePrevIds(tasksList));
@@ -4697,7 +4703,7 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
     // 无缩进且非首行时，合并到上一行末尾
     if (index > 0) {
       e.preventDefault();
-      const prevTask = tasksList[index - 1];
+      const prevTask = visibleTasks.value[index - 1];
       const prevEl = inputRefs.value[prevTask.id];
       
       // 关键：从 DOM 直接读取上一行的实际文本长度，而非响应式数据
