@@ -4739,15 +4739,17 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
     const dir = e.key === 'ArrowUp' ? -1 : 1;
     // 已有选区时以「逻辑焦点所在块」为基准继续扩展，否则连续按同一个键会原地踏步
     const focusValid = selFocus.value && blockIndexOf(selFocus.value.blockId) >= 0 && hasTextSelection();
-    const baseIdx = focusValid ? blockIndexOf(selFocus.value!.blockId) : index;
+    // baseIdx 必须与 index 同为“可见(过滤后)”索引：index 来自 realIndexOf(可见)，故焦点块也用
+    // realIndexOf 取可见索引；否则 raw 与 visible 混用，折叠块存在时 targetIdx 算错、会跳到隐藏块。
+    const baseIdx = focusValid ? realIndexOf({ id: selFocus.value!.blockId } as Task) : index;
     const targetIdx = baseIdx + dir;
 
     // Notion：第一个块按 ↑ 直接回到标题（首块无上一行，原实现会越界报错）
     if (targetIdx < 0) { if (!e.shiftKey) { e.preventDefault(); focusTitle(); } return; }
-    if (targetIdx >= tasksList.length) return; // 末块无下一行，避免越界
+    if (targetIdx >= visibleTasks.value.length) return; // 末块(可见)无下一行，避免越界
 
     e.preventDefault();
-    const targetId = tasksList[targetIdx].id;
+    const targetId = visibleTasks.value[targetIdx].id;
     const targetEl = inputRefs.value[targetId];
     if (e.shiftKey) {
       // 跨行扩展选区：向下取目标行开头，向上取目标行末尾
@@ -4761,7 +4763,7 @@ const handleKeyDown = (e: KeyboardEvent, task: Task, index: number) => {
   else if (e.key === 'ArrowLeft') {
     if (currentPos === 0 && index > 0) {
       e.preventDefault();
-      const targetId = tasksList[index - 1].id;
+      const targetId = visibleTasks.value[index - 1].id;
       const targetEl = inputRefs.value[targetId];
       if (e.shiftKey) {
         // 跨行扩展选区到上一行末尾
