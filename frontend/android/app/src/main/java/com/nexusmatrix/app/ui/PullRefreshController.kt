@@ -22,7 +22,7 @@ class PullRefreshController {
  */
 class NexusJsBridge(
     private val controller: PullRefreshController,
-    private val openExternal: (String) -> Boolean,
+    private val openExternalHandler: (String) -> Boolean,
 ) {
     /**
      * 安卓原生登录 OAuth 时，由 Web 侧（auth.ts）在点击「用 Google 登录」时写入后端
@@ -60,6 +60,9 @@ class NexusJsBridge(
      */
     @android.webkit.JavascriptInterface
     fun openExternal(url: String): Boolean {
-        return openExternal(url)
+        // 必须用 openExternalHandler（构造参数）：若写成 openExternal(url)，
+        // Kotlin 会优先解析到这个同名成员函数自身 → 无限递归 → StackOverflowError，
+        // JS 侧表现为「点 Google 登录完全没反应」。
+        return openExternalHandler(url)
     }
 }

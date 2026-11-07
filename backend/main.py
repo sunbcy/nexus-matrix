@@ -107,6 +107,19 @@ if _raw_origins == "*":
 else:
     CORS_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()] or ["*"]
 
+# Capacitor 原生 App 的 WebView 源固定为 localhost 类保留源，必须默认放行：
+# 否则 App 内所有跨域 REST 请求（/api/auth/config、/api/me、/api/pages、资产接口…）
+# 拿不到 Access-Control-Allow-Origin，OPTIONS 预检直接 400，表现为「地址配好了仍连不上」。
+# 这些源只可能由设备本机 WebView 发出，不是公网第三方，不构成额外的 CSRF 暴露面。
+# 注意：即使 CORS_ORIGINS 被收紧成公网域名（如 https://nexus.example.com），
+# 也自动追加这些原生源，避免运维漏配导致安卓 App 整体不可用。
+_CAPACITOR_ORIGINS = [
+    "https://localhost", "http://localhost",
+    "capacitor://localhost", "ionic://localhost", "app://localhost",
+]
+if CORS_ORIGINS != ["*"]:
+    CORS_ORIGINS = list(dict.fromkeys(CORS_ORIGINS + _CAPACITOR_ORIGINS))
+
 _ALLOW_CREDENTIALS = CORS_ORIGINS != ["*"]
 
 from contextlib import asynccontextmanager

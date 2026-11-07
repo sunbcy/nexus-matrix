@@ -22,6 +22,7 @@ import {newId} from './ids';
 // 永久不可用（页面数据静默丢失）。详见 idbStore.ts 的注释。
 import {openNexusDB, STORE_NAMES} from './idbStore';
 import {getRuntimeConfig} from '../runtimeConfig';
+import {apiFetch} from './nativeHttp';
 
 // 阶段二 2.3：把图片 Blob 同步到后端，使其它设备能解析 asset: 引用。
 // 与页面同步同源：优先 URL ?syncServer= / 设置面板，否则走同源（Vite 代理）。
@@ -29,8 +30,12 @@ import {getRuntimeConfig} from '../runtimeConfig';
 // 否则标准自托管（前端与后端同源 / 同一 Tunnel）下 SYNC_SERVER 为空，
 // uploadAssetToServer / fetchAssetFromServer 会直接 return，图片永不上传也不回源，
 // 表现为「文字能同步、图片不能」。file:// 等非 http(s) 源无可用后端，保持空（纯本地）。
+// 例外：Capacitor 原生 WebView 的 https://localhost 是本地打包资源，不是后端；
+// 拿它当同源会把资产请求打进 WebView 本地（图片永远加载不出来）。
 const _assetPageOrigin =
-  typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)
+  typeof window !== 'undefined'
+  && /^https?:$/.test(window.location.protocol)
+  && window.location.hostname !== 'localhost'
     ? window.location.origin
     : '';
 const SYNC_SERVER = (getRuntimeConfig().syncServer || (import.meta as any).env?.VITE_SYNC_SERVER || _assetPageOrigin || '').replace(/\/+$/, '');
@@ -151,7 +156,7 @@ export const uploadAssetToServer = async (ref: string, blob: Blob): Promise<bool
     try {
       const buf = await blob.arrayBuffer();
       const b64 = blobToBase64(buf);
-      const res = await fetch(`${ASSET_API_BASE}/assets`, {
+      const res = await apiFetch(`${ASSET_API_BASE}/assets`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -179,7 +184,7 @@ export const verifyAssetOnServer = async (ref: string): Promise<boolean> => {
   if (!SYNC_SERVER) return false;
   const id = ref.slice(ASSET_PREFIX.length);
   try {
-    const res = await fetch(`${ASSET_API_BASE}/assets/${id}`, {
+    const res = await apiFetch(`${ASSET_API_BASE}/assets/${id}`, {
       method: 'GET',
       headers: SYNC_API_KEY ? { Authorization: `Bearer ${SYNC_API_KEY}` } : {},
     });
@@ -200,7 +205,7 @@ export const fetchAssetFromServer = async (ref: string): Promise<Blob | null> =>
   if (!SYNC_SERVER) return null;
   const id = ref.slice(ASSET_PREFIX.length);
   try {
-    const res = await fetch(`${ASSET_API_BASE}/assets/${id}`, {
+    const res = await apiFetch(`${ASSET_API_BASE}/assets/${id}`, {
       headers: SYNC_API_KEY ? { Authorization: `Bearer ${SYNC_API_KEY}` } : {},
     });
     // 明确 404：记入负缓存，后续不再对同一缺失资产反复回源（消除 404 刷屏）

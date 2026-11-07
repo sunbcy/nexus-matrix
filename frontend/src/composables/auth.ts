@@ -8,6 +8,7 @@
 // 让 useSync / assets 以新的 room 重连（最稳，避免改动模块级 const 令牌）。
 import {computed, ref} from 'vue';
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY} from '../runtimeConfig';
+import {apiFetch} from './nativeHttp';
 
 const SYNC_SERVER = (getRuntimeConfig().syncServer || (import.meta as any).env?.VITE_SYNC_SERVER || '').replace(/\/+$/, '');
 const API_BASE = SYNC_SERVER ? `${SYNC_SERVER}/api` : '/api';
@@ -80,7 +81,7 @@ async function loadAccount(): Promise<void> {
     return;
   }
   try {
-    const res = await fetch(`${API_BASE}/auth/me`, {
+    const res = await apiFetch(`${API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${token.value}` },
     });
     if (res.status === 200) {
@@ -132,7 +133,7 @@ function readAuthError(): void {
 
 async function loadAuthConfig(): Promise<void> {
   try {
-    const res = await fetch(`${API_BASE}/auth/config`);
+    const res = await apiFetch(`${API_BASE}/auth/config`);
     if (res.ok) googleEnabled.value = !!(await res.json()).google_oauth;
   } catch {
     googleEnabled.value = false;
@@ -163,7 +164,7 @@ async function consumeInviteLink(invite: string): Promise<void> {
   if (!token.value) return;
   error.value = null;
   try {
-    const v = await fetch(`${API_BASE}/workspaces/invite/${invite}`, {
+    const v = await apiFetch(`${API_BASE}/workspaces/invite/${invite}`, {
       headers: { Authorization: `Bearer ${token.value}` },
     });
     if (!v.ok) {
@@ -179,7 +180,7 @@ async function consumeInviteLink(invite: string): Promise<void> {
     }
     const room = data.room as string;
     if (data.status !== 'active') {
-      const a = await fetch(`${API_BASE}/workspaces/invite/${invite}/accept`, {
+      const a = await apiFetch(`${API_BASE}/workspaces/invite/${invite}/accept`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token.value}` },
       });
@@ -216,15 +217,25 @@ function loginWithGoogle(): void {
       error.value = '安卓端 Google 登录需要后端：请先在下方「同步」填写后端地址（须为公网 https）并保存后再登录';
       return;
     }
-    (window as any).NexusNativeBridge?.setOAuthBackend?.(syncServer);
+    const bridge = (window as any).NexusNativeBridge;
+    try { bridge?.setOAuthBackend?.(syncServer); } catch { /* 深链兜底会自行推导，不致命 */ }
     // 发给 Google 的 redirect_uri 必须是 https（Google 的 Web OAuth 客户端拒绝自定义 scheme），
     // 所以这里用「后端 https 回调」；令牌换发后后端会再用自定义 scheme 深链把 JWT 带回 App。
     // final=android 告诉后端最终走深链（见 backend/auth.py）。
     const redirectUri = `${syncServer}/api/auth/oauth/google/callback`;
     const oauthUrl = `${syncServer}/api/auth/oauth/google?redirect_uri=${encodeURIComponent(redirectUri)}&final=android`;
-    const opened = (window as any).NexusNativeBridge?.openExternal?.(oauthUrl);
-    // 兜底（老版本原生无 openExternal 桥）：仍尝试在 WebView 内跳转（可能被 Google 拒，仅降级）。
-    if (!opened) window.location.assign(oauthUrl);
+    let opened = false;
+    try {
+      opened = !!bridge?.openExternal?.(oauthUrl);
+    } catch (e) {
+      error.value = `无法打开系统浏览器：${e instanceof Error ? e.message : String(e)}`;
+      return;
+    }
+    // 不再退回 window.location.assign：WebView 内跳转既会被 Google 以 disallowed_useragent
+    // 拒绝，又可能被 Capacitor 的本地服务拦截成无声失败（表现为「点了没反应」）。
+    if (!opened) {
+      error.value = '无法打开系统浏览器完成 Google 登录：请更新 App，或检查是否已安装可用浏览器';
+    }
     return;
   }
   // Web：后端中转，跳 Google → 回调 → 回跳 /?apiKey=<jwt>（runtimeConfig 写回 localStorage）
@@ -236,7 +247,7 @@ async function switchWorkspace(room: string): Promise<void> {
   loading.value = true;
   error.value = null;
   try {
-    const res = await fetch(`${API_BASE}/auth/select-workspace`, {
+    const res = await apiFetch(`${API_BASE}/auth/select-workspace`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
       body: JSON.stringify({ room }),
@@ -267,7 +278,7 @@ function logout(): void {
 async function loadMembers(room: string | null): Promise<void> {
   if (!token.value || !room) { members.value = []; return; }
   try {
-    const res = await fetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/members`, {
+    const res = await apiFetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/members`, {
       headers: { Authorization: `Bearer ${token.value}` },
     });
     members.value = res.ok ? ((await res.json()).members ?? []) : [];
@@ -280,7 +291,7 @@ async function inviteMember(room: string | null, email: string, role: string): P
   if (!token.value || !room) return false;
   error.value = null;
   try {
-    const res = await fetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/invite`, {
+    const res = await apiFetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/invite`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
       body: JSON.stringify({ email, role }),
@@ -295,7 +306,7 @@ async function changeRole(room: string | null, userId: string, role: string): Pr
   if (!token.value || !room) return false;
   error.value = null;
   try {
-    const res = await fetch(
+    const res = await apiFetch(
       `${API_BASE}/workspaces/${encodeURIComponent(room)}/members/${encodeURIComponent(userId)}/role`,
       {
         method: 'POST',
@@ -313,7 +324,7 @@ async function removeMember(room: string | null, userId: string): Promise<boolea
   if (!token.value || !room) return false;
   error.value = null;
   try {
-    const res = await fetch(
+    const res = await apiFetch(
       `${API_BASE}/workspaces/${encodeURIComponent(room)}/members/${encodeURIComponent(userId)}`,
       { method: 'DELETE', headers: { Authorization: `Bearer ${token.value}` } },
     );
@@ -328,12 +339,12 @@ async function acceptInvite(room: string): Promise<void> {
   if (!token.value) return;
   error.value = null;
   try {
-    const a = await fetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/accept`, {
+    const a = await apiFetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/accept`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token.value}` },
     });
     if (!a.ok) { error.value = '接受失败，请重试'; return; }
-    const s = await fetch(`${API_BASE}/auth/select-workspace`, {
+    const s = await apiFetch(`${API_BASE}/auth/select-workspace`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
       body: JSON.stringify({ room }),
@@ -351,7 +362,7 @@ async function acceptInvite(room: string): Promise<void> {
 async function loadInviteLinks(room: string | null): Promise<void> {
   if (!token.value || !room) { inviteLinks.value = []; return; }
   try {
-    const res = await fetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/invite-links`, {
+    const res = await apiFetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/invite-links`, {
       headers: { Authorization: `Bearer ${token.value}` },
     });
     inviteLinks.value = res.ok ? ((await res.json()).links ?? []) : [];
@@ -365,7 +376,7 @@ async function generateInviteLink(room: string | null, role: string): Promise<vo
   linkBusy.value = true;
   error.value = null;
   try {
-    const res = await fetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/invite-link`, {
+    const res = await apiFetch(`${API_BASE}/workspaces/${encodeURIComponent(room)}/invite-link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token.value}` },
       body: JSON.stringify({ role }),
@@ -383,7 +394,7 @@ async function revokeLink(room: string | null, tokenStr: string): Promise<void> 
   if (!token.value || !room) return;
   error.value = null;
   try {
-    const res = await fetch(
+    const res = await apiFetch(
       `${API_BASE}/workspaces/${encodeURIComponent(room)}/invite-links/${encodeURIComponent(tokenStr)}`,
       { method: 'DELETE', headers: { Authorization: `Bearer ${token.value}` } },
     );

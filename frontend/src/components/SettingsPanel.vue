@@ -188,16 +188,17 @@ const saveServer = async () => {
   const r = await probeServer(v, k);
   probeState.value = r.state;
   probeMsg.value = r.message;
-  if (r.state === 'unreachable' || r.state === 'unauthorized') {
-    savedMsg.value = '';
-    return;  // 配置无效，不写入，避免把坏配置固化
-  }
-  // 校验通过（含「房间为空」——可能是用户想用的全新房间）：保存并重载生效
+  // 即使校验失败也保存地址：未登录时 /api/me 必然 401、后端临时不可达或 CORS 未放行
+  // 都会让 probe 失败，但地址本身是有效的，不该因此「填了等于没填」。
+  // 校验结果通过 probeMsg 明确告知用户，不再静默丢弃配置。
+  const probeFailed = r.state === 'unreachable' || r.state === 'unauthorized';
   if (v) localStorage.setItem(SYNC_KEY, v);
   else localStorage.removeItem(SYNC_KEY);
   if (k) localStorage.setItem(API_KEY_STORAGE, k);
   else localStorage.removeItem(API_KEY_STORAGE);
-  savedMsg.value = '已保存，正在重新加载以生效…';
+  savedMsg.value = probeFailed
+    ? '地址已保存（连接校验未通过，见下方提示），正在重新加载以生效…'
+    : '已保存，正在重新加载以生效…';
   // 通过 URL query 注入，优先级高于 localStorage（见 runtimeConfig.ts）
   setTimeout(() => {
     const base = window.location.origin + window.location.pathname;

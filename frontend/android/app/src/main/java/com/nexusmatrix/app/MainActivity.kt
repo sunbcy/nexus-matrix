@@ -158,7 +158,8 @@ class MainActivity : BridgeActivity() {
             !apiKey.isNullOrEmpty() -> {
                 lastOAuthData = full
                 val base = localBase ?: deriveLocalBase()
-                val target = "$base/?apiKey=$apiKey"
+                // JWT 用 Uri.encode 兜底转义，避免令牌里出现需编码字符时 URL 被截断。
+                val target = "$base/?apiKey=${Uri.encode(apiKey)}"
                 Log.i(TAG, "OAuth 完成，回跳 SPA：$target")
                 webView.post { webView.loadUrl(target) }
             }

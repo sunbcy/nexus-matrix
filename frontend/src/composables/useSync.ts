@@ -1,7 +1,8 @@
 import {ref, type Ref, watch} from 'vue';
 import {getStore} from './storage';
 import {newBlockId, newPageId} from './ids';
-import {getRuntimeConfig} from '../runtimeConfig';
+import {getRuntimeConfig, isNativeShell} from '../runtimeConfig';
+import {apiFetch} from './nativeHttp';
 import {collectAssetRefs, mergeImportOverwrite} from './importMerge';
 
 // === 数据结构 ===
@@ -342,9 +343,14 @@ const LOCAL_STORAGE_KEY = 'nexus_matrix_pages_v3';
 // 未显式配置时，默认回退到「页面所在的源」(location.origin)：标准自托管里前端由后端
 // 同源托管（或经同一 Tunnel 暴露），后端就在该源提供 /api 与 /ws/sync，开箱即连，
 // 省去手工填地址。仅当「前端与后端跨域分离部署」时才需要显式配置 syncServer。
+// 例外：Capacitor 原生 WebView 用 https://localhost 承载**本地打包资源**，它不是后端；
+// 若拿它当同源推断，所有 REST/WS 都会打进 WebView 本地（表现为「配了地址也连不上」）。
+// Vite dev 的 localhost 同理走相对 /api 交给代理，所以一律排除 localhost。
 // file:// 等非 http(s) 源没有可用后端，保持空（纯本地模式），避免无意义重连。
 const _pageOrigin =
-  typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol)
+  typeof window !== 'undefined'
+  && /^https?:$/.test(window.location.protocol)
+  && window.location.hostname !== 'localhost'
     ? window.location.origin
     : '';
 const SYNC_SERVER = (getRuntimeConfig().syncServer || import.meta.env.VITE_SYNC_SERVER || _pageOrigin || '').replace(/\/+$/, '');
@@ -628,7 +634,7 @@ const apiRequest = async (endpoint: string, options?: RequestInit): Promise<any>
     ...(options?.headers as Record<string, string> | undefined),
   };
   if (SYNC_API_KEY) headers['Authorization'] = `Bearer ${SYNC_API_KEY}`;
-  const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+  const res = await apiFetch(`${API_BASE}${endpoint}`, { ...options, headers });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.json();
 };
@@ -891,7 +897,7 @@ const refreshAccount = async () => {
   try {
     const headers: Record<string, string> = {};
     if (SYNC_API_KEY) headers['Authorization'] = `Bearer ${SYNC_API_KEY}`;
-    const res = await fetch(`${API_BASE}/me`, { headers });
+    const res = await apiFetch(`${API_BASE}/me`, { headers });
     if (res.ok) {
       const d = await res.json();
       accountInfo.value = {
@@ -918,12 +924,15 @@ export const probeServer = async (
 }> => {
   const s = (server || '').replace(/\/+$/, '');
   const base = s ? `${s}/api` : '/api';
-  // 1) 连通性
+  // 1) 连通性。把底层原因带出来：跨域被拦、DNS/TLS 失败、HTTP 错误字面各不相同，
+  //    统一写成「请检查地址或网络」会让用户无法定位（尤其是 CORS 被拒的情况）。
+  const hint = '（请检查地址、网络；安卓还需确认后端 CORS 放行 https://localhost）';
   try {
-    const h = await fetch(`${base}/health`);
-    if (!h.ok) return { state: 'unreachable', message: '无法连接后端：请检查服务器地址或网络' };
-  } catch {
-    return { state: 'unreachable', message: '无法连接后端：请检查服务器地址或网络' };
+    const h = await apiFetch(`${base}/health`);
+    if (!h.ok) return { state: 'unreachable', message: `后端健康检查失败（HTTP ${h.status}）${hint}` };
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    return { state: 'unreachable', message: `无法连接后端：${why}${hint}` };
   }
   // 2) 鉴权 + 数据量
   const k = (key || '').trim();
@@ -931,9 +940,10 @@ export const probeServer = async (
   if (k) headers['Authorization'] = `Bearer ${k}`;
   let res: Response;
   try {
-    res = await fetch(`${base}/me`, { headers });
-  } catch {
-    return { state: 'unreachable', message: '无法连接后端：请检查服务器地址或网络' };
+    res = await apiFetch(`${base}/me`, { headers });
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    return { state: 'unreachable', message: `无法连接后端：${why}${hint}` };
   }
   if (res.status === 401) {
     return { state: 'unauthorized', message: '密钥被拒绝（401）：访问密钥不正确，或后端未启用该密钥' };
@@ -1304,9 +1314,11 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   //    其它端发生变更的页；无 cursor 时拉全量（首装/换设备）。
   const remote = await fetchRemotePages(lastSyncCursor.value);
 
-  // 先发起 WS 连接（后端可达时）：让下面的 pushAll 走 WS（open 后由 onopen 补发 outbox），
-  // 而不是在 socket 尚未 open 时退化成逐页 REST（121 页 = 121 个串行 PUT，每次启动都来一遍）。
-  if (backendReachable) connectWS(pagesRef);
+  // 原生壳内只要配了后端地址就直接尝试 WS，不再等 REST 探针置位 backendReachable：
+  // WebView 的 REST 请求可能被 CORS 拦（探针失败），但 WebSocket 不受 CORS 约束，
+  // 且后端连上后会用 INITIAL_SYNC 下发该 room 全部文档——若被 REST 失败卡住，
+  // 就会出现「明明能连却一篇文档都拉不下来」。桌面保持原逻辑，避免后端下线时无谓重连。
+  if (backendReachable || (SYNC_SERVER && isNativeShell())) connectWS(pagesRef);
 
   if (!local && remote) {
     pagesRef.value = sanitizeLoadedPages(remote);
