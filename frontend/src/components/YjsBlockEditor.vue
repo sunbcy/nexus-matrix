@@ -30,7 +30,17 @@ import {
 } from '../composables/yjsDoc';
 import type { YjsDocHandle } from '../composables/yjsDoc';
 
-const props = defineProps<{ handle: YjsDocHandle }>();
+const props = defineProps<{ handle: YjsDocHandle; docs?: { id: string; title: string; icon: string }[] }>();
+const emit = defineEmits<{ links: [ids: string[]]; navigate: [id: string] }>();
+
+// 文档链接芯片的实时标题解析器（随 props.docs 更新），避免链接标签停留在插入时的旧标题。
+let docTitleResolver: (id: string) => string = () => '';
+function updateDocResolver() {
+  const map = new Map((props.docs || []).map((d) => [d.id, d.title]));
+  docTitleResolver = (id: string) => map.get(id) ?? '';
+}
+updateDocResolver();
+watch(() => props.docs, updateDocResolver, { deep: true });
 
 const ydoc = props.handle.ydoc;
 const awareness = props.handle.provider?.awareness ?? null;
@@ -77,6 +87,20 @@ const yUndoKeymap = Extension.create({
   },
 });
 
+// 把 y-prosemirror 的原生 ProseMirror 插件包进一个 Tiptap Extension。
+// ⚠️ 不能把 ySyncPlugin/yCursorPlugin/yUndoPlugin 直接塞进 Tiptap 的 extensions 数组：
+//    Tiptap 只会识别 Extension/Node/Mark 实例，原生 PM 插件会被静默丢弃，
+//    导致编辑器内容无法同步到 Yjs（yGetDocText 取空、协作/快照/导出全部失效）。
+const YjsSync = Extension.create({
+  name: 'yjs-sync',
+  addProseMirrorPlugins() {
+    const plugins: any[] = [ySyncPlugin(fragment)];
+    if (awareness) plugins.push(yCursorPlugin(awareness, { cursorBuilder }));
+    plugins.push(yUndoPlugin());
+    return plugins;
+  },
+});
+
 // 自定义「标注 / Callout」块：一个带左侧高亮的容器，内含任意块级内容。
 const Callout = Node.create({
   name: 'callout',
@@ -88,6 +112,45 @@ const Callout = Node.create({
   },
   renderHTML({ HTMLAttributes }) {
     return ['div', mergeAttributes(HTMLAttributes, { 'data-callout': '', class: 'yjs-callout' }), 0];
+  },
+});
+
+// ============================================================
+// 文档链接节点（[[双向链接]]）：行内 atom，存 targetId（文档 id）+ label（插入时的标题快照）。
+// 渲染用 NodeView 显示「实时标题」（从 docTitleResolver 查当前标题），点击经 editorProps.handleClick 触发导航。
+// ============================================================
+const DocLink = Node.create({
+  name: 'docLink',
+  group: 'inline',
+  inline: true,
+  atom: true,
+  selectable: false,
+  draggable: false,
+  addAttributes() {
+    return {
+      targetId: { default: '' },
+      label: { default: '' },
+    };
+  },
+  parseHTML() {
+    return [{ tag: 'span[data-doc-link]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['span', mergeAttributes(HTMLAttributes, { 'data-doc-link': '', class: 'yjs-doclink' })];
+  },
+  addNodeView() {
+    return ({ node }) => {
+      const dom = document.createElement('span');
+      dom.className = 'yjs-doclink';
+      dom.setAttribute('data-doc-link', '');
+      dom.setAttribute('data-target', node.attrs.targetId);
+      const render = () => {
+        const title = docTitleResolver(node.attrs.targetId) || node.attrs.label || '(未知文档)';
+        dom.textContent = '🔗 ' + title;
+      };
+      render();
+      return { dom };
+    };
   },
 });
 
@@ -193,6 +256,9 @@ function onEditorState() {
   } else {
     slash.open = false;
   }
+  // [[ 文档链接 ]] 菜单 + 出链上报
+  onEditorStateLink();
+  emitLinks();
 }
 
 // 选中某项：删除 "/query" 文本并套用块命令。
@@ -256,6 +322,121 @@ const SlashNav = Extension.create({
   },
 });
 
+// ============================================================
+// [[ 文档链接 ]] 自动补全：输入 "[[query" 弹出文档列表，选中插入 docLink 节点。
+// 与 slash 共用 onEditorState 触发；导航点击在 editorProps.handleClick 处理。
+// ============================================================
+const linkMenu = reactive({ open: false, query: '', x: 0, y: 0, index: 0 });
+
+const linkFlat = computed(() => {
+  const q = linkMenu.query.trim().toLowerCase();
+  const list = props.docs || [];
+  if (!q) return list;
+  return list.filter((d) => d.title.toLowerCase().includes(q));
+});
+
+function onEditorStateLink() {
+  const e = editor.value;
+  if (!e) return;
+  const sel = e.state.selection as any;
+  const $from = sel.$from;
+  const textBefore = $from.parent.textBetween(0, $from.parentOffset, '\n', '\0');
+  const m = /(?:^|\s)\[\[([^\]\n]*)$/.exec(textBefore);
+  if (m) {
+    const wasOpen = linkMenu.open;
+    linkMenu.open = true;
+    if (!wasOpen || linkMenu.query !== m[1]) linkMenu.index = 0;
+    linkMenu.query = m[1];
+    try {
+      const coords = e.view.coordsAtPos($from.pos);
+      linkMenu.x = coords.left;
+      linkMenu.y = coords.bottom + 6;
+    } catch { /* 坐标失败保持上次 */ }
+  } else {
+    linkMenu.open = false;
+  }
+}
+
+function applyDocLink(d: { id: string; title: string }) {
+  const e = editor.value;
+  if (!e) return;
+  const sel = e.state.selection as any;
+  const $from = sel.$from;
+  const textBefore = $from.parent.textBetween(0, $from.parentOffset, '\n', '\0');
+  const m = /(?:^|\s)\[\[([^\]\n]*)$/.exec(textBefore);
+  if (m) {
+    const parentOffset = $from.parentOffset;
+    const blockStart = $from.pos - parentOffset;
+    const idx = m.index + (m[0][0] === ' ' ? 1 : 0);
+    const from = blockStart + idx;
+    const to = $from.pos;
+    e.chain()
+      .focus()
+      .deleteRange({ from, to })
+      .insertContent({ type: 'docLink', attrs: { targetId: d.id, label: d.title } })
+      .run();
+  }
+  linkMenu.open = false;
+}
+
+function onDocMouseDownLink(ev: MouseEvent) {
+  const t = ev.target as HTMLElement;
+  if (linkMenu.open && !t.closest('.link-menu')) linkMenu.open = false;
+}
+
+const LinkNav = Extension.create({
+  name: 'link-nav',
+  addKeyboardShortcuts() {
+    return {
+      ArrowDown: () => {
+        if (!linkMenu.open) return false;
+        const n = linkFlat.value.length;
+        if (!n) return true;
+        linkMenu.index = (linkMenu.index + 1) % n;
+        return true;
+      },
+      ArrowUp: () => {
+        if (!linkMenu.open) return false;
+        const n = linkFlat.value.length;
+        if (!n) return true;
+        linkMenu.index = (linkMenu.index - 1 + n) % n;
+        return true;
+      },
+      Enter: () => {
+        if (!linkMenu.open) return false;
+        const items = linkFlat.value;
+        if (!items.length) return true;
+        applyDocLink(items[linkMenu.index]);
+        return true;
+      },
+      Escape: () => {
+        if (!linkMenu.open) return false;
+        linkMenu.open = false;
+        return true;
+      },
+    };
+  },
+});
+
+// ---- 出链上报：编辑器内容变更时收集 docLink 节点的 targetId，去重后 emit 给父组件 ----
+let lastLinks: string[] = [];
+function collectLinks(): string[] {
+  const e = editor.value;
+  if (!e) return [];
+  const ids: string[] = [];
+  e.state.doc.descendants((n: any) => {
+    if (n.type.name === 'docLink') ids.push(n.attrs.targetId);
+  });
+  return [...new Set(ids)];
+}
+function emitLinks() {
+  const ids = collectLinks();
+  if (JSON.stringify(ids) !== JSON.stringify(lastLinks)) {
+    lastLinks = ids;
+    emit('links', ids);
+  }
+}
+
 const extensions: any[] = [
   // 关闭自带 history，改用 yUndoPlugin 做协同撤销
   StarterKit.configure({ history: false }),
@@ -270,20 +451,36 @@ const extensions: any[] = [
   DetailsSummary,
   DetailsContent,
   Callout,
+  DocLink,
   Placeholder.configure({
-    placeholder: '输入 "/" 插入块 · 支持标题、列表、待办、表格、折叠、标注、链接、引用、代码块',
+    placeholder: '输入 "/" 插入块 · 输入 "[[" 链接到其它文档 · 支持标题、列表、待办、表格、折叠、标注、引用、代码块',
   }),
-  ySyncPlugin(fragment),
   SlashNav,
+  LinkNav,
+  YjsSync,
+  yUndoKeymap,
 ];
-if (awareness) extensions.push(yCursorPlugin(awareness, { cursorBuilder }));
-extensions.push(yUndoPlugin(), yUndoKeymap);
 
 const editor = useEditor({
   extensions,
   content: '',
   editable: true,
   autofocus: false,
+  editorProps: {
+    // 点击文档链接芯片 → 导航到目标文档
+    handleClick(_view, _pos, event) {
+      const t = event.target as HTMLElement;
+      const el = t.closest && (t.closest('[data-doc-link]') as HTMLElement | null);
+      if (el) {
+        const id = el.getAttribute('data-target');
+        if (id) {
+          emit('navigate', id);
+          return true;
+        }
+      }
+      return false;
+    },
+  },
 });
 
 // 编辑器就绪后挂上状态监听（用 guard 防止重复挂载）。
@@ -296,6 +493,7 @@ watch(
     cachedSchema = e.schema;
     e.on('update', onEditorState);
     e.on('selectionUpdate', onEditorState);
+    emitLinks(); // 初始内容已含链接时，先把出链上报一次
   },
   { immediate: true },
 );
@@ -304,6 +502,7 @@ onMounted(() => {
   cachedHandle = props.handle;
   registerTiptapFragmentRestorer(fragmentRestorer);
   document.addEventListener('mousedown', onDocMouseDown, true);
+  document.addEventListener('mousedown', onDocMouseDownLink, true);
 });
 
 onBeforeUnmount(() => {
@@ -313,6 +512,7 @@ onBeforeUnmount(() => {
     e.off('selectionUpdate', onEditorState);
   }
   document.removeEventListener('mousedown', onDocMouseDown, true);
+  document.removeEventListener('mousedown', onDocMouseDownLink, true);
   unregisterTiptapFragmentRestorer(fragmentRestorer);
   e?.destroy();
 });
@@ -354,10 +554,78 @@ defineExpose({ undo, redo });
       </template>
       <div v-if="slashFlat.length === 0" class="slash-empty">无匹配块类型</div>
     </div>
+
+    <!-- [[ 文档链接 ]] 自动补全菜单 -->
+    <div
+      v-if="linkMenu.open"
+      class="link-menu"
+      :style="{ left: linkMenu.x + 'px', top: linkMenu.y + 'px' }"
+    >
+      <div class="link-title">链接到文档</div>
+      <div
+        v-for="(d, i) in linkFlat"
+        :key="d.id"
+        :class="['link-item', { active: i === linkMenu.index }]"
+        @mousedown.prevent="applyDocLink(d)"
+        @mouseenter="linkMenu.index = i"
+      >
+        <span class="link-icon">{{ d.icon }}</span>
+        <span class="link-name">{{ d.title }}</span>
+      </div>
+      <div v-if="linkFlat.length === 0" class="link-empty">无匹配文档</div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* [[ 文档链接 ]] 自动补全菜单 */
+.link-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 200px;
+  max-height: 280px;
+  overflow: auto;
+  background: rgb(var(--surface));
+  border: 1px solid rgb(var(--line));
+  border-radius: 0.5rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  padding: 0.25rem;
+}
+.link-title {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--dim));
+  padding: 0.4rem 0.6rem 0.2rem;
+}
+.link-item {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.link-item.active { background: rgb(var(--void)); }
+.link-icon { width: 1.4rem; text-align: center; }
+.link-name { color: rgb(var(--display)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-empty { padding: 0.5rem 0.6rem; font-size: 0.8rem; color: rgb(var(--dim)); }
+
+/* 文档链接芯片（编辑器内） */
+.yjs-editor :deep(.yjs-doclink) {
+  display: inline;
+  padding: 0.05em 0.35em;
+  border-radius: 0.3rem;
+  background: rgb(var(--void));
+  border: 1px solid rgb(var(--line));
+  color: rgb(var(--accent));
+  cursor: pointer;
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+.yjs-editor :deep(.yjs-doclink:hover) { border-color: rgb(var(--accent)); }
+
 .yjs-editor :deep(.ProseMirror) {
   min-height: 60vh;
   outline: none;

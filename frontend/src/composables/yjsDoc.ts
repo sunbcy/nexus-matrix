@@ -191,3 +191,26 @@ export function yExportDoc(h: YjsDocHandle): Uint8Array {
 export function yImportDoc(h: YjsDocHandle, data: Uint8Array): void {
   Y.applyUpdate(h.ydoc, data);
 }
+
+// ============================================================
+// 阶段 3：跨文档搜索——无需 ProseMirror schema 即可从 Y.XmlFragment 抽取纯文本。
+// 递归遍历 XmlElement 子节点，XmlText 的文本内容即文档可见文字。
+// ============================================================
+export function yGetDocText(ydoc: Y.Doc): string {
+  const frag = ydoc.getXmlFragment('doc');
+  const out: string[] = [];
+  const walk = (node: any): void => {
+    if (node instanceof Y.XmlText) {
+      const t = node.toString();
+      if (t) out.push(t);
+      return;
+    }
+    if (node instanceof Y.XmlElement) {
+      node.forEach((c: any) => walk(c));
+      // 块级节点之间补换行，保证搜索时词不被错误拼接
+      out.push('\n');
+    }
+  };
+  frag.forEach((n: any) => walk(n));
+  return out.join('');
+}
