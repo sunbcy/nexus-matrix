@@ -324,9 +324,17 @@
           <!-- 虚拟滚动：上 spacer（视口上方未渲染块的高度占位） -->
           <div v-if="showSpacers" :style="{ height: vTop + 'px', flexShrink: '0' }" aria-hidden="true"></div>
 
-          <!-- 任务行循环渲染 (含层级缩进与多媒体类型) -->
+          <!-- 任务行循环渲染 (含层级缩进与多媒体类型)
+
+               块间距 + 字号（对齐 Notion 移动端，2026-11-08 三次调整）：
+               原先 py-2 + my-1 时块间约 20~24px，正文显得一行行「散开」。
+               现移动端 py-px + my-0：块间 1px + 1px，叠加 .ce-block 自身的
+               py-0.5（各 2px）→ 视觉间隙约 6px（Notion 段落块约 6~8px）。
+               同时正文字号 15px → 16px、行高 1.625 → 1.5（16×1.5=24px，
+               行盒高度几乎不变但字更饱满，密度接近 Notion）。
+               单块内部 .ce-block 的 py-0.5 保持不动；桌面沿用原值。 -->
           <div v-for="(task, index) in displayTasks" :key="task.id" :data-block-id="task.id"
-               class="task-item-container group relative flex items-start py-2 pr-2 my-1 rounded-sm transition-colors duration-150"
+               class="task-item-container group relative flex items-start py-px pr-2 my-0 md:py-2 md:my-1 rounded-sm transition-colors duration-150"
                :style="{ marginLeft: `${(task.indentLevel || 0) * 1.5}rem` }"
                :class="{ 
                  'opacity-50': task.completed && task.type === 'todo',
@@ -359,7 +367,7 @@
                  - self-stretch 让槽位铺满内容区，items-start 让内部内容从顶部开始；
                  - mt-[2px] 抵消 .ce-block 的 py-0.5，使内容盒顶边与文字行盒顶边齐平；
                  - h-[1lh] 把内容盒高度限制为「首行行高」，再 items-center 即精确落在行内中线。
-                   lh 单位取元素自身的 line-height，故这里必须复用文字的 leading-relaxed
+                   lh 单位取元素自身的 line-height，故这里必须复用文字的 leading-[1.5]
                    与字号（getFontSizeClass），否则算出的行高与文字不一致。
 
                  鲁棒性：多行文本或图片等超高块同样正确（容器被拉高，但内容仍锚定首行）；
@@ -378,7 +386,7 @@
                  流内排布下手柄永远在可视区内，代价是块文字比标题右移约 36px
                  （Notion 移动端同样是手柄占行内位置）。 -->
             <div class="shrink-0 ml-0 w-9 md:-ml-[84px] md:w-[84px] self-stretch flex items-start justify-start md:justify-end pr-1">
-              <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-relaxed" :class="getFontSizeClass(task)">
+              <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-[1.5]" :class="getFontSizeClass(task)">
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
                 <div class="row-handles flex items-center gap-1 transition-opacity z-30"
@@ -441,7 +449,7 @@
             <!-- todo 复选框：正文流内、压在正文左缘（对齐 Notion——复选框与其它行文字平齐，
                  待办文字跟在复选框右侧）。垂直对齐复用手柄槽的同款方案：
                  mt-[2px] 抵消 ce-block 的 py-0.5，h-[1lh] 锚定首行行高中线。 -->
-            <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-relaxed" :class="getFontSizeClass(task)">
+            <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-[1.5]" :class="getFontSizeClass(task)">
               <div class="relative w-5 h-5 flex items-center justify-center">
                 <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
                        class="peer appearance-none w-5 h-5 border-2 border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
@@ -466,7 +474,7 @@
                      @blur="onBlockBlur"
                      :data-task-id="task.id"
                      :data-placeholder="getPlaceholder(task.type)"
-                     class="ce-block w-full bg-transparent border-none outline-none leading-relaxed py-0.5 font-sans min-h-[24px] cursor-text"
+                     class="ce-block w-full bg-transparent border-none outline-none leading-[1.5] py-0.5 font-sans min-h-[24px] cursor-text"
                      :class="[getTextClass(task), { 'show-placeholder': focusedTaskId === task.id }]">
                 </div>
               </div>
@@ -561,7 +569,7 @@
                     <option value="rust">Rust</option>
                   </select>
               </div>
-              <textarea v-model="task.payload.code" @keydown.tab.prevent="insertTabInCode($event, task)" class="w-full bg-transparent text-accent p-4 text-sm outline-none resize-y min-h-[120px] custom-scrollbar leading-relaxed" placeholder="// TYPE YOUR DIRECTIVES HERE..."></textarea>
+              <textarea v-model="task.payload.code" @keydown.tab.prevent="insertTabInCode($event, task)" class="w-full bg-transparent text-accent p-4 text-sm outline-none resize-y min-h-[120px] custom-scrollbar leading-[1.5]" placeholder="// TYPE YOUR DIRECTIVES HERE..."></textarea>
             </div>
 
             <!-- 可视化看板 (Kanban / Database)。
@@ -669,18 +677,18 @@
          class="format-toolbar fixed z-50 flex items-center gap-0.5 px-1 py-1 bg-void border border-line shadow-2xl rounded-sm"
          :class="isCoarsePointer ? 'format-toolbar--touch' : ''"
          :style="formatToolbarStyle">
-      <button @mousedown.prevent="execFormat('bold')" title="加粗 (Ctrl/Cmd+B)" class="ft-btn font-bold">B</button>
-      <button @mousedown.prevent="execFormat('italic')" title="斜体 (Ctrl/Cmd+I)" class="ft-btn italic">I</button>
-      <button @mousedown.prevent="execFormat('underline')" title="下划线 (Ctrl/Cmd+U)" class="ft-btn underline">U</button>
-      <button @mousedown.prevent="execFormat('strikeThrough')" title="删除线 (Ctrl/Cmd+Shift+S)" class="ft-btn line-through">S</button>
+      <button @pointerdown.prevent="execFormat('bold')" title="加粗 (Ctrl/Cmd+B)" class="ft-btn font-bold">B</button>
+      <button @pointerdown.prevent="execFormat('italic')" title="斜体 (Ctrl/Cmd+I)" class="ft-btn italic">I</button>
+      <button @pointerdown.prevent="execFormat('underline')" title="下划线 (Ctrl/Cmd+U)" class="ft-btn underline">U</button>
+      <button @pointerdown.prevent="execFormat('strikeThrough')" title="删除线 (Ctrl/Cmd+Shift+S)" class="ft-btn line-through">S</button>
       <div class="w-px h-4 bg-panel mx-0.5"></div>
-      <button @mousedown.prevent="execFormat('code')" title="行内代码 (Ctrl/Cmd+E)" class="ft-btn font-['JetBrains_Mono',monospace] text-xs">&lt;/&gt;</button>
-      <button @mousedown.prevent="execFormat('link')" title="链接 (Ctrl/Cmd+K)" class="ft-btn">
+      <button @pointerdown.prevent="execFormat('code')" title="行内代码 (Ctrl/Cmd+E)" class="ft-btn font-['JetBrains_Mono',monospace] text-xs">&lt;/&gt;</button>
+      <button @pointerdown.prevent="execFormat('link')" title="链接 (Ctrl/Cmd+K)" class="ft-btn">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
       </button>
       <div class="w-px h-4 bg-panel mx-0.5"></div>
-      <button @mousedown.prevent="colorPanel = colorPanel === 'text' ? null : 'text'" title="文本颜色" class="ft-btn font-bold">A</button>
-      <button @mousedown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
+      <button @pointerdown.prevent="colorPanel = colorPanel === 'text' ? null : 'text'" title="文本颜色" class="ft-btn font-bold">A</button>
+      <button @pointerdown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
         <span class="px-1 bg-warn/30 text-warn rounded-sm">H</span>
       </button>
       <!-- 颜色面板：触屏时工具条吸底，面板必须向上展开，否则画到键盘底下 -->
@@ -688,10 +696,10 @@
            class="absolute left-0 flex gap-1 px-2 py-1.5 bg-void border border-line shadow-2xl rounded-sm"
            :class="isCoarsePointer ? 'bottom-full mb-1' : 'top-full mt-1'">
         <button v-for="c in colorPalette" :key="c.value"
-                @mousedown.prevent="applyColor(c.value)"
+                @pointerdown.prevent="applyColor(c.value)"
                 class="color-swatch w-5 h-5 rounded-sm border border-line hover:scale-110 transition-transform"
                 :style="{ background: c.value }" :title="c.label"></button>
-        <button @mousedown.prevent="applyColor('transparent')" class="color-swatch w-5 h-5 rounded-sm border border-dim text-[10px] text-dim flex items-center justify-center" title="清除">/</button>
+        <button @pointerdown.prevent="applyColor('transparent')" class="color-swatch w-5 h-5 rounded-sm border border-dim text-[10px] text-dim flex items-center justify-center" title="清除">/</button>
       </div>
     </div>
 
@@ -1334,15 +1342,16 @@ const onEditorTouchMove = (e: TouchEvent) => {
   if (!kbDragTracking) return;
   const t = e.touches[0];
   if (!t) return;
+  // 先做廉价的位移判断：滚动过程中本函数每帧都会被调用，未达阈值前
+  // 绝不触碰 Selection / activeElement（两者都会触发同步布局，拖慢滚动）。
+  if (Math.abs(t.clientY - kbDragStartY) < KB_DISMISS_DRAG) return;
   // 已经拖出选区：让位给选区引擎，不抢
   if (hasTextSelection()) { kbDragTracking = false; return; }
   const ae = getActiveEditable();
   if (!ae) { kbDragTracking = false; return; }
   // 上/下滑都算「有意图的滑动」（对应「往下翻看更多」与「下滑收起」两种表述）
-  if (Math.abs(t.clientY - kbDragStartY) >= KB_DISMISS_DRAG) {
-    kbDragTracking = false;
-    ae.blur();
-  }
+  kbDragTracking = false;
+  ae.blur();
 };
 const onEditorTouchEnd = () => { kbDragTracking = false; };
 
@@ -2330,7 +2339,8 @@ onMounted(async () => {
      if (newHash && pages.value.find(p => p.id === newHash)) activePageId.value = newHash;
   });
 
-  // 移动端视图栈初始化：监听形态切换，初始若已恢复出文档则直接进入内容页。
+  // 移动端视图栈初始化：监听形态切换。
+  // 首屏默认停在「列表页」（对齐 Notion 冷启动 / 登录回跳）。
   updateIsMobile();
   window.addEventListener('resize', updateIsMobile);
   // 接管安卓系统/手势返回：内容页→列表页，列表页→退出 App（替代原生默认直接退出）。
@@ -2343,7 +2353,15 @@ onMounted(async () => {
   document.addEventListener('touchstart', onSwipeBackStart, {capture: true, passive: true});
   document.addEventListener('touchend', onSwipeBackEnd, {capture: true, passive: true});
   document.addEventListener('touchcancel', onSwipeBackEnd, {capture: true, passive: true});
-  if (isMobile.value && activePage.value) enterContent();
+  // 只有 URL 带明确 #pageId（用户主动打开过文档 / 外部深链 / 刷新恢复上次位置）
+  // 才直接进入内容页；否则一律停在列表页。
+  //
+  // 旧逻辑在这里无条件 enterContent()，而 activePageId 在无 hash 时会被兜底成第一篇
+  // （包含 initSync 建出的种子欢迎页）——于是每次安装/冷启动，以及 Google 登录成功
+  // 后深链回跳重载 SPA（loadUrl 的 URL 不带 hash），都被强制拉进那篇默认文档。
+  // Notion 移动端首屏是「最近访问 / 页面列表」，登录完成后也回到列表由用户再选文档，
+  // 不会硬塞一篇写死的欢迎文档进来。桌面端不受影响（分栏布局不看 mobileView）。
+  if (isMobile.value && hash && activePage.value) enterContent();
 
   // 初始同步受控下拉刷新状态（确保原生桥就绪后状态已下发：列表页允许、内容页禁用、浮层打开时禁用）
   if (isMobile.value) {
@@ -2440,18 +2458,7 @@ onMounted(async () => {
     if (!isDragSelecting) return;
     isDragSelecting = false;
 
-    const sel = window.getSelection();
-    if (hasTextSelection()) {
-      // 有选区：在选区上方弹出浮动格式工具栏（对齐 Notion 的 selection toolbar）
-      const rect = sel!.getRangeAt(0).getBoundingClientRect();
-      const above = rect.top > 48;
-      formatToolbar.value = {
-        visible: true,
-        x: Math.max(8, Math.round(rect.left)),
-        y: Math.round(above ? rect.top - 40 : rect.bottom + 8),
-      };
-      return;
-    }
+    if (showFormatToolbarForSelection()) return;
     hideFormatToolbar();
 
     // 无选区（单击定位光标）：用 caretRangeFromPoint 精确定位，避免点在块内空白处时光标丢失
@@ -2463,6 +2470,30 @@ onMounted(async () => {
     selAnchor.value = null; selFocus.value = null;
   });
 
+  // 安卓 WebView 长按选词由系统建立 DOM Selection，只派发 selectionchange，
+  // 不派发 mouseup —— 旧逻辑因此只会在桌面鼠标选区后显示格式工具栏，手机上
+  // 选中文字只剩系统级 ActionMode（复制/全选/分享），无法加粗/斜体/加链接。
+  // 触屏下统一监听 selectionchange：只要 .ce-block 内出现非空选区，就弹出与 Web
+  // 相同的可编辑工具栏（formatToolbarStyle 在触屏会吸底并放大触摸目标）。
+  // 系统原生菜单保留在顶部，用于复制/粘贴，二者不冲突。
+  // 防抖 120ms：拖动系统选区手柄时 selectionchange 高频触发，避免工具栏反复重排。
+  // 桌面仍只走 mouseup，保持原有行为一像素不变。
+  let selChangeTimer: number | null = null;
+  document.addEventListener('selectionchange', () => {
+    if (!isCoarsePointer.value) return;
+    if (selChangeTimer != null) window.clearTimeout(selChangeTimer);
+    selChangeTimer = window.setTimeout(() => {
+      selChangeTimer = null;
+      if (!showFormatToolbarForSelection()) hideFormatToolbar();
+    }, 120);
+  });
+
+  // 触屏选区起点：用于区分「上下滚动」与「横向拖动选字」两种手势。
+  let touchSelectStartX = 0;
+  let touchSelectStartY = 0;
+  const TOUCH_SCROLL_INTENT_PX = 10;  // 垂直位移超过它 → 判定为滚动，放弃选区手势
+  const TOUCH_SELECT_INTENT_PX = 8;   // 水平位移超过它 → 才进入选区引擎
+
   document.addEventListener('touchstart', (e: TouchEvent) => {
     // 单指触屏选区（移动端必备，且与鼠标路径共用同一套逻辑选区引擎）
     if (e.touches.length !== 1) return;
@@ -2473,13 +2504,41 @@ onMounted(async () => {
     if (!info) return;
     isDragSelecting = true;
     pointerDragged = false;
+    touchSelectStartX = t.clientX;
+    touchSelectStartY = t.clientY;
     selAnchor.value = info;
     selFocus.value = info;
   }, { passive: true });
 
+  // 【滚动卡顿根因修复】
+  // 旧实现有两个致命点：① 只要手指落在 .ce-block 上，touchstart 就把 isDragSelecting
+  // 置 true，于是用户每一次「上下滑动阅读」都会进入选区引擎，逐帧执行
+  // caretInfoFromPoint + applyLogicalSelection（强制同步布局）；② 末尾还调
+  // preventDefault() 把滚动拦下，且监听是 passive:false —— 浏览器必须等主线程
+  // 处理完 touchmove 才能决定是否滚动。两者叠加就是「页面内上下滑明显卡顿迟钝」。
+  //
+  // 现在：垂直位移一旦超过阈值就彻底放弃本次选区手势、不碰 DOM、不 preventDefault，
+  // 把滚动完整交回合成器线程；只有「以水平拖动为主」时才进入选区引擎。
+  // 监听改为 passive:true，普通滚动期间主线程零参与。
   document.addEventListener('touchmove', (e: TouchEvent) => {
     if (!isDragSelecting || e.touches.length !== 1) return;
     const t = e.touches[0];
+    const dx = t.clientX - touchSelectStartX;
+    const dy = t.clientY - touchSelectStartY;
+
+    // 1) 垂直滑动 = 阅读滚动：取消选区手势（touchend 会因 isDragSelecting=false
+    //    直接返回，顺带避免滚动结束后把光标误定位到抬手处）。
+    if (Math.abs(dy) > TOUCH_SCROLL_INTENT_PX) {
+      isDragSelecting = false;
+      selAnchor.value = null;
+      selFocus.value = null;
+      return;
+    }
+    // 2) 尚未形成明确横向拖动：直接放过，避免每帧读取/重建 Selection 强制布局
+    if (Math.abs(dx) <= TOUCH_SELECT_INTENT_PX) return;
+
+    // 3) 明确的水平拖动才逐帧更新逻辑选区（此时手指几乎不垂直移动，
+    //    不再需要 preventDefault 去抑制页面滚动）
     const info = caretInfoFromPoint(t.clientX, t.clientY);
     if (!info) return;
     const prev = selFocus.value;
@@ -2487,9 +2546,7 @@ onMounted(async () => {
     pointerDragged = true;
     selFocus.value = info;
     applyLogicalSelection(selAnchor.value!, info);
-    // 阻止页面滚动，否则长距离拖动选区时页面会跟着滚
-    if (e.cancelable) e.preventDefault();
-  }, { passive: false });
+  }, { passive: true });
 
   document.addEventListener('touchend', (e: TouchEvent) => {
     if (!isDragSelecting) return;
@@ -2709,6 +2766,35 @@ const onBlockBlur = () => { activeSlashTaskId.value = null; focusedTaskId.value 
 // 选中文本后的浮动格式工具栏
 const formatToolbar = ref({ visible: false, x: 0, y: 0 });
 const hideFormatToolbar = () => { formatToolbar.value.visible = false; colorPanel.value = null; };
+
+/**
+ * 按当前 DOM 选区显示浮动格式工具栏（桌面 mouseup 与触屏 selectionchange 共用）。
+ *
+ * 为什么需要它：安卓 WebView 长按选词由系统建立 DOM Selection 并弹出原生
+ * ActionMode（复制/全选/分享），全程不派发 mouseup —— 旧逻辑只在 mouseup 里
+ * 显示工具栏，于是手机上选中文字后完全没有「可编辑」入口（加粗/斜体/链接/颜色）。
+ * 改为监听 selectionchange 后，只要编辑器内出现非空选区就显示同一套工具栏，
+ * 与 Web 端行为一致；触屏下 formatToolbarStyle 会把它吸到底部并放大触摸目标。
+ *
+ * 只接管 .ce-block 内的选区：标题输入框、设置面板、其它输入框仍交给系统处理。
+ */
+const showFormatToolbarForSelection = (): boolean => {
+  if (!hasTextSelection()) return false;
+  const range = window.getSelection()?.getRangeAt(0);
+  if (!range) return false;
+  const node = range.startContainer;
+  const el = (node.nodeType === 3 ? node.parentElement : node as HTMLElement) as HTMLElement | null;
+  if (!el?.closest('.ce-block')) return false;
+  const rect = range.getBoundingClientRect();
+  if (!rect.width && !rect.height) return false;
+  const above = rect.top > 48;
+  formatToolbar.value = {
+    visible: true,
+    x: Math.max(8, Math.round(rect.left)),
+    y: Math.round(above ? rect.top - 40 : rect.bottom + 8),
+  };
+  return true;
+};
 
 // 移动端输入环境（第二期）：软键盘遮挡高度 + 是否触屏
 const { keyboardInset, isCoarsePointer } = useMobileInput();
@@ -3877,7 +3963,9 @@ const startCoverDrag = (e: { clientY: number }) => {
   };
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
-  document.addEventListener('touchmove', onMove, { passive: false });
+  // 本手势全程不调用 preventDefault（页面仍可正常滚动），因此用 passive:true：
+  // 非 passive 会让浏览器等主线程跑完 touchmove 才滚动，白白拖慢封面区域的滑动手感。
+  document.addEventListener('touchmove', onMove, { passive: true });
   document.addEventListener('touchend', onUp);
 };
 
@@ -5151,9 +5239,10 @@ const getTextClass = (task: Task) => {
   if (task.type === 'h2') return 'text-xl font-bold font-["Rajdhani",sans-serif] text-display';
   if (task.type === 'h3') return 'text-lg font-bold font-["Rajdhani",sans-serif] text-dim';
   if (task.type === 'quote') return 'italic text-warn/90';
-  if (task.type === 'toggle') return 'text-[15px] font-medium text-accent/80';
-  if (task.completed && task.type === 'todo') return 'text-[15px] line-through text-dim';
-  return 'text-[15px] text-display';
+  // 正文字号对齐 Notion 的 16px（此前 15px 偏小，和块间距放在一起显得「行散字小」）。
+  if (task.type === 'toggle') return 'text-[16px] font-medium text-accent/80';
+  if (task.completed && task.type === 'todo') return 'text-[16px] line-through text-dim';
+  return 'text-[16px] text-display';
 };
 const getPlaceholder = (type: string) => { if (type === 'h1') return '标题 1'; if (type === 'h2') return '标题 2'; if (type === 'h3') return '标题 3'; if (type === 'callout') return '写点提示…'; if (type === 'text') return "输入 '/' 唤出命令菜单..."; return '...'; };
 
@@ -5165,7 +5254,7 @@ const getFontSizeClass = (task: Task) => {
   if (task.type === 'h1') return 'text-2xl';
   if (task.type === 'h2') return 'text-xl';
   if (task.type === 'h3') return 'text-lg';
-  return 'text-[15px]';
+  return 'text-[16px]';
 };
 
 // 供 App.vue 的备份工具栏调用
