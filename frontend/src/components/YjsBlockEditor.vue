@@ -635,7 +635,7 @@ defineExpose({ undo, redo });
   border-radius: 0.5rem;
   color: rgb(var(--display));
   font-size: 0.95rem;
-  line-height: 1.7;
+  line-height: 1.5;
 }
 .yjs-editor :deep(.ProseMirror p.is-editor-empty:first-child::before) {
   content: attr(data-placeholder);
@@ -644,6 +644,12 @@ defineExpose({ undo, redo });
   height: 0;
   pointer-events: none;
 }
+/* 段落/列表/引用：紧凑块间距，贴近 Notion（默认 p 的浏览器 margin≈1em 过大） */
+.yjs-editor :deep(.ProseMirror p) { margin: 0.15rem 0; }
+.yjs-editor :deep(.ProseMirror ul),
+.yjs-editor :deep(.ProseMirror ol) { margin: 0.15rem 0; }
+.yjs-editor :deep(.ProseMirror li) { margin: 0.06rem 0; }
+.yjs-editor :deep(.ProseMirror blockquote) { margin: 0.15rem 0; }
 .yjs-editor :deep(.ProseMirror h1) { font-size: 1.6rem; font-weight: 700; margin: 0.6rem 0 0.3rem; }
 .yjs-editor :deep(.ProseMirror h2) { font-size: 1.3rem; font-weight: 700; margin: 0.5rem 0 0.25rem; }
 .yjs-editor :deep(.ProseMirror h3) { font-size: 1.1rem; font-weight: 700; margin: 0.4rem 0 0.2rem; }
@@ -670,6 +676,33 @@ defineExpose({ undo, redo });
 .yjs-editor :deep(.ProseMirror ul[data-type="taskList"]) { list-style: none; padding-left: 0.25rem; }
 .yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li) { display: flex; gap: 0.5rem; align-items: flex-start; }
 .yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label) { margin-top: 0.35rem; }
+/* 待办复选框：与 NexusTaskMatrix1 主文档保持同一观感（0.8em 跟随字号、细边框、accent 勾） */
+.yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"]) {
+  appearance: none; -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 0.8em; height: 0.8em;
+  margin: 0;
+  font-size: inherit;
+  position: relative;
+  border: 1.5px solid rgb(var(--line));
+  border-radius: 2px;
+  background: rgb(var(--void));
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"]:checked) {
+  border-color: rgb(var(--accent));
+  background: rgb(var(--accent) / 0.2);
+}
+.yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"]:checked)::after {
+  content: '';
+  position: absolute;
+  left: 0.28em; top: 0.04em;
+  width: 0.25em; height: 0.5em;
+  border: solid rgb(var(--accent));
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
 .yjs-editor :deep(.yjs-cursor) { word-break: normal; }
 
 /* 标注 / Callout 块 */

@@ -326,26 +326,30 @@
 
           <!-- 任务行循环渲染 (含层级缩进与多媒体类型)
 
-               块间距 + 字号（对齐 Notion 移动端，2026-11-08 三次调整）：
-               原先 py-2 + my-1 时块间约 20~24px，正文显得一行行「散开」。
-               现移动端 py-px + my-0：块间 1px + 1px，叠加 .ce-block 自身的
-               py-0.5（各 2px）→ 视觉间隙约 6px（Notion 段落块约 6~8px）。
-               同时正文字号 15px → 16px、行高 1.625 → 1.5（16×1.5=24px，
-               行盒高度几乎不变但字更饱满，密度接近 Notion）。
-               单块内部 .ce-block 的 py-0.5 保持不动；桌面沿用原值。 -->
+               块间距 / 缩进（对齐 Notion web 规则，2026-11-08 调整）：
+               - 移动端 / 桌面端统一为 py-px + my-0：同级块间约 6px
+                 （相邻块 = 上容器 py-px + 上 ce-block py-0.5 + 下 ce-block py-0.5 + 下容器 py-px
+                   ≈ 1+2+2+1 = 6px，对齐 Notion 段落块 6~8px 的极简感）。
+               - 垂直间距对齐 Notion：同级一致（≈6px），缩进层级本身不改变块间距；
+                 仅在「进入 / 退出一个嵌套组」的边界（当前块与上一块 indentLevel 不同）处
+                 额外加 mt-3（12px）组间距，使嵌套内容「成组」、与父级分隔（组边界 ≈18px）。
+               - 水平缩进：每层 marginLeft = indentLevel × 1.625rem（≈26px/级，对齐 Notion 的缩进步长）。
+               单块内部 .ce-block 的 py-0.5 保持不动。 -->
           <div v-for="(task, index) in displayTasks" :key="task.id" :data-block-id="task.id"
-               class="task-item-container group relative flex items-start py-px pr-2 my-0 md:py-2 md:my-1 rounded-sm transition-colors duration-150"
-               :style="{ marginLeft: `${(task.indentLevel || 0) * 1.5}rem` }"
+               class="task-item-container group relative flex items-start py-px pr-2 my-0 md:py-px md:my-0 rounded-sm transition-colors duration-150 hover:bg-panel/30"
+               :style="{ marginLeft: `${(task.indentLevel || 0) * 1.625}rem` }"
                :class="{ 
-                 'opacity-50': task.completed && task.type === 'todo',
-                 'ring-1 ring-danger/70 bg-danger/10': highlightTaskId === task.id,
-                 'hover:bg-panel/40': draggedTaskId !== task.id,
-                 'opacity-30 scale-[0.98] border border-dashed border-dim/50': draggedTaskId === task.id,
-                 'shadow-[inset_0_2px_0_0_var(--cyan-glow)] bg-panel/30': dragOverTaskId === task.id && dropPosition === 'top',
-                 'shadow-[inset_0_-2px_0_0_var(--cyan-glow)] bg-panel/30': dragOverTaskId === task.id && dropPosition === 'bottom',
-                 'ring-1 ring-accent/70 bg-accent/5': selectedTaskIds.has(task.id),
-                 'bg-surface/70 rounded-md': task.type === 'callout'
-               }"
+                'opacity-50': task.completed && task.type === 'todo',
+                'ring-1 ring-danger/70 bg-danger/10': highlightTaskId === task.id,
+                'opacity-30 scale-[0.98] border border-dashed border-dim/50': draggedTaskId === task.id,
+                'shadow-[inset_0_2px_0_0_var(--cyan-glow)] bg-panel/30': dragOverTaskId === task.id && dropPosition === 'top',
+                'shadow-[inset_0_-2px_0_0_var(--cyan-glow)] bg-panel/30': dragOverTaskId === task.id && dropPosition === 'bottom',
+                'ring-1 ring-accent/70 bg-accent/5': selectedTaskIds.has(task.id),
+                'bg-surface/70 rounded-md': task.type === 'callout',
+                // 对齐 Notion：同级块间距一致；仅在缩进层级变化（进入/退出嵌套组）边界加 8px 组间距，
+                // 使嵌套内容「成组」、与父级分隔（组边界 ≈14px，组内仍为 ≈6px）。
+                'mt-3': index > 0 && (displayTasks[index - 1]?.indentLevel || 0) !== (task.indentLevel || 0),
+              }"
                :draggable="draggableTaskId === task.id"
                @dragstart="handleDragStart($event, task)"
                @dragover.prevent="handleDragOver($event, task)"
@@ -450,11 +454,11 @@
                  待办文字跟在复选框右侧）。垂直对齐复用手柄槽的同款方案：
                  mt-[2px] 抵消 ce-block 的 py-0.5，h-[1lh] 锚定首行行高中线。 -->
             <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-[1.5]" :class="getFontSizeClass(task)">
-              <div class="relative w-5 h-5 flex items-center justify-center">
+              <div class="relative w-[0.8em] h-[0.8em] flex items-center justify-center">
                 <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
-                       class="peer appearance-none w-5 h-5 border-2 border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
-                       style="clip-path: polygon(3px 0, 100% 0, 100% calc(100% - 3px), calc(100% - 3px) 100%, 0 100%, 0 3px)" />
-                <svg class="absolute w-3.5 h-3.5 text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                       class="peer appearance-none w-[0.8em] h-[0.8em] border-[1.5px] border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
+                       style="clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px)" />
+                <svg class="absolute w-[0.55em] h-[0.55em] text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
                   <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
@@ -788,32 +792,33 @@
             ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-line shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
             : 'action-menu-popup w-52 border border-line shadow-2xl py-1 rounded-sm max-h-[70vh]'"
          :style="isCoarsePointer ? undefined : { top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }"
-         @click.stop>
+         @click.stop @keydown="onMenuKey">
       <!-- 底部面板的抓取条（仅触屏） -->
       <div v-if="isCoarsePointer" class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
-      <div class="px-3 py-1 text-xs text-dim uppercase tracking-wider font-['Rajdhani',sans-serif] mb-1 border-b border-line/50">转换区块为</div>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('text')"><span class="font-['JetBrains_Mono',monospace] text-dim">T</span> 文本</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors text-accent/80 font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h1')"><span class="font-['JetBrains_Mono',monospace] text-accent/40 font-normal">H1</span> 标题 1</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h2')"><span class="font-['JetBrains_Mono',monospace] text-dim font-normal">H2</span> 标题 2</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors font-bold font-['Rajdhani',sans-serif] flex items-center gap-2" @click="handleActionCommand('h3')"><span class="font-['JetBrains_Mono',monospace] text-dim font-normal">H3</span> 标题 3</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('todo')"><span class="font-['JetBrains_Mono',monospace] text-dim">[]</span> 待办事项</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('bullet')"><span class="font-['JetBrains_Mono',monospace] text-dim">•</span> 无序列表</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('numbered')"><span class="font-['JetBrains_Mono',monospace] text-dim">1.</span> 编号列表</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('toggle')"><span class="font-['JetBrains_Mono',monospace] text-dim">▸</span> 折叠列表</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('quote')"><span class="font-['JetBrains_Mono',monospace] text-dim">&quot;</span> 引用块</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('callout')"><span class="font-['JetBrains_Mono',monospace] text-dim">💡</span> 标注块</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="handleActionCommand('divider')"><span class="font-['JetBrains_Mono',monospace] text-dim">—</span> 分割线</button>
+      <!-- 类型搜索（对齐 Notion：输入即筛选块类型，支持键盘 ↑↓/Enter/Esc） -->
+      <div class="px-3 py-2 border-b border-line/50">
+        <input ref="menuSearchRef" v-model="menuQuery" type="text" placeholder="搜索块类型…"
+               class="w-full bg-panel/40 rounded px-2 py-1 text-sm outline-none placeholder:text-dim/70" />
+      </div>
+      <!-- 转换区块为（按分组展示，搜索时自动过滤） -->
+      <div class="px-3 pt-1.5 pb-0.5 text-xs text-dim uppercase tracking-wider font-['Rajdhani',sans-serif]">转换区块为</div>
+      <template v-for="grp in filteredGroups" :key="grp.group">
+        <div class="px-3 pt-1.5 pb-0.5 text-xs text-dim uppercase tracking-wider font-['Rajdhani',sans-serif]">{{ grp.group }}</div>
+        <button v-for="it in grp.items" :key="it.type" :data-mi="it.navIndex"
+                class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2"
+                :class="[(actionMenuTask?.type === it.type ? 'bg-accent/10 text-accent font-medium' : ''), (menuActiveIndex === it.navIndex ? 'ring-1 ring-accent/60' : '')]"
+                @click="handleActionCommand(it.type)">
+          <span class="font-['JetBrains_Mono',monospace] text-dim w-6 text-center">{{ it.icon }}</span>{{ it.label }}
+        </button>
+      </template>
       <div class="border-t border-line/50 my-1"></div>
-      <button v-if="isCollapsible(actionMenuTask!)" class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="toggleCollapse(actionMenuTask!); actionMenuConfig.isOpen = false">
-        <span class="font-['JetBrains_Mono',monospace] text-dim">▸</span> {{ actionMenuTask?.payload?.collapsed ? '展开' : '折叠' }}
+      <!-- 操作项 -->
+      <button v-for="(a, i) in actionMenuActions" :key="a.key" :data-mi="typeNavCount + i"
+              class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2"
+              :class="[a.disabled ? 'opacity-40 pointer-events-none' : '', a.danger ? 'text-danger hover:bg-danger/10' : '', (menuActiveIndex === typeNavCount + i ? 'ring-1 ring-accent/60' : '')]"
+              @click="a.action()">
+        <span class="font-['JetBrains_Mono',monospace] text-dim w-6 text-center">{{ a.icon }}</span>{{ a.label }}
       </button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(actionMenuConfig.taskId, -1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↑</span> 上移</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="moveBlock(actionMenuConfig.taskId, 1)"><span class="font-['JetBrains_Mono',monospace] text-dim">↓</span> 下移</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, 1)"><span class="font-['JetBrains_Mono',monospace] text-dim">→</span> 向右缩进</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="changeIndent(actionMenuTask!, -1)"><span class="font-['JetBrains_Mono',monospace] text-dim">←</span> 向左缩进</button>
-      <div class="border-t border-line/50 my-1"></div>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors" @click="duplicateTask(actionMenuConfig.taskId)">复制</button>
-      <button class="w-full text-left px-4 py-1.5 hover:bg-danger/10 transition-colors text-danger" @click="deleteBlockAndFocus(actionMenuTask!); actionMenuConfig.isOpen = false">删除</button>
     </div>
 
     <!-- 页面「···」菜单：触屏 bottom sheet / 桌面 popover（复用块菜单双形态范式）。
@@ -2432,12 +2437,21 @@ onMounted(async () => {
   document.addEventListener('mousedown', (e: MouseEvent) => {
     const ceBlock = (e.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
     if (!ceBlock) return;
+    // 链接 / 控件点击走原生行为（打开链接气泡、聚焦输入框），不接管选区
+    if ((e.target as HTMLElement).closest('a, button, input, select, textarea')) return;
     const info = caretInfoFromPoint(e.clientX, e.clientY);
     if (!info) return;
+    // 接管选区：屏蔽浏览器原生文字拖选，避免「正选可、反选丢」——原生反向拖选（anchor 在右、
+    // focus 在左）会与自建逻辑选区引擎争夺 DOM Selection，mouseup 前反向选区把我们的 range 覆盖成
+    // 空，导致反向选择失效。改为完全由 applyLogicalSelection 驱动，正 / 反向行为对称一致（对齐 Notion）。
+    e.preventDefault();
     isDragSelecting = true;
     pointerDragged = false;
     selAnchor.value = info;
     selFocus.value = info;
+    // preventDefault 已阻止浏览器默认聚焦 / 建光标，手动聚焦目标宿主并落光标到点击点
+    const host = inputRefs.value[info.blockId];
+    if (host) { host.focus({ preventScroll: true }); applyLogicalSelection(info, info); }
     hideFormatToolbar();
   });
 
@@ -2461,11 +2475,14 @@ onMounted(async () => {
     if (showFormatToolbarForSelection()) return;
     hideFormatToolbar();
 
-    // 无选区（单击定位光标）：用 caretRangeFromPoint 精确定位，避免点在块内空白处时光标丢失
-    const ceBlock = (e.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
-    if (ceBlock && selAnchor.value?.blockId === ceBlock.dataset.taskId) {
-      const info = caretInfoFromPoint(e.clientX, e.clientY);
-      if (info) { selFocus.value = info; applyLogicalSelection(info, info); }
+    // 仅「未拖动」的纯单击才把光标定位到抬起处；拖动（正 / 反向拖选）一律保留已有选区，
+    // 避免把一次有效的反选误清成单点（旧逻辑无此守卫，反选拖完后会被重置）。
+    if (!pointerDragged) {
+      const ceBlock = (e.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
+      if (ceBlock && selAnchor.value?.blockId === ceBlock.dataset.taskId) {
+        const info = caretInfoFromPoint(e.clientX, e.clientY);
+        if (info) { selFocus.value = info; applyLogicalSelection(info, info); }
+      }
     }
     selAnchor.value = null; selFocus.value = null;
   });
@@ -3066,7 +3083,7 @@ const onPageHandleTouchStart = (page: Page, e: TouchEvent) => {
     (document.body.style as any).webkitUserSelect = 'none';
     (navigator as any).vibrate?.(15);
     updatePageDropTarget(startY, page.id);
-  }, 400);
+  }, LONG_PRESS_MS);
   const onMove = (ev: TouchEvent) => {
     const ct = ev.touches[0];
     if (!ct) return;
@@ -3168,6 +3185,9 @@ const finishTouchDrag = () => {
   restoreUserSelect();
 };
 
+// 触屏长按拖拽阈值（可配置）：移动超过 LONG_PRESS_MOVE_CANCEL_PX 视为滚动意图、长按超过 LONG_PRESS_MS 进入拖拽
+const LONG_PRESS_MS = 400;
+const LONG_PRESS_MOVE_CANCEL_PX = 10;
 const onHandleTouchStart = (task: Task, e: TouchEvent) => {
   if (!isCoarsePointer.value || !activePage.value) return;
   const t0 = e.touches[0];
@@ -3188,13 +3208,13 @@ const onHandleTouchStart = (task: Task, e: TouchEvent) => {
     (document.body.style as any).webkitUserSelect = 'none';
     (navigator as any).vibrate?.(15);
     updateDropTarget(startY, task.id);
-  }, 400);
+  }, LONG_PRESS_MS);
   const onMove = (ev: TouchEvent) => {
     const ct = ev.touches[0];
     if (!ct) return;
     // 未进入拖拽：移动超过阈值即视为滚动意图，取消长按（不拦截页面滚动）
     if (!fired) {
-      if (Math.abs(ct.clientX - startX) > 10 || Math.abs(ct.clientY - startY) > 10) cleanup();
+      if (Math.abs(ct.clientX - startX) > LONG_PRESS_MOVE_CANCEL_PX || Math.abs(ct.clientY - startY) > LONG_PRESS_MOVE_CANCEL_PX) cleanup();
       return;
     }
     // 已进入拖拽：阻止页面滚动并实时更新落点
@@ -5215,21 +5235,142 @@ const clampActionMenuIntoViewport = (anchor?: { top: number; left: number; right
 // 桌面：鼠标点六点，以手柄为锚点定位，并做视口自适应（flip + clamp）
 const openActionMenu = (e: MouseEvent, taskId: string) => {
   e.stopPropagation();
+  menuQuery.value = '';
+  menuActiveIndex.value = 0;
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
   actionMenuConfig.value = { isOpen: true, x: rect.left, y: rect.bottom + 4, taskId };
   clampActionMenuIntoViewport({ top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom });
+  nextTick(() => menuSearchRef.value?.focus());
 };
 // 触屏：由 touch 坐标直接定位菜单（e.currentTarget 在 touch 事件里拿不到可靠元素），无锚点仅夹取
 const openActionMenuAtTouch = (taskId: string, e: TouchEvent) => {
   e.stopPropagation();
+  menuQuery.value = '';
+  menuActiveIndex.value = 0;
   const t = e.touches[0] || (e.changedTouches && e.changedTouches[0]);
   if (!t) return;
   actionMenuConfig.value = { isOpen: true, x: Math.round(t.clientX), y: Math.round(t.clientY), taskId };
   clampActionMenuIntoViewport();
+  nextTick(() => menuSearchRef.value?.focus());
 };
 const actionMenuTask = computed(() => activePage.value?.tasks.find((t: Task) => t.id === actionMenuConfig.value.taskId) ?? null);
+// 当前菜单块在真实任务数组中的下标（用于上移/下移可用性判断，必须用真实 index 而非虚拟滚动窗口的 view index）
+const actionMenuIndex = computed(() => {
+  if (!activePage.value || !actionMenuConfig.value.taskId) return -1;
+  return activePage.value.tasks.findIndex((t: Task) => t.id === actionMenuConfig.value.taskId);
+});
+
+// ===== 块操作菜单：类型白名单 + 搜索/分组 + 键盘导航（贴近 Notion） =====
+const VALID_TYPES = ['text', 'h1', 'h2', 'h3', 'todo', 'bullet', 'numbered', 'toggle', 'quote', 'callout', 'divider'];
+const BLOCK_GROUPS = ['基础', '列表', '结构'] as const;
+const BLOCK_MENU_TYPES = [
+  { type: 'text', label: '文本', icon: 'T', group: '基础', kw: 'text wenben 文本 段落' },
+  { type: 'h1', label: '标题 1', icon: 'H1', group: '基础', kw: 'h1 biaoti 标题 一级' },
+  { type: 'h2', label: '标题 2', icon: 'H2', group: '基础', kw: 'h2 biaoti 标题 二级' },
+  { type: 'h3', label: '标题 3', icon: 'H3', group: '基础', kw: 'h3 biaoti 标题 三级' },
+  { type: 'todo', label: '待办事项', icon: '[]', group: '列表', kw: 'todo daiban 待办' },
+  { type: 'bullet', label: '无序列表', icon: '•', group: '列表', kw: 'bullet liebiao 无序 列表' },
+  { type: 'numbered', label: '编号列表', icon: '1.', group: '列表', kw: 'numbered bianhao 编号 有序' },
+  { type: 'toggle', label: '折叠列表', icon: '▸', group: '列表', kw: 'toggle zhedie 折叠' },
+  { type: 'quote', label: '引用块', icon: '"', group: '结构', kw: 'quote yinyong 引用' },
+  { type: 'callout', label: '标注块', icon: '💡', group: '结构', kw: 'callout biaozhu 标注' },
+  { type: 'divider', label: '分割线', icon: '—', group: '结构', kw: 'divider fengexian 分割线' },
+] as const;
+
+const menuQuery = ref('');                 // 类型搜索关键字
+const menuActiveIndex = ref(0);            // 键盘导航当前高亮项（扁平 navIndex）
+const menuSearchRef = ref<HTMLInputElement | null>(null);
+
+// 按搜索词过滤并按分组组织类型项；navIndex 为跨组连续的扁平序号
+const filteredGroups = computed(() => {
+  const q = menuQuery.value.trim().toLowerCase();
+  const groups: { group: string; items: { type: string; label: string; icon: string; navIndex: number }[] }[] = [];
+  let navIndex = 0;
+  for (const g of BLOCK_GROUPS) {
+    const items = BLOCK_MENU_TYPES
+      .filter((t) => t.group === g)
+      .filter((t) => !q || t.label.toLowerCase().includes(q) || t.kw.toLowerCase().includes(q))
+      .map((t) => ({ type: t.type, label: t.label, icon: t.icon, navIndex: navIndex++ }));
+    if (items.length) groups.push({ group: g, items });
+  }
+  return groups;
+});
+const typeNavCount = computed(() => filteredGroups.value.reduce((n, g) => n + g.items.length, 0));
+
+// 操作项（折叠/上下移/缩进/复制/删除）；disabled 状态与底层守卫一致
+const actionMenuActions = computed(() => {
+  const t = actionMenuTask.value;
+  const id = actionMenuConfig.value.taskId;
+  const list: { key: string; label: string; icon: string; disabled?: boolean; danger?: boolean; action: () => void }[] = [];
+  if (t && isCollapsible(t)) {
+    list.push({ key: 'collapse', label: t.payload?.collapsed ? '展开' : '折叠', icon: '▸', action: () => { toggleCollapse(t); actionMenuConfig.value.isOpen = false; } });
+  }
+  list.push({ key: 'up', label: '上移', icon: '↑', disabled: actionMenuIndex.value <= 0, action: () => moveBlock(id, -1) });
+  list.push({ key: 'down', label: '下移', icon: '↓', disabled: actionMenuIndex.value >= (activePage.value?.tasks.length ?? 1) - 1, action: () => moveBlock(id, 1) });
+  list.push({ key: 'indentR', label: '向右缩进', icon: '→', action: () => changeIndent(t!, 1) });
+  list.push({ key: 'indentL', label: '向左缩进', icon: '←', disabled: (t?.indentLevel || 0) <= 0, action: () => changeIndent(t!, -1) });
+  list.push({ key: 'dup', label: '复制', icon: '', action: () => duplicateTask(id) });
+  list.push({ key: 'del', label: '删除', icon: '', danger: true, action: () => { deleteBlockAndFocus(t!); actionMenuConfig.value.isOpen = false; } });
+  return list;
+});
+
+// 扁平可导航项（类型 + 操作），供键盘 ↑↓/Enter 使用
+const navList = computed(() => {
+  const types = filteredGroups.value.flatMap((g) => g.items.map((it) => ({
+    navIndex: it.navIndex, label: it.label, action: () => handleActionCommand(it.type), disabled: false, danger: false,
+  })));
+  const ops = actionMenuActions.value.map((a, i) => ({
+    navIndex: typeNavCount.value + i, label: a.label, action: a.action, disabled: !!a.disabled, danger: !!a.danger,
+  }));
+  return [...types, ...ops];
+});
+
+const moveMenuActive = (dir: 1 | -1) => {
+  const n = navList.value.length;
+  if (n === 0) return;
+  let idx = menuActiveIndex.value;
+  for (let step = 0; step < n; step++) {
+    idx = (idx + dir + n) % n;                       // 循环导航
+    if (!navList.value[idx].disabled) break;
+  }
+  menuActiveIndex.value = idx;
+  nextTick(() => document.querySelector(`[data-mi="${idx}"]`)?.scrollIntoView({ block: 'nearest' }));
+};
+
+const onMenuKey = (e: KeyboardEvent) => {
+  if (e.key === 'Escape') { e.stopPropagation(); actionMenuConfig.value.isOpen = false; return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); moveMenuActive(1); return; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); moveMenuActive(-1); return; }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const it = navList.value[menuActiveIndex.value];
+    if (it && !it.disabled) it.action();
+    return;
+  }
+  menuActiveIndex.value = 0;                         // 其它可打印字符：交给搜索框，重置高亮
+};
+
 const handleActionCommand = (type: string) => {
-  updateTask(actionMenuConfig.value.taskId, { type, payload: makePayload(type) });
+  if (!VALID_TYPES.includes(type)) return;          // P1：类型白名单，拦截非法/未渲染类型
+  const id = actionMenuConfig.value.taskId;
+  const task = activePage.value?.tasks.find((t: Task) => t.id === id);
+  // 互转时合并旧 payload，保留可复用字段（callout.icon / toggle.collapsed 等）
+  const payload = { ...(task?.payload ?? {}), ...makePayload(type) };
+  // 转为分割线时若原块带文字内容，先把文字下移为独立文本块，避免内容被「藏进」分割线而误以为丢失
+  if (type === 'divider' && task && (task.content || '').trim() !== '') {
+    const moved = task.content;
+    updateTask(id, { type, payload });
+    insertTask(id, 'below');
+    const list = activePage.value?.tasks;
+    if (list) {
+      const di = list.findIndex((t: Task) => t.id === id);
+      const newBlock = list[di + 1];
+      if (newBlock) updateTask(newBlock.id, { content: moved });
+    }
+    actionMenuConfig.value.isOpen = false;
+    return;
+  }
+  updateTask(id, { type, payload });
   actionMenuConfig.value.isOpen = false;
 };
 

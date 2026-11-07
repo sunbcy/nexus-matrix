@@ -190,7 +190,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick));
     </div>
 
     <ul class="ws-list">
-      <template v-for="(row, i) in flatTree" :key="(row.node as any).id">
+      <template v-for="row in flatTree" :key="(row.node as any).id">
         <!-- 文件夹 -->
         <li
           v-if="row.kind === 'folder'"
