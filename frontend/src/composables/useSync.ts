@@ -737,6 +737,14 @@ const sendWS = (payload: any) => {
 };
 
 const connectWS = (pagesRef: Ref<Page[]>) => {
+  // 未配置访问密钥：直接稳定离线（LOCAL 模式），不发起任何连接与重连。
+  // 本地编辑 / 光标跟随完全是本地优先（LocalFirst），与远端鉴权解耦——
+  // 没配 key 也能丝滑跟手，避免空 key 反复重连造成的连接抖动。
+  if (!SYNC_API_KEY) {
+    syncStatus.value = 'offline';
+    lastAuthError.value = '';
+    return;
+  }
   // 配置了独立服务器地址就用它，否则回退到同源（走 Vite 代理）
   const wsQs = SYNC_API_KEY ? `?api_key=${encodeURIComponent(SYNC_API_KEY)}` : '';
   if (WS_ORIGIN) {
@@ -878,8 +886,14 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
   mySocket.onclose = (ev?: CloseEvent) => {
     if (socket !== mySocket) return;  // 已被取代的旧连接，忽略（不触发重连）
     if (ev && ev.code === 1008) {
-      // 服务端因密钥无效主动断开（见 backend main.py WS 握手 close(1008)）
+      // 服务端因密钥无效主动断开（见 backend main.py WS 握手 close(1008)）。
+      // 密钥没变，重连必然继续失败——直接稳定离线，避免无意义的反复重连抖动，
+      // 让本地编辑 / 光标跟随与鉴权彻底解耦（LocalFirst 永不阻塞）。
       lastAuthError.value = '密钥被拒绝（后端返回 1008）：访问密钥不正确，或后端未启用该密钥';
+      syncStatus.value = 'offline';
+      socket = null;
+      accountInfo.value = null;
+      return;  // 不 scheduleReconnect
     }
     syncStatus.value = 'offline';
     socket = null;

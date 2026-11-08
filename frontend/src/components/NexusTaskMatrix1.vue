@@ -394,7 +394,6 @@
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
                 <div class="row-handles flex items-center gap-1 transition-opacity z-30"
-                     :class="{ 'is-active': focusedTaskId === task.id }"
                      draggable="false">
                   <!-- 「+」插入按钮在移动端隐藏：外槽放不下，插入块用回车即可（Notion 移动端同样没有该按钮） -->
                   <span class="hidden md:inline-flex items-center justify-center w-9 h-9 md:w-7 md:h-7 cursor-pointer text-dim active:text-accent active:bg-panel rounded transition-colors"
@@ -467,7 +466,7 @@
             <template v-if="EDITABLE_TYPES.includes(task.type)">
               <!-- ContentEditable 富文本 -->
               <div class="flex-1 relative">
-                <div :ref="(el) => setInputRef(el, task.id)" 
+                <div :ref="(el) => setInputRef(el, task)" 
                      contenteditable="true" 
                      @input="(e) => handleInput(e, task)"
                      @keydown="(e) => handleKeyDown(e, task, index)"
@@ -479,7 +478,7 @@
                      :data-task-id="task.id"
                      :data-placeholder="getPlaceholder(task.type)"
                      class="ce-block w-full bg-transparent border-none outline-none leading-[1.5] py-0.5 font-sans min-h-[24px] cursor-text"
-                     :class="[getTextClass(task), { 'show-placeholder': focusedTaskId === task.id }]">
+                     :class="[getTextClass(task)]">
                 </div>
               </div>
             </template>
@@ -2761,18 +2760,21 @@ const createFromTemplate = (tplId: string) => {
 
 // === 核心状态与 Refs ===
 const inputRefs = ref<Record<string, HTMLElement>>({});
-const setInputRef = (el: any, id: string) => {
+const setInputRef = (el: any, task: any) => {
   if (el) {
-    inputRefs.value[id] = el;
+    inputRefs.value[task.id] = el;
     // 元素挂载/复用时立即回填内容。切换页签时旧块卸载、新块创建，此回调必被调用，
     // 可确定性地把 task.content 写入 DOM，避免依赖下方 watch 的 nextTick 竞态导致
     // contenteditable 偶尔显示为空（只剩占位符），即「切换页签内容消失、刷新恢复」的 bug。
-    const task = activePage.value?.tasks.find((t: any) => t.id === id);
-    if (task && EDITABLE_TYPES.includes(task.type) && el.innerHTML !== task.content) {
+    // 直接接收 task 对象，避免每次 ref 回调都做 O(n) 的 tasks.find——1418 块下重渲染会变成 O(n²)，
+    // 这是点击/交互钝滞的主因之一。
+    // 该块正聚焦（用户正在编辑/点击）时绝不重写 innerHTML：否则浏览器刚在点击处放好的光标
+    // 会被整段 HTML 重置换走，表现为「点击后光标不实时出现 / 迟钝」。仅在未聚焦且内容确有差异时回填。
+    if (task && EDITABLE_TYPES.includes(task.type) && el.innerHTML !== task.content && document.activeElement !== el) {
       el.innerHTML = task.content;
     }
   } else {
-    delete inputRefs.value[id];
+    delete inputRefs.value[task.id];
   }
 };
 const focusConfig = ref<{ id: string | null, pos: any }>({ id: null, pos: null });
@@ -4275,6 +4277,10 @@ const deleteSelectionContents = (): boolean => {
 let lastSyncWindowKey = '';
 const syncDomFromTasks = (cur?: string[], prev?: string[]) => {
   nextTick(() => {
+    // 用户正在编辑（某 contenteditable 持有焦点）时，DOM 即真相，不做「数据→DOM」反向回写。
+    // 否则每次击键都会触发一次全量 innerHTML 序列化比对（O(n) 次强制 reflow），是输入卡顿主因。
+    // 程序化/远端变更会等用户失焦后再落到 DOM，期间不回写任何块、绝不打断输入。
+    if (document.activeElement && (document.activeElement as HTMLElement).isContentEditable) return;
     if (prev && cur) {
       const key = `${vStart.value}:${vEnd.value}`;
       if (lastSyncWindowKey !== key) { lastSyncWindowKey = key; return; }
@@ -4284,7 +4290,8 @@ const syncDomFromTasks = (cur?: string[], prev?: string[]) => {
       if (prev && cur && prev.length === cur.length && prev[i] === cur[i]) continue;
       const task = list[i];
       const el = inputRefs.value[task.id];
-      if (el && el.innerHTML !== task.content && EDITABLE_TYPES.includes(task.type)) el.innerHTML = task.content;
+      // 正聚焦的块跳过：保住用户光标（见 setInputRef 注释）。仅未聚焦块（远端合并/类型转换等）才回写。
+      if (el && el.innerHTML !== task.content && EDITABLE_TYPES.includes(task.type) && document.activeElement !== el) el.innerHTML = task.content;
     }
   });
 };
@@ -4308,7 +4315,7 @@ watch(focusConfig, (newVal) => {
     // 静默窗口内不抢焦点（刚进入文档页）；返回 true 以阻止后续延迟重试再聚焦。
     if (Date.now() < suppressAutoFocusUntil) return true;
     const el = inputRefs.value[id];
-    if (el) { el.focus(); if (newVal.pos !== null) setCaretPosition(el, newVal.pos); return true; }
+    if (el) { if (document.activeElement !== el) el.focus(); if (newVal.pos !== null) setCaretPosition(el, newVal.pos); return true; }
     return false;
   };
   nextTick(() => {
@@ -5428,7 +5435,8 @@ defineExpose({ exportMarkdown });
   .task-item-container:hover .row-handles { opacity: 1; }
 }
 @media (hover: none) {
-  .row-handles.is-active { opacity: 1; }
+  .row-handles.is-active,
+  .task-item-container:focus-within .row-handles { opacity: 1; }
 }
 
 /* 浮动格式工具栏 */
@@ -5447,7 +5455,7 @@ defineExpose({ exportMarkdown });
 .ce-block a[data-page-id] { color: rgb(var(--accent)); text-decoration: none; border-bottom: 1px solid rgb(var(--accent) / 0.35); transition: all 0.2s; }
 .ce-block a[data-page-id]:hover { background: rgb(var(--accent) / 0.1); border-bottom-color: rgb(var(--accent)); }
 /* Notion 行为：占位提示只在「当前编辑的空块」或「鼠标悬停的空块」上出现，避免整页刷屏 */
-.ce-block.show-placeholder:empty::before,
+.ce-block:focus:empty::before,
 .task-item-container:hover .ce-block:empty::before { content: attr(data-placeholder); color: rgb(var(--dim) / 0.45); pointer-events: none; display: block; }
 .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: rgb(var(--panel) / 0.3); }
