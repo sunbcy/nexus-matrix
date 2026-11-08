@@ -37,13 +37,14 @@ const showWorkspace = ref(false);
 import {applyTheme, currentThemeId, type ThemeId, THEMES} from '../composables/theme';
 import {useAuth} from '../composables/auth';
 
-const props = defineProps<{ visible: boolean; dirtyTitleCount?: number; deadLinkCount?: number; duplicateBlockCount?: number; duplicateDocCount?: number; divergentDocCount?: number; wronglyKilledCount?: number }>();
+const props = defineProps<{ visible: boolean; dirtyTitleCount?: number; titleEchoCount?: number; deadLinkCount?: number; duplicateBlockCount?: number; duplicateDocCount?: number; divergentDocCount?: number; wronglyKilledCount?: number }>();
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'export-md'): void;
   (e: 'export-all-zip'): void;
   (e: 'open-notion-import'): void;
   (e: 'clean-titles'): void;
+  (e: 'clean-title-echo'): void;
   (e: 'clean-links'): void;
   (e: 'clean-dup-blocks'): void;
   (e: 'clean-dup-pages'): void;
@@ -246,6 +247,13 @@ const onCleanTitles = () => {
   if (n === 0) return;
   emit('clean-titles');
   flashDataMsg(`已清理 ${n} 个标题尾部的 Notion ID`);
+};
+// 早期 Notion 导入把文件名（页面标题）和正文首行 `# 标题` 都写进了文档，标题会显示两遍
+const onCleanTitleEcho = () => {
+  const n = props.titleEchoCount ?? 0;
+  if (n === 0) return;
+  emit('clean-title-echo');
+  flashDataMsg(`已清理 ${n} 个重复的标题块，删除将随同步广播到各端`);
 };
 // 早期 Notion 导入把页内链接压成 href="#" 死链，这里按链接文字匹配页面标题还原
 const onCleanLinks = () => {
@@ -560,6 +568,12 @@ const onRestoreKilledBlocks = () => {
             </button>
           </div>
           <div class="mt-2">
+            <button @click="onCleanTitleEcho" :disabled="!titleEchoCount"
+                    class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-accent enabled:hover:border-accent enabled:active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
+              清理重复的标题块<template v-if="titleEchoCount">（{{ titleEchoCount }}）</template><template v-else>（无）</template>
+            </button>
+          </div>
+          <div class="mt-2">
             <button @click="onCleanLinks" :disabled="!deadLinkCount"
                     class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted enabled:hover:text-accent enabled:hover:border-accent enabled:active:bg-panel disabled:opacity-40 transition-colors text-xs font-['JetBrains_Mono',monospace]">
               修复文档里的死链<template v-if="deadLinkCount">（{{ deadLinkCount }}）</template><template v-else>（无）</template>
@@ -583,7 +597,7 @@ const onRestoreKilledBlocks = () => {
               清理重复文档<template v-if="duplicateDocCount">（{{ duplicateDocCount }}）</template><template v-else>（无）</template>
             </button>
           </div>
-          <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID、变成 `href="#"` 的页内死链、与反复导入导致的重复块，可分别用上面的按钮一键修复。</p>
+          <p class="text-xs text-dim mt-2 leading-snug">Notion ZIP 会打开导入向导，先预览将创建的页面再确认；导入不会改动已同步的后端数据，直到下次同步。早期导入残留的标题尾部 ID、正文里重复的标题块、变成 `href="#"` 的页内死链、与反复导入导致的重复块，可分别用上面的按钮一键修复。</p>
           <div class="mt-3 pt-3 border-t border-line">
             <div class="text-[11px] font-['Rajdhani',sans-serif] text-dim uppercase tracking-wider mb-2">资产层体检</div>
             <div class="flex flex-wrap gap-2">

@@ -34,6 +34,60 @@ export interface ImportMergeResult {
 export const blockContentKey = (t: Task): string =>
   `${t.type}|${String(t.content ?? '').replace(/<[^>]+>/g, '').trim()}|${String(t.payload?.url ?? '')}|${String(t.payload?.code ?? '')}`;
 
+// === 「标题回显块」判定（导入去重 + 存量清理共用） ===
+// Notion 导出的 .md 首行就是 `# 页面标题`，而导入器把文件名作为 Page.title，
+// 导致标题栏与正文首块重复显示同一串字。规则集中在此，避免三处调用各自漂移。
+// 注意：文件名常带 Notion 的 32 位 id 后缀而正文 h1 不带，故比较时两边都剥掉。
+const titleCompareKey = (s: string): string => {
+  const plain = String(s ?? '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"').replace(/&#39;/gi, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  return plain.replace(/\s*[0-9a-f]{32}\s*$/i, '').trim();
+};
+
+/** 该块是否是「把页面标题又写了一遍」的标题块 */
+export const isTitleEchoBlock = (block: { type: string; content?: string }, title: string): boolean => {
+  if (!(title ?? '').trim()) return false;
+  if (!['h1', 'h2', 'h3'].includes(block.type)) return false;
+  const c = titleCompareKey(block.content ?? '');
+  return !!c && c === titleCompareKey(title);
+};
+
+/** 开头的空块不算「第一行」，跳过后再判断 */
+const isBlankBlock = (b: { type: string; content?: string }): boolean =>
+  !titleCompareKey(b.content ?? '') && ['text', 'h1', 'h2', 'h3'].includes(b.type);
+
+/**
+ * 导入路径：返回剔除首个标题回显块后的新数组。
+ * 仅删一个、且仅当后面还有内容（否则会把只有标题的文档导成空页）。
+ */
+export const stripLeadingTitleEcho = <T extends { type: string; content?: string }>(blocks: T[], title: string): T[] => {
+  if (blocks.length <= 1) return blocks;
+  let idx = -1;
+  for (let i = 0; i < blocks.length; i++) {
+    if (isBlankBlock(blocks[i])) continue;
+    idx = i; break;
+  }
+  if (idx < 0 || !isTitleEchoBlock(blocks[idx], title)) return blocks;
+  return blocks.filter((_, i) => i !== idx);
+};
+
+/** 存量清理：找出某页开头那个标题回显块，找不到返回 null */
+export const findLeadingTitleEcho = (tasks: Task[], title: string): Task | null => {
+  const live = (tasks ?? []).filter((t) => !t.deletedAt);
+  if (live.length <= 1) return null;
+  for (const t of live) {
+    if (isBlankBlock(t)) continue;
+    return isTitleEchoBlock(t, title ?? '') ? t : null;
+  }
+  return null;
+};
+
 // 非加密 53-bit 哈希：同步、零依赖（浏览器/Node 皆可跑），用作文档指纹的紧凑键。
 const cyrb53 = (str: string, seed = 0): string => {
   let h1 = 0xdeadbeef ^ seed;

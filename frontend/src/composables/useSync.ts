@@ -3,7 +3,7 @@ import {getStore} from './storage';
 import {newBlockId, newPageId} from './ids';
 import {getRuntimeConfig, isNativeShell} from '../runtimeConfig';
 import {apiFetch} from './nativeHttp';
-import {collectAssetRefs, mergeImportOverwrite} from './importMerge';
+import {collectAssetRefs, mergeImportOverwrite, stripLeadingTitleEcho} from './importMerge';
 
 // === 数据结构 ===
 export interface Task {
@@ -1080,7 +1080,11 @@ export const importMarkdown = async (
     // Notion 导出的 .md 首行未必是标题
     const title = file.name.replace(/\.md$/i, '').trim() || '导入的文档';
 
-    const tasks = blocks.map((b) => ({
+    // 文件名已作为页面标题，正文首行 `# 标题` 属重复回显，剔除以免标题栏与正文各显示一遍。
+    // 必须在重建 prevId 链之前做，否则链首会指向一个已删除的块。
+    const kept = stripLeadingTitleEcho(blocks, title);
+
+    const tasks = kept.map((b) => ({
       id: newBlockId(),
       type: b.type,
       content: b.content,
@@ -1104,7 +1108,7 @@ export const importMarkdown = async (
     currentPagesRef.value = [...currentPagesRef.value, page];
     await pushAll(currentPagesRef.value);
 
-    const detail = `导入「${title}」：${blocks.length} 个块` + (downgraded > 0 ? `，${downgraded} 行降级为文本` : '');
+    const detail = `导入「${title}」：${kept.length} 个块` + (downgraded > 0 ? `，${downgraded} 行降级为文本` : '');
     return { ok: true, message: detail, detail };
   } catch (e) {
     return { ok: false, message: '导入失败：' + (e as Error).message };

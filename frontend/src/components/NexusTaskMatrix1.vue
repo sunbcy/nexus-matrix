@@ -668,7 +668,7 @@
     </div>
 
     <!-- 设置面板：入口在侧边栏右上角齿轮（原生底部 Tab 已移除） -->
-    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" :dead-link-count="deadLinkCount" :duplicate-block-count="duplicateBlockCount" :duplicate-doc-count="duplicateDocCount" :divergent-doc-count="divergentDocCount" :wrongly-killed-count="wronglyKilledCount" @close="settingsOpen = false" @export-md="exportMarkdown" @export-all-zip="exportAllMarkdownZip" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" @clean-links="cleanDeadLinks" @clean-dup-blocks="dedupBlocks" @clean-dup-pages="dedupPages" @restore-killed-blocks="restoreWronglyKilledBlocks" />
+    <SettingsPanel :visible="settingsOpen" :dirty-title-count="notionIdTitleCount" :title-echo-count="titleEchoBlockCount" :dead-link-count="deadLinkCount" :duplicate-block-count="duplicateBlockCount" :duplicate-doc-count="duplicateDocCount" :divergent-doc-count="divergentDocCount" :wrongly-killed-count="wronglyKilledCount" @close="settingsOpen = false" @export-md="exportMarkdown" @export-all-zip="exportAllMarkdownZip" @open-notion-import="openNotionImportWizard" @clean-titles="cleanNotionIdTitles" @clean-title-echo="cleanTitleEchoBlocks" @clean-links="cleanDeadLinks" @clean-dup-blocks="dedupBlocks" @clean-dup-pages="dedupPages" @restore-killed-blocks="restoreWronglyKilledBlocks" />
 
     <!-- 轻提示（导出等异步操作的反馈） -->
     <transition name="fade">
@@ -1142,7 +1142,7 @@ import {newBlockId, newPageId} from '../composables/ids';
 import {randomEmoji} from '../composables/emoji';
 import {getAsset, isAssetRef, resolveAsset, saveImageAsset, warmAssets} from '../composables/assets';
 import {hasNotionIdSuffix, stripNotionId} from '../composables/zipImport';
-import {blockContentKey, docFingerprint, planDuplicatePages, planWronglyKilledBlocks} from '../composables/importMerge';
+import {blockContentKey, docFingerprint, findLeadingTitleEcho, planDuplicatePages, planWronglyKilledBlocks} from '../composables/importMerge';
 import SettingsPanel from './SettingsPanel.vue';
 import PageIconPicker from './PageIconPicker.vue';
 import PageCoverPicker, {COVER_GRADIENTS} from './PageCoverPicker.vue';
@@ -3390,6 +3390,39 @@ const cleanNotionIdTitles = () => {
     n++;
   }
   return n;   // 就地改 title，经 pages 的 deep watch -> stampUpdated + 上推同步
+};
+
+// === 历史「标题回显块」清理 ===
+// Notion 导出的 .md 首行 `# 标题` 被早期导入器连同文件名（已作为 page.title）一起写进正文，
+// 于是标题栏与正文首块重复显示同一串字。导入逻辑已改为导入时剔除，但已导入的页面
+// 不会自动受益，这里提供一次性体检 + 清理：打墓碑（不物理删除），随同步删除且可恢复。
+const titleEchoBlockCount = computed(() => {
+  let n = 0;
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    if (findLeadingTitleEcho(p.tasks ?? [], p.title ?? '')) n++;
+  }
+  return n;
+});
+const cleanTitleEchoBlocks = () => {
+  const now = Date.now();
+  let n = 0;
+  const touched = new Set<string>();
+  for (const p of pages.value) {
+    if (p.deletedAt) continue;
+    const echo = findLeadingTitleEcho(p.tasks ?? [], p.title ?? '');
+    if (!echo) continue;
+    echo.deletedAt = now;
+    echo.updatedAt = now;
+    n++;
+    touched.add(p.id);
+  }
+  // 就地改 deletedAt 不改 id 序列，pages 的 id 签名 watch 不触发，需显式标脏并上推
+  if (touched.size > 0) {
+    for (const id of touched) markDirty(id);
+    flushPendingSave();
+  }
+  return n;
 };
 
 // === 历史死链修复 ===

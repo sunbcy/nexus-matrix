@@ -11,6 +11,7 @@
 // 签名过期后会 403。这里同样在导入时立即下载转 Base64，不留外链。
 
 import type {ImportAssetIssue, Page} from './useSync';
+import {stripLeadingTitleEcho} from './importMerge';
 import {newBlockId, newPageId} from './ids';
 import {clearAssetMissing, getAsset, type ImageSaveOptions, saveImageAssetWithBlob, verifyAssetOnServer, verifyAssetOrRetry} from './assets';
 
@@ -211,12 +212,17 @@ export const importZip = async (file: File, opts?: ZipImportOptions): Promise<Zi
 
     // 复用单文件导入的解析器
     const { parseMarkdown } = await import('./markdownImport');
-    const { blocks, downgraded } = parseMarkdown(body);
+    const { blocks: rawBlocks, downgraded } = parseMarkdown(body);
 
     // 标题（下面的图片失败提示也要用到，故先算）：优先取文件名（已解码 %20 等）；正文首块 h1 兜底
-    const firstH1 = blocks.find((b) => b.type === 'h1');
+    const firstH1 = rawBlocks.find((b) => b.type === 'h1');
     const fromName = stripNotionId(safeDecode(entry.base).replace(/\.md$/i, ''));
     const title = fromName || (stripNotionId(firstH1?.content.replace(/<[^>]+>/g, '') || '') || '导入的文档');
+
+    // 文件名已经是页面标题，Notion .md 首行的 `# 标题` 就是同一串字的回显，导入时剔除。
+    // 必须在图片处理 / tasks 生成之前做：verifyFailures 记的 block 序号与 tasks 下标一一对应，
+    // 若事后 splice 会把「第 N 块」错位到别的块上。
+    const blocks = stripLeadingTitleEcho(rawBlocks, title);
 
     // 页面 id 提前生成：图片失败明细要记 pageId，供结果面板「跳到那一块」
     const id = newPageId();
