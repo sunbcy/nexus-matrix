@@ -1061,10 +1061,14 @@ async def websocket_endpoint(websocket: WebSocket):
 #
 # 未构建前端（纯 API 部署）时目录不存在 → 跳过挂载，不影响 API。
 # ============================================================
-_FRONTEND_DIST = os.getenv(
-    "STATIC_DIR",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"),
+_DIST_DEFAULT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"
 )
+# STATIC_DIR 若被设成「空字符串」，os.getenv(key, default) 会直接返回 "" 而不回退默认，
+# 导致 _FRONTEND_DIST 为空、前端静默不挂载（访问 / 得 404）。这里再加一层兜底：
+# 仅当 STATIC_DIR 非空且真实存在时才采用，否则回退默认 dist 路径。
+_candidate = os.getenv("STATIC_DIR")
+_FRONTEND_DIST = _candidate if (_candidate and os.path.isdir(_candidate)) else _DIST_DEFAULT
 
 
 class SPAStaticFiles(StaticFiles):

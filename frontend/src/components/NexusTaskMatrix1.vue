@@ -454,11 +454,11 @@
                  待办文字跟在复选框右侧）。垂直对齐复用手柄槽的同款方案：
                  mt-[2px] 抵消 ce-block 的 py-0.5，h-[1lh] 锚定首行行高中线。 -->
             <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-[1.5]" :class="getFontSizeClass(task)">
-              <div class="relative w-[0.8em] h-[0.8em] flex items-center justify-center">
+              <div class="relative w-[1.1em] h-[1.1em] flex items-center justify-center">
                 <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
-                       class="peer appearance-none w-[0.8em] h-[0.8em] border-[1.5px] border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
+                       class="peer appearance-none w-[1.1em] h-[1.1em] border-[1.5px] border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
                        style="clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px)" />
-                <svg class="absolute w-[0.55em] h-[0.55em] text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                <svg class="absolute w-[0.72em] h-[0.72em] text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
                   <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
