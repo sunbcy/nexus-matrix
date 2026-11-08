@@ -1047,10 +1047,15 @@ export const importBackup = async (file: File): Promise<{ ok: boolean; message: 
     if (!currentPagesRef) {
       return { ok: false, message: '同步尚未初始化' };
     }
-    // 直接覆盖当前矩阵，并落盘 + 上推（携带 updatedAt，后端按 LWW 合并）
-    currentPagesRef.value = pages;
-    await pushAll(pages);
-    return { ok: true, message: `已导入 ${pages.length} 个页面` };
+    // 与 loadLocal 走同一份清洗：把后端墓碑的 ISO 字符串时间戳统一成 ms 数字
+    // （否则 mergePages 里比较 deletedAt 会出错），并剔除失效的 blob: 图片引用。
+    const restored = sanitizeLoadedPages(pages);
+    currentPagesRef.value = restored;
+    // 【修复】此前只调用 pushAll，本地落盘全靠 watchPages 的按页订阅——而替换整个
+    // 数组时订阅未必触发，表现为「提示导入成功、刷新后又变回旧数据」。显式写一次。
+    await saveLocal(restored);
+    await pushAll(restored); // 携带 updatedAt，后端按 LWW 合并
+    return { ok: true, message: `已导入 ${restored.length} 个页面` };
   } catch (e) {
     return { ok: false, message: '解析失败：' + (e as Error).message };
   }
@@ -1311,6 +1316,44 @@ export const commitImportPages = async (
 
 // === 统一接入：LocalFirst + 远端同步 ===
 // 返回是否成功从远端加载
+// 首次装机的默认种子页模板。同一份常量既用于创建，也用于「退化种子页」识别，
+// 避免两处各写一份文案、改了模板却认不出旧种子。
+const SEED_PAGE_ID = 'default-page';
+const SEED_TITLE = 'NEXUS 协议指南';
+const SEED_BLOCKS: { type: string; content: string; indentLevel: number }[] = [
+  { type: 'h1', content: '欢迎使用 NEXUS MATRIX', indentLevel: 0 },
+  { type: 'text', content: '这是一个本地优先（LocalFirst）的工业风区块编辑器。', indentLevel: 0 },
+  { type: 'bullet', content: '输入 / 唤出命令菜单，或 # / - / [] 快捷转换块类型。', indentLevel: 1 },
+  { type: 'todo', content: '数据保存在本机，刷新不会丢失。', indentLevel: 1 },
+];
+
+/**
+ * 是否是「未被用户编辑过」的占位种子页：标题一致 + 块序列与模板逐字相同。
+ * 只要用户改过标题 / 增删块 / 写过字，就不再匹配——绝不把真实笔记误判成退化产物丢弃。
+ */
+const isUntouchedSeedPage = (p: Page): boolean => {
+  if (p.id !== SEED_PAGE_ID || p.title !== SEED_TITLE) return false;
+  const tasks = p.tasks ?? [];
+  if (tasks.length !== SEED_BLOCKS.length) return false;
+  return tasks.every((t, i) => t.type === SEED_BLOCKS[i].type && t.content === SEED_BLOCKS[i].content);
+};
+
+/**
+ * 本地快照是否已退化成「仅剩默认种子页」。
+ *
+ * 触发链：某次启动后端 401 / 本地为空 → 走 !local && !remote 分支创建 default-page。
+ * 这颗种子页的 updatedAt 是「当下」，比服务端 127 篇文档还新；而增量游标也已被推高，
+ * 于是带 since 的握手恒返回空集，本地种子页被当作权威快照永久保留、还会被 pushAll
+ * 反推到服务端。表现为「所有文档内容丢失，刷新也回不来」。
+ */
+const isSeedOnlySnapshot = (pages: Page[] | null): boolean => {
+  if (!pages || pages.length === 0) return false;
+  const live = pages.filter((p) => !p.deletedAt);
+  // 只认「恰好一篇、且内容仍是模板」的退化产物；全墓碑页属于用户主动删光，
+  // 不在此列，避免改变删除状态下的正常上推行为。
+  return live.length === 1 && isUntouchedSeedPage(live[0]);
+};
+
 export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   // 幂等：HMR / 重复挂载会重复调用，先清理上一次的 socket + watch，避免连接与订阅泄漏
   if (currentPagesRef) closeSync();
@@ -1326,7 +1369,11 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
 
   // 2) 远端握手（阶段二 2.2 增量）：带 lastSyncCursor 作 since，只拉断线期间
   //    其它端发生变更的页；无 cursor 时拉全量（首装/换设备）。
-  const remote = await fetchRemotePages(lastSyncCursor.value);
+  //    【加固】本地仅剩种子页时忽略游标、强制全量重拉：此时本地不是有效数据，
+  //    增量语义（只取 since 之后的变更）恰好会把服务端全量挡在门外。
+  const seedOnly = isSeedOnlySnapshot(local);
+  if (seedOnly) console.warn('[NEXUS SYNC] 检测到本地仅剩默认种子页，强制全量重拉以恢复文档');
+  const remote = await fetchRemotePages(seedOnly ? 0 : lastSyncCursor.value);
 
   // 原生壳内只要配了后端地址就直接尝试 WS，不再等 REST 探针置位 backendReachable：
   // WebView 的 REST 请求可能被 CORS 拦（探针失败），但 WebSocket 不受 CORS 约束，
@@ -1344,27 +1391,30 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
     // 【性能/健壮性】上推改为**不等待**（void）：WS 不可用时会退化成逐页 REST
     // （156 页 = 156 个串行请求），一旦 await 在这里，第 3 步的订阅注册就被拖住，
     // 表现为「编辑半天不落盘」。本地订阅必须先于任何网络动作建立。
-    const merged = mergePages(pagesRef.value, sanitizeLoadedPages(remote));
+    //
+    // 【加固】强制全量恢复成功后，先剔除本地那颗未被编辑过的占位种子页再合并：
+    // 否则 pushAll 会把它推到服务端成为垃圾页，侧边栏也会多出一篇「NEXUS 协议指南」。
+    // 仅当远端确实拿到了多篇文档时才剔除，避免远端也是空的场景把唯一页弄丢。
+    const base = seedOnly && remote.length > 1
+      ? pagesRef.value.filter((p) => !isUntouchedSeedPage(p))
+      : pagesRef.value;
+    const merged = mergePages(base, sanitizeLoadedPages(remote));
     pagesRef.value = orderPages(merged);
     await saveLocal(pagesRef.value);
     void pushAll(pagesRef.value);
   } else if (local && !remote) {
-    // 后端不可用或为空：保持本地并尝试上推（同样不阻塞）
-    void pushAll(pagesRef.value);
+    // 后端不可用或为空：保持本地并尝试上推（同样不阻塞）。
+    // 但退化产物绝不上推：此时服务端可能只是暂时 401，把种子页写进去会污染正式文档。
+    if (!seedOnly) void pushAll(pagesRef.value);
   } else if (!local && !remote) {
     // 本地与远端都无数据：创建初始默认页（仅首次装机）
     const seed: Page[] = [{
-      id: 'default-page',
-      title: 'NEXUS 协议指南',
+      id: SEED_PAGE_ID,
+      title: SEED_TITLE,
       parentId: null,
       isFavorite: true,
       isExpanded: true,
-      tasks: [
-        { id: newBlockId(), type: 'h1', content: '欢迎使用 NEXUS MATRIX', completed: false, indentLevel: 0 },
-        { id: newBlockId(), type: 'text', content: '这是一个本地优先（LocalFirst）的工业风区块编辑器。', completed: false, indentLevel: 0 },
-        { id: newBlockId(), type: 'bullet', content: '输入 / 唤出命令菜单，或 # / - / [] 快捷转换块类型。', completed: false, indentLevel: 1 },
-        { id: newBlockId(), type: 'todo', content: '数据保存在本机，刷新不会丢失。', completed: false, indentLevel: 1 },
-      ],
+      tasks: SEED_BLOCKS.map((b) => ({ id: newBlockId(), ...b, completed: false })),
     }];
     pagesRef.value = seed;
     await saveLocal(seed);

@@ -394,6 +394,7 @@
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
                 <div class="row-handles flex items-center gap-1 transition-opacity z-30"
+                     :class="{ 'is-active': focusedTaskId === task.id }"
                      draggable="false">
                   <!-- 「+」插入按钮在移动端隐藏：外槽放不下，插入块用回车即可（Notion 移动端同样没有该按钮） -->
                   <span class="hidden md:inline-flex items-center justify-center w-9 h-9 md:w-7 md:h-7 cursor-pointer text-dim active:text-accent active:bg-panel rounded transition-colors"
@@ -451,13 +452,16 @@
 
             <!-- todo 复选框：正文流内、压在正文左缘（对齐 Notion——复选框与其它行文字平齐，
                  待办文字跟在复选框右侧）。垂直对齐复用手柄槽的同款方案：
-                 mt-[2px] 抵消 ce-block 的 py-0.5，h-[1lh] 锚定首行行高中线。 -->
+                 mt-[2px] 抵消 ce-block 的 py-0.5，h-[1lh] 锚定首行行高中线。
+                 尺寸对齐 Notion：方框 = 1em（等于正文字号 16px），而非缩到字形可见高度；
+                 Notion 靠「与字号等大的方框 + 垂直居中于行盒 + 1.5px 细边框」达到协调，
+                 对勾约为方框的 70%。-->
             <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-[1.5]" :class="getFontSizeClass(task)">
-              <div class="relative w-[1.1em] h-[1.1em] flex items-center justify-center">
+              <div class="relative w-[1em] h-[1em] flex items-center justify-center">
                 <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
-                       class="peer appearance-none w-[1.1em] h-[1.1em] border-[1.5px] border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
+                       class="peer appearance-none w-[1em] h-[1em] border-[1.5px] border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
                        style="clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px)" />
-                <svg class="absolute w-[0.72em] h-[0.72em] text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                <svg class="absolute w-[0.7em] h-[0.7em] text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
                   <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
@@ -478,7 +482,7 @@
                      :data-task-id="task.id"
                      :data-placeholder="getPlaceholder(task.type)"
                      class="ce-block w-full bg-transparent border-none outline-none leading-[1.5] py-0.5 font-sans min-h-[24px] cursor-text"
-                     :class="[getTextClass(task)]">
+                     :class="[getTextClass(task), { 'show-placeholder': focusedTaskId === task.id }]">
                 </div>
               </div>
             </template>

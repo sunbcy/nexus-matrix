@@ -192,22 +192,27 @@ export const probeIdb = async (): Promise<boolean> => {
 };
 
 /**
- * 取一份数据的「新鲜度」：页面数组里最大的 updatedAt。
- * 无法解析或没有 updatedAt 时返回 -1，表示无法判断。
+ * 解析一份快照，一次遍历同时取出「新鲜度」与「有效页数」。
+ * - freshness：页面数组里最大的 updatedAt；无法解析 / 非数组 / 没有时间戳时为 -1。
+ * - liveCount：非墓碑页数量。删除走墓碑（deletedAt），页本身仍留在数组里，
+ *   所以数组变短基本不可能来自正常删除，而是被截断 / 退化成了种子页。
+ * 返回 null 表示「不是可比较的页面数组」（如 provider keys 这类对象键）。
  */
-const freshnessOf = (raw: string | null): number => {
-  if (!raw) return -1;
+const pageStatsOf = (raw: string | null): { freshness: number; liveCount: number } | null => {
+  if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return -1;
-    let max = -1;
+    if (!Array.isArray(parsed)) return null;
+    let freshness = -1;
+    let liveCount = 0;
     for (const p of parsed) {
       const t = typeof p?.updatedAt === 'number' ? p.updatedAt : -1;
-      if (t > max) max = t;
+      if (t > freshness) freshness = t;
+      if (!p?.deletedAt) liveCount += 1;
     }
-    return max;
+    return { freshness, liveCount };
   } catch {
-    return -1;
+    return null;
   }
 };
 
@@ -223,6 +228,11 @@ const freshnessOf = (raw: string | null): number => {
  *    否则会丢掉最近一次会话的编辑。
  * 只有比较 updatedAt 才能同时覆盖 2 和 3 两种方向。
  *
+ * 【数据完整性守卫】但「更新」不等于「更完整」：某次后端 401 + 本地为空会退化生成
+ * 一篇默认种子页，它的 updatedAt 是当下、比 127 篇文档还新。只比时间戳会把 IndexedDB
+ * 的全量覆盖成 1 篇（表现为「所有文档内容丢失」）。因此先比有效页数，本地更少就一律
+ * 保留 IndexedDB 的更全快照。代价仅是降级期间删除的少量页面可能「复活」，远小于丢全库。
+ *
  * 必须在 initSync 读取之前调用；迁移后不删除 localStorage 旧键，便于出问题时回退。
  */
 export const migrateFromLocalStorage = async (keys: string[]): Promise<number> => {
@@ -233,12 +243,20 @@ export const migrateFromLocalStorage = async (keys: string[]): Promise<number> =
       if (raw == null) continue;
       const existing = await idbStore.get(key);
       if (existing != null) {
-        // 两边都有数据：比新鲜度，谁新谁留下
-        const localFresh = freshnessOf(raw);
-        const idbFresh = freshnessOf(existing);
-        // 任一侧无法判断时保持现状（不冒险覆盖）
-        if (localFresh < 0 || idbFresh < 0) continue;
-        if (localFresh <= idbFresh) continue; // IndexedDB 更新或一样，保留
+        const localStats = pageStatsOf(raw);
+        const idbStats = pageStatsOf(existing);
+        // 任一侧不是可比较的页面数组 / 无法判断新鲜度时保持现状（不冒险覆盖）
+        if (!localStats || !idbStats) continue;
+        if (localStats.freshness < 0 || idbStats.freshness < 0) continue;
+        // 更少的页绝不覆盖更多的页：宁可保留 IndexedDB 的完整快照
+        if (localStats.liveCount < idbStats.liveCount) {
+          console.warn(
+            `[NEXUS][migrate] ${key}: localStorage 仅 ${localStats.liveCount} 页，` +
+            `少于 IndexedDB 的 ${idbStats.liveCount} 页，跳过迁移以保留完整数据`,
+          );
+          continue;
+        }
+        if (localStats.freshness <= idbStats.freshness) continue; // IndexedDB 更新或一样，保留
       }
       await idbStore.set(key, raw);
       moved++;

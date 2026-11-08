@@ -675,12 +675,15 @@ defineExpose({ undo, redo });
 }
 .yjs-editor :deep(.ProseMirror ul[data-type="taskList"]) { list-style: none; padding-left: 0.25rem; }
 .yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li) { display: flex; gap: 0.5rem; align-items: flex-start; }
-.yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label) { margin-top: 0.35rem; }
-/* 待办复选框：与 NexusTaskMatrix1 主文档保持同一观感（0.8em 跟随字号、细边框、accent 勾） */
+/* 复选框垂直居中于首行行盒（对齐 Notion：1em 方框落在 1lh 行高中线，替代硬编码 margin-top） */
+.yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label) {
+  display: flex; align-items: center; height: 1lh; margin-top: 0;
+}
+/* 待办复选框：与 NexusTaskMatrix1 主文档保持同一观感（1em = 正文字号、细边框、accent 勾） */
 .yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"]) {
   appearance: none; -webkit-appearance: none;
   flex-shrink: 0;
-  width: 0.8em; height: 0.8em;
+  width: 1em; height: 1em;
   margin: 0;
   font-size: inherit;
   position: relative;
@@ -697,8 +700,8 @@ defineExpose({ undo, redo });
 .yjs-editor :deep(.ProseMirror ul[data-type="taskList"] li > label input[type="checkbox"]:checked)::after {
   content: '';
   position: absolute;
-  left: 0.28em; top: 0.04em;
-  width: 0.25em; height: 0.5em;
+  left: 0.32em; top: 0.08em;
+  width: 0.3em; height: 0.55em;
   border: solid rgb(var(--accent));
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
