@@ -313,8 +313,14 @@
           </button>
         </div>
 
-        <input ref="titleInputRef" type="text" v-model="activePage.title" 
+        <!-- 标题刻意不用 v-model：见下方 onTitleInput 注释（Android IME 组词期间
+             受控 value 回写会打断 composing span，把输入的字挤到最末尾）。 -->
+        <input ref="titleInputRef" type="text"
                placeholder="无标题"
+               @input="onTitleInput"
+               @compositionstart="onTitleCompositionStart"
+               @compositionend="onTitleCompositionEnd"
+               @blur="onTitleBlur"
                @keydown="handleTitleKeyDown"
                class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-3xl md:text-5xl font-bold leading-tight tracking-tight text-display placeholder-dim/30 mb-6 md:mb-10 pb-4 border-b border-line" />
 
@@ -1351,7 +1357,12 @@ const onEditorTouchStart = (e: TouchEvent) => {
   if (!isMobile.value || mobileView.value !== 'content') return;
   const t = e.touches[0];
   kbDragStartY = t ? t.clientY : 0;
-  kbDragTracking = !!(t && getActiveEditable());
+  // 仅当触摸落在「非可编辑区」（块间空白 / 侧边 / 标题外）时才允许「滑动收键盘」。
+  // 块内滑动一律不收键盘——否则「软键盘弹起→在块内上滑查看被遮挡内容」会与收键盘冲突，
+  // 表现为键盘反复弹收、输入被掐断（用户反馈的矛盾场景）。
+  const targetEl = t ? (t.target as HTMLElement) : null;
+  const onEditable = !!(targetEl && (targetEl.closest('.ce-block') || targetEl.closest('input, textarea')));
+  kbDragTracking = !onEditable;
 };
 const onEditorTouchMove = (e: TouchEvent) => {
   if (!kbDragTracking) return;
@@ -2452,6 +2463,11 @@ onMounted(async () => {
   // === 跨行鼠标选区支持（自建逻辑选区，不依赖浏览器跨宿主行为） ===
   // 原则：绝不主动 focus()（会清掉选区），只重建 Range；焦点交给浏览器随 mousedown 自然处理。
   document.addEventListener('mousedown', (e: MouseEvent) => {
+    // 移动端：完全交给浏览器原生处理点击聚焦 / 光标定位。
+    // 自建逻辑选区（preventDefault + 手动 focus + removeAllRanges/addRange）会让
+    // Android WebView 的 IME InputConnection 与 DOM 选区失步，DEL 能删但 commitText
+    // 被丢弃（真机「能删不能输」）。桌面保留原引擎，行为不变。
+    if (isMobile.value) return;
     const ceBlock = (e.target as HTMLElement).closest('.ce-block') as HTMLElement | null;
     if (!ceBlock) return;
     // 链接 / 控件点击走原生行为（打开链接气泡、聚焦输入框），不接管选区
@@ -2473,6 +2489,7 @@ onMounted(async () => {
   });
 
   document.addEventListener('mousemove', (e: MouseEvent) => {
+    if (isMobile.value) return;   // 合成鼠标事件在 Android 上不走自建选区引擎
     if (!isDragSelecting || !selAnchor.value) return;
     // 鼠标未按下（单纯划过）时不处理
     if (e.buttons === 0) { isDragSelecting = false; return; }
@@ -2486,6 +2503,7 @@ onMounted(async () => {
   });
 
   document.addEventListener('mouseup', (e: MouseEvent) => {
+    if (isMobile.value) return;   // 移动端由原生 click/touchend 处理
     if (!isDragSelecting) return;
     isDragSelecting = false;
 
@@ -2518,7 +2536,11 @@ onMounted(async () => {
     if (selChangeTimer != null) window.clearTimeout(selChangeTimer);
     selChangeTimer = window.setTimeout(() => {
       selChangeTimer = null;
+      const s = window.getSelection();
+      const hasRange = !!(s && !s.isCollapsed);
       if (!showFormatToolbarForSelection()) hideFormatToolbar();
+      // 片选时把选区滚到键盘上沿之上：选中的文字与吸底工具栏都保持可见、可编辑
+      if (hasRange) scheduleCaretIntoView();
     }, 120);
   });
 
@@ -2585,11 +2607,27 @@ onMounted(async () => {
   document.addEventListener('touchend', (e: TouchEvent) => {
     if (!isDragSelecting) return;
     isDragSelecting = false;
-    // 纯长按未拖动：把光标落到触点位置（移动端点选定位）
+    // 纯点按未拖动：交给浏览器原生处理聚焦与光标定位。
+    // 此前这里会手动 host.focus() + applyLogicalSelection()（removeAllRanges/addRange），
+    // 重建的 Range 会让 Android WebView 的 IME InputConnection 与 DOM 选区失步：
+    // DEL 键（KeyEvent）能删，但 commitText 被丢弃 → 真机「能删不能输」。
+    // 移动端只记录点选块用于遮挡归位，绝不碰 Selection / focus。
     if (!pointerDragged) {
       const t = e.changedTouches[0];
       const info = caretInfoFromPoint(t.clientX, t.clientY);
-      if (info) { selFocus.value = info; applyLogicalSelection(info, info); }
+      if (info) {
+        lastTouchedBlockId = info.blockId;
+        window.setTimeout(() => {
+          // 兜底：极少数 ROM 上原生点击未聚焦 contenteditable 时才补一次 focus；
+          // 正常路径下浏览器已原生聚焦，这里不执行，不会重建 InputConnection。
+          const ae = document.activeElement as HTMLElement | null;
+          if (!ae?.isContentEditable) {
+            const host = inputRefs.value[info.blockId];
+            if (host) host.focus({ preventScroll: true });
+          }
+          scheduleCaretIntoView();
+        }, 350);
+      }
     }
     selAnchor.value = null; selFocus.value = null;
   });
@@ -2778,6 +2816,19 @@ const createFromTemplate = (tplId: string) => {
 
 // === 核心状态与 Refs ===
 const inputRefs = ref<Record<string, HTMLElement>>({});
+
+// 「DOM 即真相」保护：Android WebView 上 focus / composition 事件并不可靠（IME 可能
+// 在未派发 focus 时就建立 InputConnection，也可能不派发 compositionstart）。此前依赖
+// 事件的守卫会失效，组词期间一旦发生「数据 → DOM」反向回写，IME 的 composing span
+// 被整段替换，表现为「能删不能输 / 候选词上不了屏」。改用「最近一次输入时间戳」判定，
+// 按块 id 只保护刚被输入的那一块，切页与远端更新其它块不受影响。
+const DOM_EDIT_GUARD_MS = 1200;
+let lastDomEditAt = 0;
+let lastEditedBlockId: string | null = null;
+// 触摸点选记录的块：focus 事件不派发时，仍能知道光标落在哪个块（遮挡归位用）
+let lastTouchedBlockId: string | null = null;
+const isDomEditing = (blockId: string) =>
+  Date.now() - lastDomEditAt < DOM_EDIT_GUARD_MS && lastEditedBlockId === blockId;
 const setInputRef = (el: any, task: any) => {
   if (el) {
     inputRefs.value[task.id] = el;
@@ -2788,7 +2839,9 @@ const setInputRef = (el: any, task: any) => {
     // 这是点击/交互钝滞的主因之一。
     // 该块正聚焦（用户正在编辑/点击）时绝不重写 innerHTML：否则浏览器刚在点击处放好的光标
     // 会被整段 HTML 重置换走，表现为「点击后光标不实时出现 / 迟钝」。仅在未聚焦且内容确有差异时回填。
-    if (task && EDITABLE_TYPES.includes(task.type) && el.innerHTML !== task.content && document.activeElement !== el) {
+    if (task && EDITABLE_TYPES.includes(task.type) && el.innerHTML !== task.content
+        && document.activeElement !== el && editingBlockId.value !== task.id
+        && !isDomEditing(task.id)) {
       el.innerHTML = task.content;
     }
   } else {
@@ -2798,8 +2851,25 @@ const setInputRef = (el: any, task: any) => {
 const focusConfig = ref<{ id: string | null, pos: any }>({ id: null, pos: null });
 // 当前获得焦点的文本块（用于对齐 Notion：占位提示只在聚焦/悬停时出现）
 const focusedTaskId = ref<string | null>(null);
-const onBlockFocus = (id: string) => { focusedTaskId.value = id; setFocusConfig(id, null); };
-const onBlockBlur = () => { activeSlashTaskId.value = null; focusedTaskId.value = null; };
+// 正在编辑的块 id（由 focus/blur 维护）。Android WebView 下软键盘/IME 接管期间
+// document.activeElement 可能短时不是 contenteditable，单靠它守卫会误判，
+// 把正在输入的块 innerHTML 整段重写 → 字符被吞。这里用显式标志做第二道防线。
+const editingBlockId = ref<string | null>(null);
+const onBlockFocus = (id: string) => {
+  focusedTaskId.value = id;
+  editingBlockId.value = id;
+  setFocusConfig(id, null);
+};
+const onBlockBlur = () => {
+  activeSlashTaskId.value = null;
+  focusedTaskId.value = null;
+  // 组词（composition）期间的瞬时 blur（Android 输入法常见）不释放编辑标记，
+  // 否则 syncDomFromTasks/setInputRef 会误判为「已离开块」而回写 innerHTML 吞掉输入。
+  if (isComposing.value) return;
+  // 延迟释放且只清自己：切块时 blur/focus 同一 tick，别把新块的 id 清掉
+  const id = editingBlockId.value;
+  nextTick(() => { if (editingBlockId.value === id) editingBlockId.value = null; });
+};
 // 选中文本后的浮动格式工具栏
 const formatToolbar = ref({ visible: false, x: 0, y: 0 });
 const hideFormatToolbar = () => { formatToolbar.value.visible = false; colorPanel.value = null; };
@@ -2835,6 +2905,78 @@ const showFormatToolbarForSelection = (): boolean => {
 
 // 移动端输入环境（第二期）：软键盘遮挡高度 + 是否触屏
 const { keyboardInset, isCoarsePointer } = useMobileInput();
+
+// 软键盘遮挡：现代 Android WebView 布局视口随键盘收缩，keyboardInset 恒为 0，
+// 因此不能靠它判定键盘弹出；改由 visualViewport / window 的 resize 事件驱动。
+// 按「当前光标块的真实 DOM 位置」只补必要的滚动量，把它推到键盘上沿之上，
+// 且仅在确实被遮挡时滚，绝不打扰用户主动上滑查看内容。
+const resolveCaretBlock = (): HTMLElement | null => {
+  const byId = editingBlockId.value || lastEditedBlockId || lastTouchedBlockId;
+  if (byId && inputRefs.value[byId]) return inputRefs.value[byId];
+  const ae = document.activeElement as HTMLElement | null;
+  if (ae?.classList?.contains('ce-block')) return ae;
+  const node = window.getSelection()?.focusNode;
+  const el = node ? (node.nodeType === 3 ? node.parentElement : node as HTMLElement) : null;
+  return (el?.closest('.ce-block') as HTMLElement | null) ?? null;
+};
+const ensureCaretVisible = () => {
+  const main = scrollEl.value;
+  if (!main) return;
+  const vv = window.visualViewport;
+  // 100dvh / adjustResize 下 visualViewport 底部即键盘上沿
+  const vvBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+  const visibleBottom = Math.min(main.getBoundingClientRect().bottom, vvBottom);
+  const SAFE = 28;   // 光标 / 选区与键盘上沿之间留一点余量
+
+  // 片选：以「选区 focus 端所在行」为准。用户正在拖动的那一端连同选中文字
+  // 必须露在键盘之上，否则只能在键盘后面盲选。跨块选区 getClientRects() 按行
+  // 返回多个矩形；正向选区 focus 在末行、反向选区 focus 在首行。
+  let rect: DOMRect | null = null;
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount > 0) {
+    const range = sel.getRangeAt(0);
+    if (!sel.isCollapsed) {
+      const rects = range.getClientRects();
+      if (rects.length) {
+        const forward = sel.anchorNode === range.startContainer && sel.anchorOffset === range.startOffset;
+        rect = forward ? rects[rects.length - 1] : rects[0];
+      }
+    }
+    if (!rect) rect = range.getBoundingClientRect();
+  }
+  // 折叠光标 / 拿不到选区矩形时退回「当前编辑块」的整体矩形
+  if (!rect || (!rect.width && !rect.height)) {
+    const block = resolveCaretBlock();
+    if (block) rect = block.getBoundingClientRect();
+  }
+  if (!rect) return;
+  // 只在「被键盘遮挡」时补必要的滚动量；不处理上方越界，
+  // 否则用户主动上滑查看内容时会被强行拉回，破坏阅读手势。
+  if (rect.bottom > visibleBottom - SAFE) {
+    main.scrollTop += Math.ceil(rect.bottom - visibleBottom + SAFE);
+  }
+};
+let caretIntoViewRaf: number | null = null;
+// 用函数声明（可提升）：selectionchange 的 onMounted 回调位于本声明之前，
+// 写成 const 箭头会触发 TS2448「声明前使用」。
+function scheduleCaretIntoView() {
+  if (caretIntoViewRaf != null) return;
+  caretIntoViewRaf = requestAnimationFrame(() => {
+    caretIntoViewRaf = null;
+    ensureCaretVisible();
+  });
+}
+onMounted(() => {
+  window.visualViewport?.addEventListener('resize', scheduleCaretIntoView);
+  window.visualViewport?.addEventListener('scroll', scheduleCaretIntoView);
+  window.addEventListener('resize', scheduleCaretIntoView);
+});
+onUnmounted(() => {
+  window.visualViewport?.removeEventListener('resize', scheduleCaretIntoView);
+  window.visualViewport?.removeEventListener('scroll', scheduleCaretIntoView);
+  window.removeEventListener('resize', scheduleCaretIntoView);
+  if (caretIntoViewRaf != null) cancelAnimationFrame(caretIntoViewRaf);
+});
 
 /**
  * 格式工具栏定位：
@@ -3316,6 +3458,42 @@ const redo = () => {
 
 // === 标题区 ⇄ 正文区 的光标流转（对齐 Notion） ===
 const titleInputRef = ref<HTMLInputElement | null>(null);
+
+// 标题采用「非受控 DOM + 手动同步」而非 v-model。
+// Android WebView 的 IME 在组词（composition）期间会维护自己的 composing span；
+// 此时任何一次响应式 value patch（本地 markDirty / 同步回包 / dataVersion 引发的重渲染）
+// 都可能重写 input.value、打断组词，表现为「在光标处输入的字被追加到最末尾」。
+// 因此：编辑期间 DOM 即真相，绝不反向回写；只在未聚焦且数据确实变化时把值同步进 DOM。
+const titleComposing = ref(false);
+
+const onTitleInput = (e: Event) => {
+  const v = (e.currentTarget as HTMLInputElement).value;
+  const p = activePage.value;
+  if (!p || p.title === v) return;
+  p.title = v;
+  markDirty(p.id);
+};
+const onTitleCompositionStart = () => { titleComposing.value = true; };
+const onTitleCompositionEnd = (e: CompositionEvent) => {
+  titleComposing.value = false;
+  // 部分输入法 compositionend 后不再派发 input，这里补一次，确保模型拿到最终值
+  onTitleInput(e);
+};
+const onTitleBlur = () => { titleComposing.value = false; nextTick(syncTitleDom); };
+
+const syncTitleDom = () => {
+  const el = titleInputRef.value;
+  const p = activePage.value;
+  if (!el || !p) return;
+  if (document.activeElement === el || titleComposing.value) return;
+  const v = p.title ?? '';
+  if (el.value !== v) el.value = v;
+};
+
+// 切页 / 远端合并 / 历史版本恢复等外部改动：未编辑时同步进 DOM。
+watch([() => activePage.value?.title, activePageId], () => nextTick(syncTitleDom), { immediate: true });
+// immediate 那次 DOM 尚未挂载，补一次首屏同步
+onMounted(() => { nextTick(syncTitleDom); });
 
 // 图片资产解析：payload.url 可能是 asset:<id>（新数据）或 data:...（旧数据）或外链。
 // 同步命中缓存立即返回；未命中时异步解析并写入缓存，触发模板重渲染。
@@ -4331,6 +4509,13 @@ const syncDomFromTasks = (cur?: string[], prev?: string[]) => {
     // 用户正在编辑（某 contenteditable 持有焦点）时，DOM 即真相，不做「数据→DOM」反向回写。
     // 否则每次击键都会触发一次全量 innerHTML 序列化比对（O(n) 次强制 reflow），是输入卡顿主因。
     // 程序化/远端变更会等用户失焦后再落到 DOM，期间不回写任何块、绝不打断输入。
+    // IME 组词期间整页跳过：Android WebView 的组词态下 activeElement 可能短暂不落在块上，
+    // 此时回写会直接吞掉正在输入的字符（表现为「内容块里完全输不进去」）。
+    if (isComposing.value) return;
+    // 任一块正被编辑时整页跳过回写：输入期间零遍历、零 reflow，根治输入卡顿；
+    // 也是「正在编辑的块绝不被反向回写吞字」的双保险（editingBlockId 已挡单块，
+    // 此处避免每次击键都 O(n) 遍历 + 整段 innerHTML 比对带来的额外开销）。
+    if (editingBlockId.value) return;
     if (document.activeElement && (document.activeElement as HTMLElement).isContentEditable) return;
     if (prev && cur) {
       const key = `${vStart.value}:${vEnd.value}`;
@@ -4340,6 +4525,8 @@ const syncDomFromTasks = (cur?: string[], prev?: string[]) => {
     for (let i = 0; i < list.length; i++) {
       if (prev && cur && prev.length === cur.length && prev[i] === cur[i]) continue;
       const task = list[i];
+      if (isDomEditing(task.id)) continue;
+      if (editingBlockId.value === task.id) continue;
       const el = inputRefs.value[task.id];
       // 正聚焦的块跳过：保住用户光标（见 setInputRef 注释）。仅未聚焦块（远端合并/类型转换等）才回写。
       if (el && el.innerHTML !== task.content && EDITABLE_TYPES.includes(task.type) && document.activeElement !== el) el.innerHTML = task.content;
@@ -4351,8 +4538,15 @@ watch(
   (cur, prev) => syncDomFromTasks(cur, prev),
   { immediate: true }
 );
-// 切页：整页 DOM 重建，prev 为空则全量比对一次
-watch(activePageId, () => syncDomFromTasks());
+// 切页：整页 DOM 重建，prev 为空则全量比对一次。
+// 同时解除上一页遗留的编辑保护，否则新页的块会因「刚输入过」被跳过回填而显示空白。
+watch(activePageId, () => {
+  lastDomEditAt = 0;
+  lastEditedBlockId = null;
+  lastTouchedBlockId = null;
+  editingBlockId.value = null;
+  syncDomFromTasks();
+});
 
 // 设置焦点到指定行的指定位置
 const setFocusConfig = (id: string | null, pos: any) => {
@@ -4366,7 +4560,15 @@ watch(focusConfig, (newVal) => {
     // 静默窗口内不抢焦点（刚进入文档页）；返回 true 以阻止后续延迟重试再聚焦。
     if (Date.now() < suppressAutoFocusUntil) return true;
     const el = inputRefs.value[id];
-    if (el) { if (document.activeElement !== el) el.focus(); if (newVal.pos !== null) setCaretPosition(el, newVal.pos); return true; }
+    if (el) {
+      // 移动端 onBlockFocus 传 pos=null：浏览器原生已聚焦，不再重复 focus
+      // （重复 focus 会重建 IME InputConnection，打断组词/输入）。
+      // 键盘导航（Enter 拆块、Backspace 合并等传 'start'/'end'）仍照常聚焦并定位光标。
+      const nativeFocusOnly = isMobile.value && newVal.pos === null;
+      if (!nativeFocusOnly && document.activeElement !== el) el.focus();
+      if (newVal.pos !== null) setCaretPosition(el, newVal.pos);
+      return true;
+    }
     return false;
   };
   nextTick(() => {
@@ -4490,6 +4692,10 @@ const changeIndent = (task: Task, dir: 1 | -1) => {
 
 // 拦截文本输入 (Markdown 与 Slash)
 const handleInput = (e: Event, task: Task) => {
+  // 标记 DOM 正处于用户编辑态（不依赖 focus/composition 事件），并让光标保持可见
+  lastDomEditAt = Date.now();
+  lastEditedBlockId = task.id;
+  scheduleCaretIntoView();
   const target = e.currentTarget as HTMLElement; let htmlVal = target.innerHTML; let textVal = target.textContent || '';
   if (htmlVal === '<br>' || htmlVal === '<div><br></div>') { target.innerHTML = ''; htmlVal = ''; textVal = ''; }
 
