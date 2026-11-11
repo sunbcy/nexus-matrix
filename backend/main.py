@@ -1081,7 +1081,7 @@ class SPAStaticFiles(StaticFiles):
 
     async def get_response(self, path: str, scope):
         try:
-            return await super().get_response(path, scope)
+            response = await super().get_response(path, scope)
         except Exception:
             # API / WS 前缀不参与 SPA 兜底，避免给接口返回 HTML
             if path.startswith("api/") or path.startswith("ws/"):
@@ -1090,9 +1090,17 @@ class SPAStaticFiles(StaticFiles):
             if "." in path.rsplit("/", 1)[-1]:
                 return PlainTextResponse("Not Found", status_code=404)
             try:
-                return await super().get_response("index.html", scope)
+                response = await super().get_response("index.html", scope)
             except Exception:
                 return PlainTextResponse("Frontend not built", status_code=404)
+        # HTML 入口禁止缓存：保证硬刷新总能拿到最新 index.html → 引用最新带 hash 的 JS，
+        # 彻底规避「浏览器缓存旧 index.html → 引用旧 JS」导致的旧 bundle 残留问题。
+        # 必须用强制赋值而非 setdefault——Starlette/代理可能已写入 max-age=0，setdefault
+        # 会被跳过，导致浏览器对 index.html（URL 不变）仍走 304 复用旧 JS。
+        # no-store 确保不协商、不复用；带 hash 的 js/css 不受影响（文件名即版本，更新自然失效）。
+        if getattr(response, "media_type", "") == "text/html":
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
 
 
 def _mount_frontend() -> None:

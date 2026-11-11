@@ -2839,6 +2839,13 @@ const setInputRef = (el: any, task: any) => {
     // 这是点击/交互钝滞的主因之一。
     // 该块正聚焦（用户正在编辑/点击）时绝不重写 innerHTML：否则浏览器刚在点击处放好的光标
     // 会被整段 HTML 重置换走，表现为「点击后光标不实时出现 / 迟钝」。仅在未聚焦且内容确有差异时回填。
+    // 数据模型为空但 DOM 残留了触发前缀（如 [] ）：这是快捷键转换后的残留，与「用户真实输入」
+    // 无关（真实输入时 content 已同步为非空）。直接清空、不依赖下方聚焦守卫——否则残留会滞留
+    // 到失焦。覆盖 IME 迟到插入 / 虚拟化重挂等时序，确保任意一次渲染都清掉残留。
+    if (task && task.content === '' && el.innerHTML !== '') {
+      el.innerHTML = '';
+      return;
+    }
     if (task && EDITABLE_TYPES.includes(task.type) && el.innerHTML !== task.content
         && document.activeElement !== el && editingBlockId.value !== task.id
         && !isDomEditing(task.id)) {
@@ -3101,9 +3108,54 @@ const execFormat = (cmd: string) => {
 // 中文输入法（IME）组合态：组合期间一律不拦截按键，否则会吞掉候选词确认与换行
 const isComposing = ref(false);
 const onCompositionStart = () => { isComposing.value = true; };
+
+// 触发文本归一化：中文输入法中文模式下标点默认全角（［］、【】、全角空格），
+// 且 contenteditable 把空格存成不间断空格 \u00A0。先统一成半角 + 普通空格，
+// 否则「［］ 」这类全角输入无法命中快捷键（这是待办残留的常见漏网原因）。
+const FULLWIDTH_MAP: Record<string, string> = { '［': '[', '］': ']', '【': '[', '】': ']', '　': ' ' };
+const normalizeTriggerText = (text: string): string =>
+  text.replace(/[［］【】　]/g, (c) => FULLWIDTH_MAP[c] || c).replace(/\u00A0/g, ' ');
+
+// 行首快捷键前缀 → 块类型（普通输入与 IME 组合提交共用同一张表）
+const SHORTCUT_TRIGGER: Record<string, string> = {
+  '[] ': 'todo', '# ': 'h1', '## ': 'h2', '### ': 'h3',
+  '- ': 'bullet', '* ': 'bullet', '1. ': 'numbered',
+  '--- ': 'divider', '> ': 'toggle', '" ': 'quote',
+};
+
+// 清除快捷键前缀残留：数据为空且 DOM 只剩纯前缀时清空。用 inputRefs 取最新元素，
+// 避免虚拟滚动回收/复用传入的 target 后，仍指向已失效的旧元素（多块文档残留的根因）。
+const clearResidualPrefix = (task: Task) => {
+  const el = inputRefs.value[task.id];
+  if (!el || !el.isConnected || task.content !== '') return;
+  const t = normalizeTriggerText(el.textContent || '').trim();
+  if (t && ['[]', '#', '##', '###', '-', '*', '1.', '---', '>', '"'].includes(t)) el.innerHTML = '';
+};
+// 快捷键转换（统一入口：普通 input 与 IME 组合提交都走它）。
+// 数据已清空，但当前块处于编辑态，聚焦守卫会跳过「数据→DOM」回写，
+// 必须主动清空 DOM，否则 [] / # / - 等前缀残留在输入框。
+const runShortcut = (type: string, task: Task, target: HTMLElement | null) => {
+  updateTask(task.id, { type, content: '', payload: makePayload(type) });
+  // 立即清空当前可见目标；虚拟滚动可能随后回收/复用该元素，故再多次用最新元素(inputRefs)兜底
+  if (target) target.innerHTML = '';
+  // IME 组合提交的 DOM 落点可能晚于 input 事件，且无后续 input 补发；虚拟滚动窗口重算也可能
+  // 在更晚的时机填入/复用出残留。分多个时间点复查（始终取最新元素），仅当数据仍为空、且
+  // DOM 只剩前缀残留时才清，用户此刻已输入的新内容（数据非空 / DOM 非纯前缀）一律不动。
+  [0, 30, 80, 160, 320].forEach((d) => setTimeout(() => clearResidualPrefix(task), d));
+  activeSlashTaskId.value = null; slashQuery.value = '';
+  if (EDITABLE_TYPES.includes(type)) setFocusConfig(task.id, 'start'); else focusAfterBlock(task.id);
+};
+
 const onCompositionEnd = (e: CompositionEvent, task: Task) => {
   isComposing.value = false;
-  updateTask(task.id, { content: (e.currentTarget as HTMLElement).innerHTML });
+  // 组合刚结束：DOM 已是组合最终文本。对齐普通输入路径跑一次快捷键检测，
+  // 否则「[] +空格」经中文输入法组合提交时只更新数据、不触发 runShortcut，
+  // 待办块会残留 [] 前缀（中文输入法场景专属，无 IME 的普通输入不受影响）。
+  const target = e.currentTarget as HTMLElement;
+  const text = normalizeTriggerText(target.textContent || '');
+  const type = SHORTCUT_TRIGGER[text];
+  if (type) runShortcut(type, task, target);
+  else updateTask(task.id, { content: target.innerHTML });
 };
 const actionMenuConfig = ref({ isOpen: false, x: 0, y: 0, taskId: '' });
 const formatMenuConfig = ref({ isOpen: false, x: 0, y: 0, position: 'top', activeTaskId: '' });
@@ -4526,8 +4578,12 @@ const syncDomFromTasks = (cur?: string[], prev?: string[]) => {
       if (prev && cur && prev.length === cur.length && prev[i] === cur[i]) continue;
       const task = list[i];
       if (isDomEditing(task.id)) continue;
-      if (editingBlockId.value === task.id) continue;
       const el = inputRefs.value[task.id];
+      // 数据为空但 DOM 残留触发前缀：权威清除，不依赖聚焦/编辑状态（见 setInputRef 注释）。
+      // 覆盖虚拟滚动复用、IME 迟到插入等时序，确保 content 为空的块 DOM 即时为空，
+      // 而非等到失焦才由下方回写清理（即「单击才消失」的残留现象）。
+      if (el && task.content === '' && el.innerHTML !== '') { el.innerHTML = ''; continue; }
+      if (editingBlockId.value === task.id) continue;
       // 正聚焦的块跳过：保住用户光标（见 setInputRef 注释）。仅未聚焦块（远端合并/类型转换等）才回写。
       if (el && el.innerHTML !== task.content && EDITABLE_TYPES.includes(task.type) && document.activeElement !== el) el.innerHTML = task.content;
     }
@@ -4702,12 +4758,7 @@ const handleInput = (e: Event, task: Task) => {
   // 中文输入法组合期间只同步内容，绝不触发 Markdown 转换 / Slash 菜单，避免把未上屏的拼音当正式输入
   if (isComposing.value || (e as InputEvent).isComposing) { updateTask(task.id, { content: htmlVal }); return; }
 
-  const normalizedText = textVal.replace(/\u00A0/g, ' '); 
-  const triggerShortcut = (type: string) => {
-    updateTask(task.id, { type, content: '', payload: makePayload(type) });
-    activeSlashTaskId.value = null; slashQuery.value = '';
-    if (EDITABLE_TYPES.includes(type)) setFocusConfig(task.id, 'start'); else focusAfterBlock(task.id);
-  };
+  const normalizedText = normalizeTriggerText(textVal);
   // [[ 唤出页面链接菜单（对齐 Notion 的页面引用）
   const mentionMatch = /\[\[([^\[\]]*)$/.exec(normalizedText);
   if (mentionMatch) {
@@ -4729,10 +4780,10 @@ const handleInput = (e: Event, task: Task) => {
     nextTick(() => { slashMenuPosition.value = (window.innerHeight - target.getBoundingClientRect().bottom < 300) ? 'top' : 'bottom'; });
   } else if (activeSlashTaskId.value === task.id) { activeSlashTaskId.value = null; slashQuery.value = ''; updateTask(task.id, { content: htmlVal }); }
   else if (mentionTaskId.value === task.id) { closeMention(); updateTask(task.id, { content: htmlVal }); }
-  else if (normalizedText === '[] ') triggerShortcut('todo'); else if (normalizedText === '# ') triggerShortcut('h1'); else if (normalizedText === '## ') triggerShortcut('h2');
-  else if (normalizedText === '### ') triggerShortcut('h3'); else if (normalizedText === '- ') triggerShortcut('bullet'); else if (normalizedText === '* ') triggerShortcut('bullet');
-  else if (normalizedText === '1. ') triggerShortcut('numbered'); else if (normalizedText === '--- ') triggerShortcut('divider'); else if (normalizedText === '> ') triggerShortcut('toggle');
-  else if (normalizedText === '" ') triggerShortcut('quote');
+  else if (normalizedText === '[] ') runShortcut('todo', task, target); else if (normalizedText === '# ') runShortcut('h1', task, target); else if (normalizedText === '## ') runShortcut('h2', task, target);
+  else if (normalizedText === '### ') runShortcut('h3', task, target); else if (normalizedText === '- ') runShortcut('bullet', task, target); else if (normalizedText === '* ') runShortcut('bullet', task, target);
+  else if (normalizedText === '1. ') runShortcut('numbered', task, target); else if (normalizedText === '--- ') runShortcut('divider', task, target); else if (normalizedText === '> ') runShortcut('toggle', task, target);
+  else if (normalizedText === '" ') runShortcut('quote', task, target);
   else if (applyInlineMarkdown(target, task)) { /* 行内 Markdown 已转换并同步 */ }
   else updateTask(task.id, { content: htmlVal });
 };

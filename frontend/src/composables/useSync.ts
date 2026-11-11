@@ -324,9 +324,17 @@ export const sanitizeLoadedPages = (pages: Page[]): Page[] =>
     // 后端 tombstone 的 deletedAt 是 ISO 字符串，本地统一用 ms 数字戳比较，
     // 这里一次性转成数字，保证 mergePages / stampUpdated 与本地数据同源。
     deletedAt: p.deletedAt ? (typeof p.deletedAt === 'string' ? Date.parse(p.deletedAt) : p.deletedAt) : undefined,
-    tasks: (p.tasks ?? []).map((t) => (
-      t.content && t.content.indexOf('blob:') > -1 ? { ...t, content: stripDeadBlobImages(t.content) } : t
-    )),
+    tasks: (p.tasks ?? []).map((t) => {
+      let task = t.content && t.content.indexOf('blob:') > -1 ? { ...t, content: stripDeadBlobImages(t.content) } : t;
+      // 历史bug自愈：旧版触发「[] +空格」快捷键时 DOM 残留会被后续编辑写进持久化数据，
+      // 待办块内容只剩「[]」这一确凿残留特征，加载时清掉（范围极窄，不误伤正常文本）。
+      // 注意浏览器 contenteditable 把空格存成不间断空格 \u00A0，旧数据里是「[]\u00A0」而非「[] 」，
+      // 所以正则要同时覆盖普通空格与 \u00A0，否则清不干净。
+      if (task.type === 'todo' && /^\[\][ \u00A0]*$/.test(task.content)) {
+        task = { ...task, content: '' };
+      }
+      return task;
+    }),
   }));
 
 // === 配置 ===
