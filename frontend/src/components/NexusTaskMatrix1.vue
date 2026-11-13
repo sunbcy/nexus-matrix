@@ -398,7 +398,7 @@
 
                  槽位宽度按「是否渲染块类型标记」分档（修复移动端蓝点/序号压住文字）：
                  手柄 36px + gap 4px + 标记 20px + pr-1 4px = 64px。无标记时 w-9(36px)，
-                 有标记（bullet / numbered / 可折叠标题 / toggle / callout）时 w-16(64px)。
+                 有标记（bullet / numbered / callout）时 w-16(64px)。
                  统一 justify-end + pr-1：标记贴紧正文左缘并留 4px 间隙，即便内容超宽
                  也只会向左溢出，绝不会再压到右侧文字；桌面仍由 md:w-[84px] 外槽覆盖。 -->
             <div class="shrink-0 ml-0 self-stretch flex items-start justify-end pr-1 md:-ml-[84px] md:w-[84px]"
@@ -439,21 +439,15 @@
 
                 <!-- 块类型标记：与手柄同容器，故同样对齐文字首行中线。
                      w-5 固定宽度，保证各类型的文字起点严格一致。
-                     例外：todo 的复选框不在槽内 —— Notion 的复选框与其它行文字左缘平齐、
-                     文字跟在其后，故渲染在正文流内（见下方 EDITABLE_TYPES 前）。 -->
+                     例外：todo 复选框与折叠三角（toggle/h1/h2/h3）不在槽内 ——
+                     对齐 Notion：符号与同缩进行内其它符号共用一列、文字跟在其后，
+                     故渲染在正文流内（见下方 EDITABLE_TYPES 前）。 -->
                 <div v-if="task.type === 'bullet'" class="w-5 shrink-0 flex items-center justify-center">
                   <div class="w-1.5 h-1.5 rounded-full bg-accent/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
                 </div>
                 <div v-else-if="task.type === 'numbered'" class="w-5 shrink-0 flex items-center justify-end">
                   <span class="font-['JetBrains_Mono',monospace] text-[13px] text-accent/80 select-none">{{ getNumberedIndex(task) }}.</span>
                 </div>
-                <button v-else-if="isCollapsible(task)"
-                        @click="toggleCollapse(task)"
-                        class="relative w-5 h-5 shrink-0 flex items-center justify-center text-dim active:text-accent active:bg-panel rounded transition-colors before:absolute before:-inset-2 before:content-['']"
-                        :class="task.payload?.collapsed ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100'"
-                        :title="task.payload?.collapsed ? '展开' : '折叠'">
-                  <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
-                </button>
                 <div v-else-if="task.type === 'callout'" class="w-5 shrink-0 flex items-start justify-center select-none text-[15px] leading-5">
                   {{ task.payload?.icon || '💡' }}
                 </div>
@@ -478,6 +472,17 @@
                   <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
                 </svg>
               </div>
+            </div>
+
+            <!-- 折叠三角：正文流内、与 todo 复选框共用同一列（对齐 Notion——同一缩进行内
+                 左侧符号对齐：三角/复选框都在文字左缘，文字跟在其后）。故不在左侧手柄槽，
+                 且始终可见（Notion 的 toggle 箭头不依赖 hover）。 -->
+            <div v-if="isCollapsible(task)" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-[1.5]" :class="getFontSizeClass(task)">
+              <button @click="toggleCollapse(task)"
+                      class="relative w-[1em] h-[1em] flex items-center justify-center text-dim hover:text-accent rounded transition-colors before:absolute before:-inset-2 before:content-['']"
+                      :title="task.payload?.collapsed ? '展开' : '折叠'">
+                <svg class="w-[0.875em] h-[0.875em] transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
+              </button>
             </div>
 
             <template v-if="EDITABLE_TYPES.includes(task.type)">
@@ -1470,9 +1475,9 @@ const isCollapsible = (task: Task) => task.type === 'toggle' || !!HEADING_LEVEL[
 // 左槽内除悬浮手柄外还会渲染「块类型标记」的块。移动端槽位为流内排布，
 // 必须按此分档留足宽度（手柄 36 + gap 4 + 标记 20 + pr-1 4 = 64px），
 // 否则标记会溢出到右侧 flex-1 正文区，表现为蓝点/序号压在文字上。
-// h1/h2/h3 同样渲染折叠箭头（见 isCollapsible），不能漏。
+// 折叠三角（toggle / h1 / h2 / h3）已移入正文流内与复选框同列，不再占槽宽。
 const hasBlockMarker = (task: Task) =>
-  isCollapsible(task) || task.type === 'bullet' || task.type === 'numbered' || task.type === 'callout';
+  task.type === 'bullet' || task.type === 'numbered' || task.type === 'callout';
 
 // === 折叠引擎 ===
 // toggle：隐藏其后所有层级更深的块，直到遇到同级或更浅的块
