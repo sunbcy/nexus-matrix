@@ -277,6 +277,26 @@ def _norm_ts(ts) -> str:
     return ts or _now_iso()
 
 
+def _norm_ms(ts) -> int:
+    """时间戳 → ms 整数；缺戳返回 0（绝不返回 now，否则旧快照会被抬成最新）。"""
+    if not ts:
+        return 0
+    try:
+        return int(datetime.fromisoformat(_norm_ts(ts)).timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def _field_ms(page: Dict, field: str, page_ms: int) -> int:
+    """字段级版本戳；存量数据没有 fieldTs 时回退到整页时间戳。"""
+    ft = page.get("fieldTs")
+    if isinstance(ft, dict):
+        v = ft.get(field)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return page_ms
+
+
 def _ts_of(page: Dict) -> str:
     """页面用于 LWW 比较的时间戳。
 
@@ -390,9 +410,13 @@ def _heal_chain(live: List[Dict]) -> List[Dict]:
 # 必须与前端 useSync.ts 的 PAGE_SCALAR_FIELDS 完全一致：漏一个字段就有一类
 # 用户操作（页面排序 prevId、封面取景 coverPos、模板标记 isTemplate）永远不同步。
 PAGE_SCALAR_FIELDS = [
-    "title", "icon", "cover", "coverPos", "coverMeta", "parentId", "isFavorite", "isExpanded",
+    "title", "icon", "cover", "coverPos", "coverMeta", "parentId", "isFavorite",
     "isTemplate", "prevId",
 ]
+
+# 纯本机视图态（对齐前端 LOCAL_ONLY_FIELDS）：目录树展开/折叠不跨设备传播，
+# 否则一端折叠会把另一端刚展开的树整组冲掉。老客户端仍可能上推该字段，写入口统一剥离。
+LOCAL_ONLY_FIELDS = ("isExpanded",)
 
 
 def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]:
@@ -403,7 +427,8 @@ def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]
     新设备 INITIAL_SYNC 拉到的才是块级合并后的真实状态。
 
     - 删除：墓碑 deletedAt 优先；远端删除戳不比本地更晚时才剔除该页；
-    - 页面标量：逐字段按 updatedAt 严格较新（>）才采用远端；
+    - 页面标量：按各字段自己的 fieldTs 严格较新（>）才采用，互不牵连；
+      存量数据无 fieldTs 时回退整页 updatedAt，保持与老客户端兼容；
     - 块级：逐块比较 block.updatedAt，>= 取远端；本地缺失的块直接加入。
     阶段三 F7：合并后对每页 tasks 做 prevId 链自愈。
     """
@@ -411,24 +436,48 @@ def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]
     merged: Dict[str, Dict] = {}
 
     def _scalar_lww(base: Dict, other: Dict) -> None:
-        """把 other 中严格更新的标量字段覆盖进 base（就地）。"""
-        base_upd = _norm_ts(base["updatedAt"]) if base.get("updatedAt") else "0"
-        other_upd = _norm_ts(other["updatedAt"]) if other.get("updatedAt") else "0"
-        if other_upd and base_upd and other_upd > base_upd:
-            for f in PAGE_SCALAR_FIELDS:
-                if f in other:
-                    base[f] = other[f]
-                elif f in base:
-                    if f == "title":
-                        # 标题缺失只可能是旧数据 / 异常快照，不当成「清空标题」：
-                        # 用户主动清空会写 ""（字段仍存在），无需 pop。否则服务端
-                        # 会丢掉标题，各端同步后标题栏都变成「无标题」。
-                        continue
-                    # 客户端把字段设成 undefined 时 JSON 会省略该键：视为「明确删除」。
-                    # 否则「移除封面 / 清除图标 / 取消模板」在服务端永远清不掉，
-                    # 新设备 INITIAL_SYNC 拉到的仍是旧值（删了又复活）。
-                    base.pop(f)
-            base["updatedAt"] = other_upd
+        """逐字段版本化 LWW（就地改写 base）。
+
+        旧实现整组标量共用 page.updatedAt：A 换封面、B 改图标时，时间戳更晚的
+        一方会把对方刚做的选择整组冲掉。现在每个字段用自己的 fieldTs 裁决，
+        因此两台设备的不同选择都能同时存活。
+        """
+        base_ms = _norm_ms(base.get("updatedAt"))
+        other_ms = _norm_ms(other.get("updatedAt"))
+        base_ft = base.get("fieldTs") if isinstance(base.get("fieldTs"), dict) else {}
+        next_ft: Dict[str, int] = {
+            f: int(v) for f, v in base_ft.items()
+            if isinstance(v, (int, float)) and v > 0
+        }
+
+        for f in PAGE_SCALAR_FIELDS:
+            if _field_ms(other, f, other_ms) <= _field_ms(base, f, base_ms):
+                continue
+            if f in other:
+                base[f] = other[f]
+            elif f in base:
+                if f == "title":
+                    # 标题缺失只可能是旧数据 / 异常快照，不当成「清空标题」：
+                    # 用户主动清空会写 ""（字段仍存在），无需 pop。否则服务端
+                    # 会丢掉标题，各端同步后标题栏都变成「无标题」。
+                    continue
+                # 客户端把字段设成 undefined 时 JSON 会省略该键：视为「明确删除」。
+                # 否则「移除封面 / 清除图标 / 取消模板」在服务端永远清不掉，
+                # 新设备 INITIAL_SYNC 拉到的仍是旧值（删了又复活）。
+                base.pop(f)
+            next_ft[f] = _field_ms(other, f, other_ms)
+
+        other_ft = other.get("fieldTs") if isinstance(other.get("fieldTs"), dict) else {}
+        for f, v in other_ft.items():
+            if f in PAGE_SCALAR_FIELDS and isinstance(v, (int, float)) and v > next_ft.get(f, 0):
+                next_ft[f] = int(v)
+        if next_ft:
+            base["fieldTs"] = next_ft
+        # 水位戳必须覆盖「字段级变更后采纳的版本」：否则远端字段戳更晚、
+        # 整页 updatedAt 却更旧时，游标不前进，断线重连用 since 拉增量会漏掉这次选择。
+        ceiling = max([base_ms, other_ms] + list(next_ft.values()))
+        if ceiling > base_ms:
+            base["updatedAt"] = _norm_ts(ceiling)
 
     def _tasks_lww(base_tasks, other_tasks):
         """以 base 为基，叠加 other 中更新或新增的块；尊重块级墓碑。
@@ -578,6 +627,99 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# ============================================================
+# 跨设备「会话接力」：按 room 保存轻量 UI 状态（当前文档 / 最近访问）
+#
+# 与文档数据不同，这类状态描述的是「用户当下正在做的事」，不做实时强推：
+#   - 设备建连 / REST 握手时下发一次，由客户端决定是否在冷启动恢复；
+#   - 已在线设备的当前屏幕永远不被远端覆盖，只更新「最近访问」列表。
+# 用独立 JSON 文件持久化（不塞进 pages 表，也不必给两种 DB 后端各写一套）；
+# 与 ConnectionManager 同属单进程语义，文件只用于后端重启后仍能接力。
+# ============================================================
+SESSION_RECENT_MAX = 12
+_SESSION_PATH = os.getenv("SESSION_STATE_PATH") or os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "session_state.json"
+)
+_session_store: Dict[str, Dict] = {}
+_session_loaded = False
+
+
+def _load_session_store() -> Dict[str, Dict]:
+    global _session_loaded
+    if not _session_loaded:
+        _session_loaded = True
+        try:
+            with open(_SESSION_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                _session_store.update({k: v for k, v in data.items() if isinstance(v, dict)})
+        except (OSError, ValueError):
+            pass  # 首次运行 / 文件损坏：退化为纯内存
+    return _session_store
+
+
+def _save_session_store() -> None:
+    tmp = _SESSION_PATH + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_session_store, f, ensure_ascii=False)
+        os.replace(tmp, _SESSION_PATH)
+    except OSError as e:
+        logger.warning(f"会话状态落盘失败（仅本次进程有效）：{e}")
+
+
+def _session_key(room: str) -> str:
+    # room 是账号/房间标识，不把明文写进文件
+    return hmac.new(str(JWT_SECRET).encode("utf-8"), room.encode("utf-8"), "sha256").hexdigest()
+
+
+def _read_session(room: str) -> Dict:
+    state = _load_session_store().get(_session_key(room))
+    if not isinstance(state, dict):
+        return {"activePageId": None, "recentPageIds": [], "updatedAt": 0}
+    recent = state.get("recentPageIds")
+    return {
+        "activePageId": state.get("activePageId") if isinstance(state.get("activePageId"), str) else None,
+        "recentPageIds": [x for x in recent if isinstance(x, str)][:SESSION_RECENT_MAX] if isinstance(recent, list) else [],
+        "updatedAt": int(state.get("updatedAt") or 0),
+    }
+
+
+def _merge_session(room: str, raw: Dict) -> Dict:
+    """按客户端上报的时间戳做 LWW；最近访问取并集，避免一台设备抹掉另一台的本地记录。"""
+    source = raw if isinstance(raw, dict) else {}
+    active = source.get("activePageId")
+    active = active if isinstance(active, str) and 0 < len(active) <= 128 else None
+    reported = source.get("recentPageIds")
+    reported = [x for x in reported if isinstance(x, str) and 0 < len(x) <= 128][:SESSION_RECENT_MAX] if isinstance(reported, list) else []
+    client_ts = source.get("updatedAt")
+    client_ts = int(client_ts) if isinstance(client_ts, (int, float)) and client_ts > 0 else 0
+
+    cur = _read_session(room)
+    # 迟到的离线补报不能盖掉更新的会话（例如另一台设备之后又打开了别的文档）
+    if client_ts and client_ts <= cur["updatedAt"]:
+        return cur
+
+    recent: List[str] = []
+    for pid in reported + cur["recentPageIds"]:
+        if pid not in recent:
+            recent.append(pid)
+        if len(recent) >= SESSION_RECENT_MAX:
+            break
+    state = {
+        "activePageId": active or cur["activePageId"],
+        "recentPageIds": recent,
+        "updatedAt": max(int(time.time() * 1000), client_ts),
+    }
+    _load_session_store()[_session_key(room)] = state
+    _save_session_store()
+    return state
+
+
+def _session_broadcast_payload(state: Dict) -> str:
+    return json.dumps({"type": "SESSION_STATE", "data": state}, ensure_ascii=False)
+
+
 # SERVER_BROADCAST 单帧字节上限：Cloudflare / 隧道对超大 WS 帧会静默丢弃，
 # 这正是「REST 写完后整房间一帧全量广播」在公网环境下时灵时不灵的原因。
 # 与 INITIAL_SYNC 同理按页切分；每帧都是完整的页子集，前端 mergePages 是
@@ -635,7 +777,12 @@ async def _apply_incoming(
     if existing_pages is None:
         existing_pages = await db.load_pages(room)
     existing_snap = {p["id"]: p for p in existing_pages}
-    merged = _merge_pages([dict(p) for p in incoming_list], existing_pages)
+    # 老客户端仍可能把本机视图态带上来；统一在写入口剥离，避免入库后又广播出去。
+    cleaned = [
+        {k: v for k, v in dict(p).items() if k not in LOCAL_ONLY_FIELDS}
+        for p in incoming_list
+    ]
+    merged = _merge_pages(cleaned, existing_pages)
     changed = _changed_pages(merged, existing_snap)
     for p in changed:
         await _persist_page(p, room)
@@ -1004,6 +1151,21 @@ async def cover_download(photo_id: str, room: str = Depends(get_room)):
     return {"success": True}
 
 
+# === 会话接力 REST 兜底 ===
+# 原生 WebView / 隧道环境下 WS 可能连不上，握手阶段也要能拿到「另一台设备正在看的文档」。
+# PUT 与 WS 的 SESSION_UPDATE 共用 _merge_session，保证两条通道语义一致。
+@app.get("/api/session")
+async def get_session(room: str = Depends(get_room)):
+    return {"success": True, "data": _read_session(room)}
+
+
+@app.put("/api/session")
+async def put_session(payload: Dict, room: str = Depends(get_room)):
+    state = _merge_session(room, payload)
+    await manager.broadcast(_session_broadcast_payload(state), room=room)
+    return {"success": True, "data": state}
+
+
 # REST API: 获取某 room 的所有页面
 # 阶段二 2.2：支持 ?since=<ms 水位戳> 增量拉取。
 @app.get("/api/pages")
@@ -1097,6 +1259,11 @@ async def upload_asset(request: Request, room: str = Depends(get_room)):
     await db.save_asset(aid, blob, room)
     monitor.record_asset_upload()
     monitor.record_asset_bytes(len(blob))
+    # P2 传输层：资产就绪即时通知同 room 的在线设备。此前 B 端 GET 404 后要等
+    # 15s 负缓存限流重试才重拉，A 端补传成功到 B 端出图之间有明显空窗。
+    await manager.broadcast(
+        json.dumps({"type": "ASSET_READY", "assetId": aid}, ensure_ascii=False), room=room
+    )
     return {"success": True, "id": f"asset:{aid}"}
 
 
@@ -1250,12 +1417,25 @@ async def websocket_endpoint(websocket: WebSocket):
             "type": "DEVICE_COUNT",
             "data": len(manager.rooms.get(room, [])),
         }))
+        # 会话接力：只在建连时下发一次。客户端自己决定要不要在冷启动恢复，
+        # 服务端从不向「已在线且正在看某篇文档」的设备强推切页。
+        session_snapshot = _read_session(room)
+        if session_snapshot["updatedAt"]:
+            await websocket.send_text(_session_broadcast_payload(session_snapshot))
 
         while True:
             # 持续监听各台客户端上报的内容更改
             data = await websocket.receive_text()
             payload = json.loads(data)
             monitor.record_ws_message()
+
+            if payload.get("type") == "SESSION_UPDATE":
+                session_state = _merge_session(room, payload.get("data") or {})
+                # 广播给其它设备：它们只用这份状态刷新「最近访问」，不切当前页。
+                await manager.broadcast(
+                    _session_broadcast_payload(session_state), room=room, sender=websocket
+                )
+                continue
 
             if payload.get("type") == "CLIENT_UPDATE":
                 incoming = payload.get("data")
@@ -1320,6 +1500,36 @@ _candidate = os.getenv("STATIC_DIR")
 _FRONTEND_DIST = _candidate if (_candidate and os.path.isdir(_candidate)) else _DIST_DEFAULT
 
 
+def _current_entry_asset(path: str) -> Optional[str]:
+    """重新构建后旧 index.html 引用的 index-<hash>.js/css 已不在 dist 里时，
+    返回当前构建的同类入口文件。
+
+    每次 vite build 都会清空 dist 并换掉入口 hash：浏览器 / CDN 只要还拿着上一版
+    index.html，就会去请求一个不存在的 JS，模块加载失败 → 整页白屏。这里只对
+    `assets/index-*.js|css` 做回退；其它带扩展名的资源仍严格 404，不用 HTML 掩盖问题。
+    """
+    if not path.startswith("assets/"):
+        return None
+    name = path.rsplit("/", 1)[-1]
+    if not name.startswith("index-"):
+        return None
+    ext = name.rsplit(".", 1)[-1]
+    if ext not in ("js", "css"):
+        return None
+    assets_dir = os.path.join(_FRONTEND_DIST, "assets")
+    try:
+        candidates = [
+            f for f in os.listdir(assets_dir)
+            if f.startswith("index-") and f.endswith("." + ext) and f != name
+        ]
+        if not candidates:
+            return None
+        newest = max(candidates, key=lambda f: os.path.getmtime(os.path.join(assets_dir, f)))
+        return "assets/" + newest
+    except OSError:
+        return None
+
+
 class SPAStaticFiles(StaticFiles):
     """静态托管 + SPA 兜底。
 
@@ -1335,11 +1545,19 @@ class SPAStaticFiles(StaticFiles):
             # API / WS 前缀不参与 SPA 兜底，避免给接口返回 HTML
             if path.startswith("api/") or path.startswith("ws/"):
                 return PlainTextResponse("Not Found", status_code=404)
-            # 带扩展名的静态资源缺失 → 直接 404，便于发现构建/路径问题
-            if "." in path.rsplit("/", 1)[-1]:
-                return PlainTextResponse("Not Found", status_code=404)
+            name = path.rsplit("/", 1)[-1]
+            if "." in name:
+                # 带扩展名的资源缺失一般直接 404（不用 HTML 掩盖构建问题），
+                # 但旧版 index.html 的入口 bundle 例外：回退到当前构建的同类入口，
+                # 避免「重新构建 + 浏览器/CDN 缓存旧 HTML」造成的白屏。
+                fallback = _current_entry_asset(path)
+                if not fallback:
+                    return PlainTextResponse("Not Found", status_code=404)
+                path = fallback
+            else:
+                path = "index.html"
             try:
-                response = await super().get_response("index.html", scope)
+                response = await super().get_response(path, scope)
             except Exception:
                 return PlainTextResponse("Frontend not built", status_code=404)
         # HTML 入口禁止缓存：保证硬刷新总能拿到最新 index.html → 引用最新带 hash 的 JS，

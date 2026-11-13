@@ -242,6 +242,24 @@ class SQLiteDatabase(Database):
 
         logger = logging.getLogger("NexusSync")
         try:
+            # 【启动性能】原实现每次启动都把 pages / assets 全表「建新表 → 全量拷贝 →
+            # 删旧表 → 再拷回」，资产库几百 MB 时要跑数十秒，期间 uvicorn 虽已监听
+            # 却还没完成 lifespan startup，浏览器一直拿不到响应 → 表现为「重启后白屏」。
+            # 表结构已经是目标形态（复合主键 id+room）时直接跳过重建。
+            pinfo = list(self._conn.execute("PRAGMA table_info(pages)"))
+            ainfo = list(self._conn.execute("PRAGMA table_info(assets)"))
+            p_pk = [r[1] for r in sorted(pinfo, key=lambda r: r[5]) if r[5]]
+            a_pk = [r[1] for r in sorted(ainfo, key=lambda r: r[5]) if r[5]]
+            if ("room" in [r[1] for r in pinfo] and "room" in [r[1] for r in ainfo]
+                    and p_pk == ["id", "room"] and a_pk == ["id", "room"]):
+                # 历史单租户数据仍要兼容：把 room='public' 迁到第一个有效 key 的房间
+                first = first_allowed_room()
+                if first:
+                    self._conn.execute("UPDATE pages SET room=? WHERE room='public'", (first,))
+                    self._conn.execute("UPDATE assets SET room=? WHERE room='public'", (first,))
+                    self._conn.commit()
+                return
+
             pcols = [r[1] for r in self._conn.execute("PRAGMA table_info(pages)")]
             if "room" not in pcols:
                 self._conn.execute("ALTER TABLE pages ADD COLUMN room TEXT NOT NULL DEFAULT 'public'")

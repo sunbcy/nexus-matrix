@@ -15,7 +15,7 @@
   避免选完 ZIP 静默新建一堆页面。
 -->
 <script setup lang="ts">
-import {computed, onMounted, ref} from 'vue';
+import {computed, defineAsyncComponent, onMounted, ref} from 'vue';
 import {useMobileInput} from '../composables/useMobileInput';
 import {
   accountInfo,
@@ -32,8 +32,45 @@ import {
 } from '../composables/useSync';
 import {getRuntimeConfig, SYNC_API_KEY_STORAGE_KEY, SYNC_SERVER_STORAGE_KEY} from '../runtimeConfig';
 import {checkAssetIntegrity, gcOrphanAssets} from '../composables/assetIntegrity';
-import WorkspaceView from '../components/WorkspaceView.vue';
+// 试点工作区改成异步组件：否则它的静态 import 链（WorkspaceView → yjsDoc /
+// YjsBlockEditor → yjs / y-prosemirror）会被打进 index.html 的 modulepreload，
+// 让「默认关闭」的设备也白白下载 ~95 kB 的 Yjs 运行时。
+const WorkspaceView = defineAsyncComponent(() => import('../components/WorkspaceView.vue'));
+import {isYjsDualWriteEnabled, yjsDualWriteDiag} from '../composables/yjsDualWrite';
+import {isYjsCutoverEnabled, yjsCutoverDiag} from '../composables/yjsCutover';
 const showWorkspace = ref(false);
+
+// P2 Phase A 开关：默认关闭；改的是「启动时是否挂影子 Y.Doc」，刷新后生效最彻底
+// （同时保证完整卸载 provider / IndexedDB 持久化），出问题时关掉刷新即回退。
+const YJS_SHADOW_STORAGE = 'nexus_yjs_dual_write';
+const yjsShadowOn = ref(isYjsDualWriteEnabled());
+const toggleYjsShadow = () => {
+  const next = !yjsShadowOn.value;
+  try { window.localStorage.setItem(YJS_SHADOW_STORAGE, next ? '1' : '0'); } catch { /* ignore */ }
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('yjsDualWrite');
+    window.history.replaceState(null, '', u.pathname + u.search + u.hash);
+  } catch { /* ignore */ }
+  window.location.reload();
+};
+
+// P2 Phase B 开关：把块正文真正切到结构化 CRDT（块正文 = Y.XmlFragment，字符级合并）。
+// 与影子双写互斥（运行时 cutover 优先），开启时顺手关掉影子双写。默认关闭、刷新即回退。
+const YJS_CUTOVER_STORAGE = 'nexus_yjs_cutover';
+const yjsCutoverOn = ref(isYjsCutoverEnabled());
+const toggleYjsCutover = () => {
+  const next = !yjsCutoverOn.value;
+  try { window.localStorage.setItem(YJS_CUTOVER_STORAGE, next ? '1' : '0'); } catch { /* ignore */ }
+  if (next) { try { window.localStorage.setItem(YJS_SHADOW_STORAGE, '0'); } catch { /* ignore */ } }
+  try {
+    const u = new URL(window.location.href);
+    u.searchParams.delete('yjsCutover');
+    u.searchParams.delete('yjsDualWrite');
+    window.history.replaceState(null, '', u.pathname + u.search + u.hash);
+  } catch { /* ignore */ }
+  window.location.reload();
+};
 import {applyTheme, currentThemeId, type ThemeId, THEMES} from '../composables/theme';
 import {useAuth} from '../composables/auth';
 
@@ -629,6 +666,33 @@ const onRestoreKilledBlocks = () => {
                     class="h-11 md:h-9 px-3 flex items-center justify-center rounded-sm bg-surface border border-line text-muted hover:text-accent hover:border-accent active:bg-panel transition-colors text-xs font-['JetBrains_Mono',monospace]">
               Yjs 多文档工作区
             </button>
+            <label class="mt-2 flex items-start gap-2 cursor-pointer text-[11px] text-dim leading-5">
+              <input type="checkbox" :checked="yjsShadowOn" @change="toggleYjsShadow" class="mt-1 shrink-0" />
+              <span>
+                Yjs 影子双写（实验，默认关闭）<br />
+                开启后块内容在写原有文档的同时，额外写一份独立的 Y.Doc 用于并发观测；
+                <span class="text-muted">不改变编辑结果</span>。关闭并刷新即完整回退。
+                <span v-if="yjsShadowOn" class="block mt-1 font-['JetBrains_Mono',monospace] text-muted">
+                  种子 {{ yjsDualWriteDiag.seeded }} · 写入 {{ yjsDualWriteDiag.writes }} ·
+                  远端 {{ yjsDualWriteDiag.remoteUpdates }} · 冲突 {{ yjsDualWriteDiag.conflicts }}
+                  <template v-if="yjsDualWriteDiag.lastConflictBlockId">
+                    <br />最近冲突块 {{ yjsDualWriteDiag.lastConflictBlockId }}
+                  </template>
+                </span>
+              </span>
+            </label>
+            <label class="mt-2 flex items-start gap-2 cursor-pointer text-[11px] text-dim leading-5">
+              <input type="checkbox" :checked="yjsCutoverOn" @change="toggleYjsCutover" class="mt-1 shrink-0" />
+              <span>
+                Yjs 切流（实验，默认关闭）<br />
+                开启后块正文真正以结构化 CRDT 存储，同块并发可字符级合并，解决「后写覆盖丢字」；
+                <span class="text-muted">有向后的兼容投影，关闭并刷新即回退到原 contenteditable</span>。
+                <span v-if="yjsCutoverOn" class="block mt-1 font-['JetBrains_Mono',monospace] text-muted">
+                  页面 {{ yjsCutoverDiag.pageId || '—' }} · 连接 {{ yjsCutoverDiag.connected ? '是' : '否' }} ·
+                  块 {{ yjsCutoverDiag.blocks }} · 写入 {{ yjsCutoverDiag.writes }}
+                </span>
+              </span>
+            </label>
             <WorkspaceView v-if="showWorkspace" @close="showWorkspace = false" />
           </div>
           <input ref="jsonInput" type="file" accept="application/json,.json" class="hidden" @change="onJsonImport" />

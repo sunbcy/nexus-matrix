@@ -46,6 +46,26 @@ const SYNC_API_KEY = (getRuntimeConfig().apiKey || (import.meta as any).env?.VIT
 
 export const ASSET_PREFIX = 'asset:';
 
+// === 资产「云端未确认」持久化补传队列 ===
+// 页面里的 asset: 引用会随页面同步立刻到达另一台设备，但图片本体是异步尽力上传的。
+// A 设备离线 / 后端抖动时加封面：引用过去了、后端却没有 blob，B 设备 GET 404 后记负缓存
+// 永久破图；而 A 端因本地 IDB 命中，`resolveAsset` 永远不会再触发上传
+// （原注释声称「由对端回源触发补传」，实际代码里从未发生）。
+// 因此把「本地有、云端未确认」的 ref 持久化，启动时 / 恢复网络时补传。
+const UPLOAD_PENDING_KEY = 'nexus_asset_upload_pending_v1';
+const pendingUploads = new Set<string>((() => {
+  try {
+    const raw = localStorage.getItem(UPLOAD_PENDING_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return Array.isArray(arr)
+      ? arr.filter((x: unknown): x is string => typeof x === 'string' && x.startsWith(ASSET_PREFIX))
+      : [];
+  } catch { return []; }
+})());
+const persistPendingUploads = (): void => {
+  try { localStorage.setItem(UPLOAD_PENDING_KEY, JSON.stringify([...pendingUploads])); } catch { /* 配额满：内存态仍有效 */ }
+};
+
 const ASSET_STORE = STORE_NAMES.assets;
 const openDB = openNexusDB;
 
@@ -243,9 +263,11 @@ const blobUrlCache = new Map<string, string>();
 const ASSET_MISS_KEY = 'nexus_asset_miss_v1';
 const ASSET_MISS_TTL = 7 * 24 * 60 * 60 * 1000; // 7 天
 const assetMissCache = new Set<string>();
-// 每个页面会话对「已知缺失」的资产允许重新探测一次：后端后来补上资产时，
-// 用户刷新即可自愈；同时保留同一会话内不反复 404 的去噪效果。
-const missRetryDone = new Set<string>();
+// 「已知缺失」的资产仍要周期性再探一次：另一台设备可能刚把图补传到云端。
+// 单会话只重试一次会导致「A 补传成功、B 却要等 7 天负缓存过期」；
+// 用时间间隔限流，既不 404 刷屏，也能在补传后自愈。
+const MISS_RETRY_INTERVAL = 15_000;
+const missRetryAt = new Map<string, number>();
 try {
   const raw = localStorage.getItem(ASSET_MISS_KEY);
   if (raw) {
@@ -286,8 +308,9 @@ export const resolveAsset = async (ref: string): Promise<string> => {
   // 使「资产后来被补上」能自动恢复；单会话内不反复 404。
   if (!blob) {
     const knownMissing = assetMissCache.has(ref);
-    if (!knownMissing || !missRetryDone.has(ref)) {
-      if (knownMissing) missRetryDone.add(ref);
+    const lastRetry = missRetryAt.get(ref) ?? 0;
+    if (!knownMissing || Date.now() - lastRetry > MISS_RETRY_INTERVAL) {
+      missRetryAt.set(ref, Date.now());
       blob = await fetchAssetFromServer(ref);
     }
   }
@@ -300,6 +323,29 @@ export const resolveAsset = async (ref: string): Promise<string> => {
 
 /** 同步版本：命中缓存则立即返回，否则返回空串（首次加载走异步版） */
 export const resolveAssetSync = (ref: string): string => blobUrlCache.get(ref) ?? '';
+
+/**
+ * P2 传输层：收到服务端的 ASSET_READY 广播（另一台设备上传 / 补传成功）。
+ *
+ * 此前 B 端 GET 404 后要等 15s 的负缓存限流重试才重新回源；现在就绪通知一到
+ * 就清负缓存与限流计时、主动把 blob 拉回本地并填进渲染缓存，再派发 DOM 事件
+ * 让组件把旧的空 src 重新解析一次，跨设备出图不再有时间窗。
+ */
+export const onAssetReady = async (assetId: string): Promise<void> => {
+  if (!assetId) return;
+  const ref = `${ASSET_PREFIX}${assetId.replace(/^asset:/, '')}`;
+  clearAssetMissing(ref);
+  if (blobUrlCache.has(ref)) return;          // 本端已解析过
+  if (await getAsset(ref)) return;             // 本端本来就有（上传者自己也会收到广播）
+  missRetryAt.delete(ref);
+  const blob = await fetchAssetFromServer(ref);
+  if (!blob) return;
+  const url = URL.createObjectURL(blob);
+  blobUrlCache.set(ref, url);
+  try {
+    window.dispatchEvent(new CustomEvent('nexus-asset-ready', { detail: { ref, url } }));
+  } catch { /* 非浏览器环境忽略 */ }
+};
 
 /**
  * 预热：把页面里所有 asset 引用解析成 blob: URL 并缓存。
@@ -377,8 +423,40 @@ export const saveImageAsset = async (file: Blob, opts?: ImageSaveOptions): Promi
 export const saveImageAssetWithBlob = async (file: Blob, opts?: ImageSaveOptions): Promise<{ ref: string; blob: Blob }> => {
   const blob = opts?.original ? file : await compressImage(file, opts);
   const ref = await saveAsset(blob);
-  // 阶段二 2.3：本地存好后尽力上传到后端，供其它设备安装/渲染。
-  // 异步、不阻塞正文保存（图片同步失败不应让打字卡顿）。
-  void uploadAssetToServer(ref, blob);
+  // 本地存好后尽力上传到后端；异步、不阻塞正文保存（图片同步失败不应让打字卡顿）。
+  // 失败必须记进补传队列：本地已有 blob，之后不会再有上传机会，只能靠队列救回。
+  void uploadAssetToServer(ref, blob).then((ok) => {
+    if (ok) {
+      if (pendingUploads.delete(ref)) persistPendingUploads();
+    } else {
+      pendingUploads.add(ref);
+      persistPendingUploads();
+    }
+  });
   return { ref, blob };
 };
+
+let uploadRetryRunning = false;
+/** 把「本地有、云端未确认」的资产补传到后端；成功一条移除一条。 */
+export const retryPendingAssetUploads = async (): Promise<void> => {
+  if (!SYNC_SERVER || uploadRetryRunning || pendingUploads.size === 0) return;
+  uploadRetryRunning = true;
+  try {
+    for (const ref of [...pendingUploads]) {
+      try {
+        const blob = await getAsset(ref);
+        if (!blob) { pendingUploads.delete(ref); continue; }   // 本地也没了，放弃死引用
+        if (await uploadAssetToServer(ref, blob)) pendingUploads.delete(ref);
+      } catch { /* 单条失败留在队列，下次再试 */ }
+    }
+    persistPendingUploads();
+  } finally {
+    uploadRetryRunning = false;
+  }
+};
+
+// 启动补传 + 恢复网络补传：离线期间加的封面/图片，联网后自动补齐到云端
+void retryPendingAssetUploads();
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => { void retryPendingAssetUploads(); });
+}

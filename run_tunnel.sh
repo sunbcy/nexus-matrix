@@ -10,7 +10,9 @@
 #      （阿里云完成实名认证 / 邮箱验证）
 #   2. Cloudflare Zero Trust -> Networks -> Tunnels -> Create a tunnel
 #      -> 选 Cloudflared，命名 nexus，Public Hostname 设
-#         nexus.<你的域名> -> http://localhost:8010
+#         nexus.<你的域名> -> http://127.0.0.1:8010
+#         （务必写 127.0.0.1：localhost 在 macOS 上优先解析 ::1，
+#           而后端只监听 IPv4，会报 dial tcp [::1]:8010 refused）
 #      -> 复制给出的运行命令里的 --token 值
 #
 # Token 来源（任选其一）：

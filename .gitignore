@@ -18,4 +18,7 @@ frontend/*.log
 # 后端 SQLite 运行时数据库（含用户数据/敏感信息，绝不入库）
 backend/nexus.db
 *.db
+# 会话接力状态（含房间标识派生的 key 与文档 id，属运行时数据）
+backend/session_state.json
+backend/session_state.json.tmp
 /bakfile/

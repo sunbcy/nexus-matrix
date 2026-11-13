@@ -62,8 +62,10 @@ echo "==> 后端健康 (http://127.0.0.1:8010)"
 # ---------- 3. 启动快速隧道 ----------
 pkill -f "cloudflared tunnel" 2>/dev/null || true
 sleep 1
-echo "==> 启动 Cloudflare 快速隧道 (localhost:8010) ..."
-nohup cloudflared tunnel --url http://localhost:8010 > "$TUNNEL_LOG" 2>&1 &
+# 用 127.0.0.1 而非 localhost：macOS 上 localhost 会优先解析成 IPv6 ::1，
+# 而 uvicorn 只监听 IPv4 0.0.0.0，日志里会出现 dial tcp [::1]:8010 refused。
+echo "==> 启动 Cloudflare 快速隧道 (127.0.0.1:8010) ..."
+nohup cloudflared tunnel --url http://127.0.0.1:8010 > "$TUNNEL_LOG" 2>&1 &
 CF_PID=$!
 
 URL=""

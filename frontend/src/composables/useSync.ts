@@ -37,7 +37,91 @@ export interface Page {
   deletedAt?: number;   // 墓碑时间戳（ms）。非空表示该页已被删除，参与同步合并，避免删除被另一端「复活」
   isTemplate?: boolean; // 模板页：从侧边栏树隐藏，收进「模板」区，可一键套用新建副本
   prevId?: string | null;  // 同一父级下的前一个页面 id（页面顺序链，与块的 prevId 同思路；根页也有链）
+  fieldTs?: Record<string, number>; // 各偏好/结构字段的最后修改时刻（逐字段 LWW，取代整页时间戳裁决）
 }
+
+// === 会话接力（Session）：用户「当下正在做的事」 ===
+// 与文档数据（Content）刻意分离：不参与 LWW / cursor / outbox，也不落进 pages 表。
+// 只在冷启动（URL 无 hash）时用于恢复 activePageId；在线设备的「最近访问」可随
+// 远端刷新，但当前屏幕永远由本机用户自己决定，服务端不做实时强推。
+export interface SessionState {
+  activePageId?: string;
+  recentPageIds: string[];
+  updatedAt: number;
+}
+export const sessionState = ref<SessionState | null>(null);
+let localSession: SessionState = { recentPageIds: [], updatedAt: 0 };
+let sessionReportTimer: ReturnType<typeof setTimeout> | null = null;
+let sessionReportPending = false;
+
+const normalizeSession = (raw: unknown): SessionState | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  const active = typeof s.activePageId === 'string' && s.activePageId ? s.activePageId : undefined;
+  const recent = Array.isArray(s.recentPageIds)
+    ? s.recentPageIds.filter((x): x is string => typeof x === 'string' && !!x).slice(0, 12)
+    : [];
+  const updatedAt = typeof s.updatedAt === 'number' && Number.isFinite(s.updatedAt) ? s.updatedAt : 0;
+  if (!active && recent.length === 0) return null;
+  return { activePageId: active, recentPageIds: recent, updatedAt };
+};
+
+const acceptSessionState = (raw: unknown): void => {
+  const s = normalizeSession(raw);
+  if (!s) return;
+  const cur = sessionState.value;
+  // 迟到的旧广播不能盖掉刚收到的新状态
+  if (cur && s.updatedAt < cur.updatedAt) return;
+  sessionState.value = s;
+  // 服务端时间戳可能领先本机时钟：对齐水位，保证下一次上报不会被判成「迟到」。
+  localSession.updatedAt = Math.max(localSession.updatedAt, s.updatedAt);
+};
+
+/** 握手阶段拉远端会话；旧后端没有 /api/session（404）时静默降级为纯本地恢复。 */
+export const fetchRemoteSession = async (): Promise<SessionState | null> => {
+  try {
+    const r = await apiRequest('/session');
+    const s = normalizeSession(r?.data);
+    if (s) acceptSessionState(s);
+    return s;
+  } catch {
+    return null;
+  }
+};
+
+const sendSessionReport = async (): Promise<void> => {
+  const data: SessionState = { ...localSession };
+  try {
+    sendWS({ type: 'SESSION_UPDATE', data });
+    sessionReportPending = false;
+    return;
+  } catch { /* WS 未连上：走 REST 兜底 */ }
+  if (!backendReachable) return;   // 纯本地模式不发无谓请求，保留 pending 等下次建连
+  try {
+    await apiRequest('/session', { method: 'PUT', body: JSON.stringify(data) });
+    sessionReportPending = false;
+  } catch { /* 保留 pending，onopen 时再补 */ }
+};
+
+/** 上报本机「正在看的文档 / 最近访问」：合并式 patch + 250ms 尾缘节流。 */
+export const reportSession = (patch: Partial<SessionState>): void => {
+  localSession = {
+    activePageId: patch.activePageId ?? localSession.activePageId,
+    recentPageIds: (patch.recentPageIds ?? localSession.recentPageIds).slice(0, 12),
+    updatedAt: Math.max(Date.now(), localSession.updatedAt + 1),
+  };
+  sessionReportPending = true;
+  if (sessionReportTimer) clearTimeout(sessionReportTimer);
+  sessionReportTimer = setTimeout(() => {
+    sessionReportTimer = null;
+    void sendSessionReport();
+  }, 250);
+};
+
+export const flushSessionReport = (): void => {
+  if (sessionReportTimer) { clearTimeout(sessionReportTimer); sessionReportTimer = null; }
+  if (sessionReportPending) void sendSessionReport();
+};
 
 // === 顺序模型（CRDT 前置） ===
 // 目标：不引入 Yjs/Automerge 的前提下，就让「三端并发编辑」得到确定性的合并结果。
@@ -108,9 +192,21 @@ export const orderTasks = (tasks: Task[]): Task[] => {
 // 「页面排序、封面取景、模板标记」即使打上了新时间戳也不会被另一端采纳，
 // 表现为「改了但不同步」。deletedAt 由墓碑分支单独处理，不在此列。
 const PAGE_SCALAR_FIELDS = [
-  'title', 'icon', 'cover', 'coverPos', 'coverMeta', 'parentId', 'isFavorite', 'isExpanded',
+  'title', 'icon', 'cover', 'coverPos', 'coverMeta', 'parentId', 'isFavorite',
   'isTemplate', 'prevId',
 ] as const;
+
+// 纯本机视图态：目录树展开/折叠只反映「本机用户当下在做什么」。
+// 以前参与跨设备 LWW，一端折叠会把另一端刚展开的树整组冲掉；现在仍在本机
+// 持久化，但不进入同步载荷，也不采用远端值。
+const LOCAL_ONLY_FIELDS = ['isExpanded'] as const;
+
+/** 上推前剥掉本机视图态；服务端与另一台设备因此永远看不到本机的展开选择。 */
+const forSyncPage = (p: Page): Page => {
+  const out = { ...p } as unknown as Record<string, unknown>;
+  for (const f of LOCAL_ONLY_FIELDS) delete out[f];
+  return out as unknown as Page;
+};
 
 // 时间戳归一：本地墓碑用 ms 数字，后端墓碑可能是 ISO 字符串，混用会导致比较失真
 const tsOf = (v: unknown): number => {
@@ -118,6 +214,9 @@ const tsOf = (v: unknown): number => {
   if (typeof v === 'string') { const n = Date.parse(v); return Number.isNaN(n) ? 0 : n; }
   return 0;
 };
+
+/** 字段级时间戳；存量数据没有 fieldTs 时回退到整页时间戳，保持与老客户端兼容。 */
+const fieldTsOf = (p: Page, f: string): number => p.fieldTs?.[f] ?? tsOf(p.updatedAt);
 
 const mergePages = (local: Page[], remote: Page[]): Page[] => {
   const out: Page[] = local.map((p) => ({ ...p, tasks: [...p.tasks] }));
@@ -135,24 +234,32 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
       }
       continue;
     }
-    if (!lp) { out.push({ ...rp, tasks: orderTasks(rp.tasks) }); continue; }
+    // 全新页：本机还没有展开偏好，给个默认初值即可（此后完全由本机维护）。
+    if (!lp) { out.push({ ...rp, isExpanded: rp.isExpanded ?? true, tasks: orderTasks(rp.tasks) }); continue; }
 
-    // 页面级标量：逐字段按 updatedAt 比较。
-    // 远端更新 → 采用远端；否则保留本地。这样「本端刚改的字段」不会被旧远端覆盖。
-    // 后端落库时 updatedAt 是 ISO 字符串、本地是 ms 数字，必须统一归一后再比较。
-    const remoteNewer = tsOf(rp.updatedAt) > tsOf(lp.updatedAt);
-    if (remoteNewer) {
-      for (const f of PAGE_SCALAR_FIELDS) {
-        const rv = (rp as unknown as Record<string, unknown>)[f];
-        const lv = (lp as unknown as Record<string, unknown>)[f];
-        // 标题是页面身份：字段整体缺失（JSON 会省略 undefined）属于旧数据 / 异常快照，
-        // 不能当成「用户主动清空标题」，否则另一台的标题栏会突然显示「无标题」。
-        // 真正清空会写 ''（字段仍在），其它标量字段缺失仍按删除处理（移除封面要能同步）。
-        if (f === 'title' && rv === undefined && lv !== undefined) continue;
-        (lp as unknown as Record<string, unknown>)[f] = rv;
-      }
-      lp.updatedAt = rp.updatedAt;
+    // 偏好字段逐字段版本化：旧实现整组标量共用 page.updatedAt，于是
+    // 「A 刚换封面」与「B 刚改图标」谁的时间戳晚，就把对方那一组选择全部冲掉。
+    // 现在每个字段用自己的 fieldTs 裁决，互不牵连；缺字段版本时回退整页时间戳。
+    const nextFieldTs: Record<string, number> = { ...(lp.fieldTs ?? {}) };
+    for (const f of PAGE_SCALAR_FIELDS) {
+      const rTs = fieldTsOf(rp, f);
+      if (rTs <= fieldTsOf(lp, f)) continue;
+      const rv = (rp as unknown as Record<string, unknown>)[f];
+      const lv = (lp as unknown as Record<string, unknown>)[f];
+      // 标题是页面身份：字段整体缺失（JSON 会省略 undefined）属于旧数据 / 异常快照，
+      // 不能当成「用户主动清空标题」，否则另一台的标题栏会突然显示「无标题」。
+      // 真正清空会写 ''（字段仍在），其它标量字段缺失仍按删除处理（移除封面要能同步）。
+      if (f === 'title' && rv === undefined && lv !== undefined) continue;
+      (lp as unknown as Record<string, unknown>)[f] = rv;
+      nextFieldTs[f] = rTs;
     }
+    // 远端带来的更高版本戳也要跟上水位（即使本字段值恰好相同）
+    for (const [f, t] of Object.entries(rp.fieldTs ?? {})) {
+      if (typeof t === 'number' && t > (nextFieldTs[f] ?? 0)) nextFieldTs[f] = t;
+    }
+    lp.fieldTs = Object.keys(nextFieldTs).length ? nextFieldTs : undefined;
+    // isExpanded 刻意不参与上面的循环：本机视图态永不采用远端值。
+    if (tsOf(rp.updatedAt) > tsOf(lp.updatedAt)) lp.updatedAt = rp.updatedAt;
 
     // 块级：逐块比较 block.updatedAt。
     // 这是阶段一的核心修复——原先是 Object.assign(lt, rt) 无条件用远端覆盖，
@@ -269,29 +376,47 @@ const blockFingerprint = (t: Task): string =>
   ]);
 
 /**
- * 页面指纹覆盖所有参与同步的字段。缺一个字段 = 一类用户操作永远不同步：
+ * 参与跨设备同步的字段指纹。缺一个字段 = 一类用户操作永远不同步：
  * 之前漏了 prevId / coverPos / 块 payload，导致「拖动排序」「封面重新取景」
  * 「改代码块」都只在本端生效。
+ * 刻意不含 fieldTs / updatedAt：打戳本身不该改变指纹。
  */
-const pageFingerprint = (p: Page): string =>
+const syncFingerprint = (p: Page): string =>
   JSON.stringify([
-    p.title, p.icon, p.cover, p.coverPos, p.coverMeta ?? null, p.parentId, p.isFavorite, p.isExpanded,
+    p.title, p.icon, p.cover, p.coverPos, p.coverMeta ?? null, p.parentId, p.isFavorite,
     p.deletedAt ?? 0, p.isTemplate ?? false, p.prevId ?? null,
     p.tasks.map(blockFingerprint),
   ]);
 
-// 上一次「已提交」状态的内容指纹，用于判断「是否真的变了」
+/** 全量指纹比同步指纹多一个本机视图态：展开/折叠变了也要落盘，但不打戳、不上推。 */
+const pageFingerprint = (p: Page): string =>
+  JSON.stringify([syncFingerprint(p), p.isExpanded]);
+
+/** 上次提交时的各标量取值，用于判断「这次到底是哪几个字段被改了」。 */
+const scalarSnapshot = (p: Page): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const f of PAGE_SCALAR_FIELDS) out[f] = (p as unknown as Record<string, unknown>)[f] ?? null;
+  return out;
+};
+
+// 上一次「已提交」状态的指纹，用于判断「是否真的变了」
 const pageStampCache = new Map<string, string>();
+const syncStampCache = new Map<string, string>();
+const pageScalarCache = new Map<string, Record<string, unknown>>();
 const blockStampCache = new Map<string, string>();
 
 const writeBaselineFor = (p: Page): void => {
   pageStampCache.set(p.id, pageFingerprint(p));
+  syncStampCache.set(p.id, syncFingerprint(p));
+  pageScalarCache.set(p.id, scalarSnapshot(p));
   for (const t of p.tasks) blockStampCache.set(t.id, blockFingerprint(t));
 };
 
 // 启动时把「已落盘的现状」设为基线：后续只有真正被用户改动的页才会打戳上推。
 const initStampBaseline = (pages: Page[]): void => {
   pageStampCache.clear();
+  syncStampCache.clear();
+  pageScalarCache.clear();
   blockStampCache.clear();
   for (const p of pages) writeBaselineFor(p);
 };
@@ -316,15 +441,43 @@ const resyncStampBaseline = (pages: Page[], remoteIds: Set<string>, skipIds: Set
 
 // onlyIds：只指纹这些页（调用方已明确知道哪些页动过）。
 // 不给时按全量处理（结构变化等低频场景）。
-const stampUpdated = (pages: Page[], onlyIds?: string[]): string[] => {
+// 返回 { changed: 需要上推的页, localOnly: 只有本机视图态变了，仅落盘 }。
+const stampUpdated = (pages: Page[], onlyIds?: string[]): { changed: string[]; localOnly: boolean } => {
   const now = Date.now();
   const changed: string[] = [];
+  let localOnly = false;
   const filter = onlyIds ? new Set(onlyIds) : null;
   for (const p of pages) {
     if (filter && !filter.has(p.id)) continue;
     const fp = pageFingerprint(p);
-    if (pageStampCache.get(p.id) === fp) continue;   // 内容没变 → 不打戳
+    if (pageStampCache.get(p.id) === fp) continue;   // 完全没变
     pageStampCache.set(p.id, fp);
+    const sfp = syncFingerprint(p);
+    if (syncStampCache.get(p.id) === sfp) {
+      // 仅展开/折叠变了：本机落盘即可，不打 updatedAt、不推给其它设备，
+      // 避免一次目录树操作就在另一台设备上刷出新时间戳。
+      localOnly = true;
+      continue;
+    }
+    syncStampCache.set(p.id, sfp);
+
+    // 逐字段打版本戳：只给真正改过的标量更新 fieldTs，其它字段的时间戳保持不动。
+    // 这样两台设备分别改封面 / 图标时，各自的选择都能存活，不再整组后写胜。
+    const prev = pageScalarCache.get(p.id) ?? {};
+    const cur = scalarSnapshot(p);
+    const fieldTs: Record<string, number> = { ...(p.fieldTs ?? {}) };
+    // 存量页首次进入逐字段版本化：未改动的字段必须继承「旧的整页时间戳」，
+    // 不能留空去回退到本次的 now —— 否则这份旧值会被误判成刚做的新选择，
+    // 把另一台设备并发改的同名字段冲掉。
+    if (!p.fieldTs) {
+      const legacyTs = tsOf(p.updatedAt);
+      for (const f of PAGE_SCALAR_FIELDS) fieldTs[f] = legacyTs;
+    }
+    for (const f of PAGE_SCALAR_FIELDS) {
+      if (JSON.stringify(prev[f] ?? null) !== JSON.stringify(cur[f] ?? null)) fieldTs[f] = now;
+    }
+    pageScalarCache.set(p.id, cur);
+    p.fieldTs = fieldTs;
     p.updatedAt = now;
     changed.push(p.id);
 
@@ -335,7 +488,7 @@ const stampUpdated = (pages: Page[], onlyIds?: string[]): string[] => {
       t.updatedAt = now;
     }
   }
-  return changed;
+  return { changed, localOnly };
 };
 
 // === 页面历史版本（本地快照，不同步；独立 pageHistory store，按变化页节流保存） ===
@@ -415,11 +568,25 @@ const normalizeTs = (v: unknown): number | undefined => {
   return ms > 0 ? ms : undefined;
 };
 
+/** 字段版本戳只认正数 ms；脏值丢弃后回退到整页时间戳，不让坏数据污染 LWW。 */
+const normalizeFieldTs = (v: unknown): Record<string, number> | undefined => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const out: Record<string, number> = {};
+  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+    const n = typeof raw === 'number' ? raw : tsOf(raw);
+    if (k && Number.isFinite(n) && n > 0) out[k] = n;
+  }
+  return Object.keys(out).length ? out : undefined;
+};
+
 export const sanitizeLoadedPages = (pages: Page[]): Page[] =>
   pages.map((p) => ({
     ...p,
     updatedAt: normalizeTs(p.updatedAt),
     deletedAt: normalizeTs(p.deletedAt),
+    // 服务端不再下发本机视图态；给个默认展开初值，之后完全由本机维护。
+    isExpanded: p.isExpanded ?? true,
+    fieldTs: normalizeFieldTs(p.fieldTs),
     tasks: (p.tasks ?? []).map((t) => {
       let task: Task = { ...t, updatedAt: normalizeTs(t.updatedAt), deletedAt: normalizeTs(t.deletedAt) };
       if (task.content && task.content.indexOf('blob:') > -1) {
@@ -696,9 +863,12 @@ const commitPages = (pages: Page[]): void => {
   const onlyIds = structureDirty ? undefined : [...dirtyPageIds];
   dirtyPageIds.clear();
   structureDirty = false;
-  const changed = stampUpdated(pages, onlyIds);
-  // 没有任何内容变化（例如仅焦点 / UI 态触发的响应式抖动）就不做无意义的全量写与推送
-  if (changed.length === 0) return;
+  const { changed, localOnly } = stampUpdated(pages, onlyIds);
+  // 没有任何可同步的变化：本机视图态仍需落盘（展开/折叠要记住），但不推送。
+  if (changed.length === 0) {
+    if (localOnly) void saveLocal(pages);
+    return;
+  }
   void snapshotPages(pages, changed);          // 页面历史：对变化页节流存档
   void persistPages(pages, changed);
 };
@@ -822,7 +992,8 @@ const persistPages = async (pages: Page[], changedIds?: string[]) => {
     outboxSeq = clientSeq;
     outboxPages = pages;
     const changedSet = changedIds && changedIds.length ? new Set(changedIds) : null;
-    const payload = changedSet ? pages.filter((p) => changedSet.has(p.id)) : pages;
+    // 上推前剥掉本机视图态（isExpanded）；本机 pages 原样保留，落盘不受影响。
+    const payload = (changedSet ? pages.filter((p) => changedSet.has(p.id)) : pages).map(forSyncPage);
     // 多帧共用同一个 clientSeq：服务端逐帧回 ACK，前端按 acceptedIds 逐步从
     // outbox 剔除已确认页；任一帧丢失时重连仍会补发完整快照。
     for (const chunk of chunkPagesForUpload(payload)) {
@@ -843,6 +1014,7 @@ const persistPages = async (pages: Page[], changedIds?: string[]) => {
  */
 export const flushPendingSave = (): void => {
   debouncedCommit.flush();
+  flushSessionReport();
 };
 
 // === REST 客户端 ===
@@ -900,7 +1072,7 @@ export const pushAll = async (pages: Page[]) => {
   outboxPages = pages;
   try {
     // 与 persistPages 同一套分片规则：全量补发同样不能塞进一条数 MB 的 WS 帧
-    for (const chunk of chunkPagesForUpload(pages)) {
+    for (const chunk of chunkPagesForUpload(pages.map(forSyncPage))) {
       await sendWS({ type: 'CLIENT_UPDATE', data: chunk, clientSeq });
     }
   } catch (e) {
@@ -911,7 +1083,7 @@ export const pushAll = async (pages: Page[]) => {
     // WS 已断开且无正在进行的连接 → 退化为 REST 全量保存（尽力而为）
     try {
       for (const p of pages) {
-        await apiRequest(`/pages/${p.id}`, { method: 'PUT', body: JSON.stringify(p) });
+        await apiRequest(`/pages/${p.id}`, { method: 'PUT', body: JSON.stringify(forSyncPage(p)) });
       }
     } catch (_) { /* 静默：LocalFirst 不阻塞编辑 */ }
   }
@@ -936,7 +1108,7 @@ const commitReplaceAll = async (pages: Page[]): Promise<void> => {
 export const createRemotePage = async (page: Page) => {
   if (!SYNC_SERVER && !backendReachable) return null;   // 纯本地：无后端可推，跳过避免 404
   try {
-    const r = await apiRequest('/pages', { method: 'POST', body: JSON.stringify(page) });
+    const r = await apiRequest('/pages', { method: 'POST', body: JSON.stringify(forSyncPage(page)) });
     return r?.success ? r.data : null;
   } catch (e) { return null; }
 };
@@ -948,7 +1120,7 @@ export const deleteRemotePage = async (id: string) => {
 
 export const updateRemotePage = async (page: Page) => {
   if (!SYNC_SERVER && !backendReachable) return;        // 纯本地：无后端可推，跳过避免 404
-  try { await apiRequest(`/pages/${page.id}`, { method: 'PUT', body: JSON.stringify(page) }); } catch (e) { /* ignore */ }
+  try { await apiRequest(`/pages/${page.id}`, { method: 'PUT', body: JSON.stringify(forSyncPage(page)) }); } catch (e) { /* ignore */ }
 };
 
 // === WebSocket ===
@@ -1014,12 +1186,25 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
       outboxPages = null;
       void pushAll(pending);
     }
+    // 离线期间用户切过文档：建连后补一次会话上报（时间戳仍是操作时刻，
+    // 服务端 LWW 会自动丢弃「比另一台设备更晚的操作」之前的迟到状态）。
+    if (sessionReportPending) void sendSessionReport();
   };
 
   mySocket.onmessage = (event) => {
     if (socket !== mySocket) return;  // 过期连接，忽略
     try {
       const msg = JSON.parse(event.data);
+
+      // 会话接力：只更新状态，切不切页由上层按「冷启动 / 用户是否已选页」决定。
+      if (msg.type === 'SESSION_STATE') { acceptSessionState(msg.data); return; }
+
+      // P2：资产就绪广播。用动态 import 保持资产层懒加载，不与同步主模块硬耦合。
+      if (msg.type === 'ASSET_READY') {
+        const id = typeof msg.assetId === 'string' ? msg.assetId : '';
+        if (id) void import('./assets').then((m) => m.onAssetReady(id));
+        return;
+      }
 
       // 阶段二 2.1：服务端对 CLIENT_UPDATE 的确认回执。
       // cursor = 服务端水位；clientSeq = 原样回显，用于对齐哪一批 outbox 被确认。
@@ -1219,6 +1404,7 @@ export const retrySync = async () => {
 export const closeSync = () => {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   if (reconTimer) { clearInterval(reconTimer); reconTimer = null; }
+  if (sessionReportTimer) { clearTimeout(sessionReportTimer); sessionReportTimer = null; }
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   if (stopWatch) { stopWatch(); stopWatch = null; }
   // 同步状态域整体复位：HMR / 重复挂载时不能把上一次会话的「待补提交」和
@@ -1229,6 +1415,8 @@ export const closeSync = () => {
   dirtyPageIds.clear();
   structureDirty = false;
   pageStampCache.clear();
+  syncStampCache.clear();
+  pageScalarCache.clear();
   blockStampCache.clear();
   syncStatus.value = 'offline';
   currentPagesRef = null;
@@ -1589,6 +1777,9 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   const seedOnly = isSeedOnlySnapshot(local);
   if (seedOnly) console.warn('[NEXUS SYNC] 检测到本地仅剩默认种子页，强制全量重拉以恢复文档');
   const remote = await fetchRemotePages(seedOnly ? 0 : lastSyncCursor.value);
+  // 会话接力与 pages 握手并行：只拉一份轻量 UI 状态，不阻塞首屏。
+  // 拿不到（旧后端 / 离线）就完全退回本机 hash + 本地最近访问。
+  void fetchRemoteSession();
 
   // 原生壳内只要配了后端地址就直接尝试 WS，不再等 REST 探针置位 backendReachable：
   // WebView 的 REST 请求可能被 CORS 拦（探针失败），但 WebSocket 不受 CORS 约束，

@@ -492,9 +492,23 @@
             <div v-if="task.type === 'quote'" class="absolute -left-4 top-2 bottom-2 w-0.5 bg-warn rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
 
             <template v-if="EDITABLE_TYPES.includes(task.type)">
-              <!-- ContentEditable 富文本 -->
               <div class="flex-1 relative">
-                <div :ref="(el) => setInputRef(el, task)" 
+                <!-- P2 Phase B 切流：块正文 = CRDT，绑定到本块专属 Y.XmlFragment；
+                     关闭开关或通道就绪前，仍是下方裸 contenteditable，零影响。 -->
+                <YjsBlockContent
+                  v-if="yjsCutoverOn && cutoverReady"
+                  :ref="(c) => setBlockEditor(task.id, c)"
+                  :handle="(yjsCutoverOn && cutoverReady ? getCutoverHandle() : null) as any"
+                  :block-id="task.id"
+                  :initial-html="task.content"
+                  :placeholder="getPlaceholder(task.type)"
+                  class="ce-block w-full leading-[1.5] py-0.5 font-sans min-h-[24px] cursor-text"
+                  :class="getTextClass(task)"
+                  @update="(html) => updateTask(task.id, { content: html })"
+                  @navigate="(id) => selectPage(id)" />
+                <!-- 默认路径：裸 ContentEditable 富文本 -->
+                <div v-else
+                     :ref="(el) => setInputRef(el, task)"
                      contenteditable="true" 
                      @input="(e) => handleInput(e, task)"
                      @keydown="(e) => handleKeyDown(e, task, index)"
@@ -1159,7 +1173,15 @@ import {
   retrySync, setStorageWarning, initSync, flushPendingSave, setReconcilePage,
   closeSync, writePrevIds, writePagePrevIds, previewNotionZip, commitImportPages,
   type PageVersion, getPageHistory, deletePageVersion, clearPageHistory,
+  sessionState, reportSession, type SessionState,
 } from '../composables/useSync';
+import {
+  attachYjsDualWrite, detachYjsDualWrite, dualWriteBlock,
+} from '../composables/yjsDualWrite';
+import {
+  isYjsCutoverEnabled, cutoverReady, attachYjsCutover, detachYjsCutover, getCutoverHandle,
+} from '../composables/yjsCutover';
+import YjsBlockContent from '../components/YjsBlockContent.vue';
 import {installNativeBridge, setNativeListAtTop, setNativePullRefresh} from '../composables/nativeBridge';
 import {App} from '@capacitor/app';
 import {useMobileInput} from '../composables/useMobileInput';
@@ -1186,7 +1208,7 @@ interface Task {
   deletedAt?: number;   // 块级墓碑时间戳（ms）。整页替换/去重时被换掉的旧块打此戳随同步上推
   updatedAt?: number;   // 客户端生成的时间戳（ms），供块级 LWW 合并
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; updatedAt?: number; icon?: string; cover?: string; coverPos?: number; coverMeta?: CoverMeta; deletedAt?: number; isTemplate?: boolean; prevId?: string | null; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; updatedAt?: number; icon?: string; cover?: string; coverPos?: number; coverMeta?: CoverMeta; deletedAt?: number; isTemplate?: boolean; prevId?: string | null; fieldTs?: Record<string, number>; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -1259,10 +1281,20 @@ const goToList = () => {
   mobileView.value = 'list';
 };
 
+// 会话接力：只有「冷启动且 URL 无 hash」时才允许远端状态恢复当前文档。
+// 用户一旦自己选过页，或显式带 hash 打开，就永久放弃这次接力——避免另一台设备
+// 的会话把本机正在看的屏幕抢走（接力 ≠ 实时强推）。
+let sessionRestorePending = !window.location.hash.slice(1);
+// 冷启动的「hash / 首篇兜底选页」完成前，接力状态先排队，否则会被兜底覆盖。
+let sessionReady = false;
+let pendingSession: SessionState | null = null;
+
 // 切页统一出口：桌面端无副作用；移动端切到内容页（分离视图）。
 const selectPage = (id: string) => {
+  sessionRestorePending = false;
   activePageId.value = id;
   rememberRecentPage(id);   // 记录最近访问（Notion 的 Recent）
+  reportSession({ activePageId: id });
   enterContent();
 };
 
@@ -1735,8 +1767,11 @@ const startMeasurePass = () => {
 
 // 窗口尺寸变化 → 文字重排、块高全变，之前量好的高度模型失效：解冻并重跑一遍量高。
 // 防抖 200ms，避免拖拽窗口时反复触发。
+// 响应式视口高度：封面按 30vh 对齐 Notion，窗口缩放 / 横竖屏切换要即时跟随
+const viewportH = ref(typeof window !== 'undefined' ? window.innerHeight : 900);
 let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 const onWindowResize = () => {
+  viewportH.value = window.innerHeight;
   if (resizeTimer) clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     measuredPageIds.clear(); // 宽度变了 → 文字重排，所有页的高度都要重量
@@ -1992,11 +2027,20 @@ const insertPageLink = (taskId: string, pageId: string | null) => {
     targetId = newPage.id;
   }
   const target = pages.value.find(p => p.id === targetId);
+  const title = target?.title || '无标题';
   const task = activePage.value.tasks.find((t: Task) => t.id === taskId);
   if (!task) { closeMention(); return; }
+  // 切流模式：直接把页面链接节点插进块内 ProseMirror 编辑器（删掉光标前的 [[ 前缀）。
+  if (yjsCutoverOn.value && cutoverReady.value && blockEditors.value[taskId]) {
+    blockEditors.value[taskId].insertPageLink(targetId, title);
+    closeMention();
+    setFocusConfig(taskId, 'end');
+    return;
+  }
+  // 默认路径：把页面链接作为 HTML 拼回 task.content。
   // 去掉行内尚未闭合的 [[ 前缀
   const cleaned = task.content.replace(/\[\[([^\[\]]*)?$/, '');
-  const linkHtml = `<a data-page-id="${targetId}" href="#${targetId}">${target?.title || '无标题'}</a>`;
+  const linkHtml = `<a data-page-id="${targetId}" href="#${targetId}">${title}</a>`;
   updateTask(taskId, { content: cleaned + linkHtml });
   closeMention();
   setFocusConfig(taskId, 'end');
@@ -2387,8 +2431,18 @@ onMounted(async () => {
       }, { flush: 'post' });
     }
   }
+  // P2 Phase A/B：首屏数据就绪后再挂 Yjs 通道（影子 或 切流），保证种子来自完整页面。
+  syncYjsAttach(activePageId.value, activePage.value?.tasks ?? []);
+  // 初始选页已定，放行排队中的跨设备会话接力（晚到的 SESSION_STATE 走 watch 直接进）。
+  sessionReady = true;
+  if (pendingSession) { consumeSession(pendingSession); pendingSession = null; }
+  // 接力只在冷启动的短窗口内有效：设备已开着、只是暂时没选页时，
+  // 不能被另一台设备稍后的一次操作突然抢走屏幕（接力 ≠ 实时强推）。
+  setTimeout(() => { sessionRestorePending = false; }, 30000);
   window.addEventListener('hashchange', () => {
      const newHash = window.location.hash.slice(1);
+     // 显式 hash 导航也是「用户选择」，此后不再接受会话接力的切页
+     if (newHash) sessionRestorePending = false;
      if (newHash && pages.value.find(p => p.id === newHash)) activePageId.value = newHash;
   });
 
@@ -2661,6 +2715,30 @@ onMounted(async () => {
 watch(activePageId, (newId) => { if(window.location.hash.slice(1) !== newId) window.location.hash = newId; });
 // P1：把激活页告知 useSync，供 4s 对账只扫这一页（防漏保存的过渡安全网）
 watch(activePageId, (id) => setReconcilePage(id), { immediate: true });
+// P2 Phase A/B：根据开关在「影子双写」与「切流（块正文=CRDT）」之间二选一挂载，
+// 二者互斥（共用页面级 Y.Doc 房间）。默认都关闭：连 yjs 运行时都不加载。
+const yjsCutoverOn = computed(() => isYjsCutoverEnabled());
+const cutoverHandle = ref<any>(null);
+watch(cutoverReady, (r) => { cutoverHandle.value = r ? getCutoverHandle() : null; });
+const blockEditors = ref<Record<string, any>>({});
+const setBlockEditor = (id: string, c: any) => {
+  if (c) blockEditors.value[id] = c; else delete blockEditors.value[id];
+};
+const syncYjsAttach = (pageId: string, tasks: any[]): void => {
+  if (isYjsCutoverEnabled()) {
+    detachYjsDualWrite();
+    void attachYjsCutover(pageId);
+  } else {
+    detachYjsCutover();
+    void attachYjsDualWrite(pageId, tasks);
+  }
+};
+// P2：切页挂/卸 Yjs 通道（影子 或 切流），默认关闭时是纯 no-op（不加载 yjs 运行时）。
+watch(activePageId, (id) => syncYjsAttach(id, activePage.value?.tasks ?? []));
+// 页面数据可能在挂载之后才到齐（本地存储 / INITIAL_SYNC）：补种子而不重建连接。
+watch(() => activePage.value?.tasks?.length ?? 0, () => {
+  syncYjsAttach(activePageId.value, activePage.value?.tasks ?? []);
+});
 // 兜底：激活页无效时（打开了已删除/不存在的页面锚点，或数据异步加载完成前 hash 指向失效），
 // 回退到第一个可用页，避免主编辑区空白（移动端侧边栏是默认隐藏的抽屉，空白会更明显）。
 // 兜底：激活页无效时（打开了已删除/不存在的页面锚点，或数据异步加载完成前 hash 指向失效），
@@ -2679,6 +2757,8 @@ watch(activePage, (ap) => {
 
 onUnmounted(() => {
   closeSync();
+  detachYjsDualWrite();   // P2 Phase A：开关关闭时是 no-op
+  detachYjsCutover();     // P2 Phase B：开关关闭时是 no-op
   window.removeEventListener('resize', updateIsMobile);
   document.removeEventListener('touchstart', onSwipeBackStart, {capture: true} as EventListenerOptions);
   document.removeEventListener('touchend', onSwipeBackEnd, {capture: true} as EventListenerOptions);
@@ -2688,7 +2768,8 @@ onUnmounted(() => {
 // === Sidebar 树状逻辑 ===
 // 墓碑页（deletedAt 非空）从侧边栏隐藏：用户删除后在 UI 上立即消失，
 // 但墓碑仍保留在 pages 数组里随同步上推，待其它端消化后再从本地彻底移除。
-// 最近访问（Notion 的 Recent）：本地 localStorage 记录、按访问倒序，不同步
+// 最近访问（Notion 的 Recent）：本机即时落 localStorage（离线可用），
+// 同时通过 Session 通道跨设备接力；不参与文档 LWW，也不会触发整页重推。
 const RECENT_PAGES_KEY = 'nexus_recent_pages';
 const RECENT_PAGES_MAX = 12;
 const recentPageIds = ref<string[]>([]);
@@ -2702,10 +2783,43 @@ const rememberRecentPage = (id: string) => {
   const next = [id, ...recentPageIds.value.filter((x) => x !== id)].slice(0, RECENT_PAGES_MAX);
   recentPageIds.value = next;
   try { localStorage.setItem(RECENT_PAGES_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  reportSession({ recentPageIds: next });
 };
 const recentPages = computed(() =>
   recentPageIds.value.map((id) => pages.value.find((p) => p.id === id && !p.deletedAt)).filter((p): p is Page => !!p)
 );
+
+// === 会话接力应用口 ===
+// 「最近访问」始终随远端刷新（取并集，远端顺序优先）；「当前文档」只在冷启动
+// 且用户尚未显式选页时恢复一次，之后所有 SESSION_STATE 都不再抢本机屏幕。
+const applyRemoteSession = (s: SessionState) => {
+  const remoteRecent = (s.recentPageIds ?? []).filter((id) => typeof id === 'string').slice(0, RECENT_PAGES_MAX);
+  if (remoteRecent.length) {
+    const merged = [...remoteRecent, ...recentPageIds.value.filter((id) => !remoteRecent.includes(id))]
+      .slice(0, RECENT_PAGES_MAX);
+    recentPageIds.value = merged;
+    try { localStorage.setItem(RECENT_PAGES_KEY, JSON.stringify(merged)); } catch { /* ignore */ }
+  }
+  if (!sessionRestorePending) return;
+  sessionRestorePending = false;   // 只消费一次，避免后续广播反复跳页
+  const target = s.activePageId;
+  if (!target) return;
+  const restore = (): boolean => {
+    if (!pages.value.find((p) => p.id === target && !p.deletedAt)) return false;
+    activePageId.value = target;
+    window.history.replaceState(null, '', `#${target}`);
+    return true;
+  };
+  if (restore()) return;
+  // 目标页可能还在 INITIAL_SYNC 路上：等它到达再恢复，最多等 20s。
+  const stop = watch(pages, () => { if (restore()) stop(); }, { flush: 'post' });
+  setTimeout(() => stop(), 20000);
+};
+const consumeSession = (s: SessionState) => {
+  if (!sessionReady) { pendingSession = s; return; }
+  applyRemoteSession(s);
+};
+watch(sessionState, (s) => { if (s) consumeSession(s); }, { immediate: true });
 const favoritePages = computed(() => pages.value.filter(p => p.isFavorite && !p.deletedAt));
 // 回收站：已打墓碑的页面，按删除时间倒序（最新删除在上）
 const trashedPages = computed(() => pages.value.filter(p => p.deletedAt).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0)));
@@ -3627,6 +3741,16 @@ onMounted(() => { nextTick(syncTitleDom); });
 // 图片资产解析：payload.url 可能是 asset:<id>（新数据）或 data:...（旧数据）或外链。
 // 同步命中缓存立即返回；未命中时异步解析并写入缓存，触发模板重渲染。
 const assetUrlCache = reactive<Record<string, string>>({});
+// P2：另一台设备补传图片成功后服务端广播 ASSET_READY，assets.ts 拉回 blob 并派发此事件。
+// 让旧的空 src 与缓存尺寸失效，computed 会重新走 resolveAssetUrl 命中新的 blob URL。
+const onAssetReadyEvent = (e: Event) => {
+  const ref = (e as CustomEvent<{ ref?: string }>).detail?.ref;
+  if (!ref || !isAssetRef(ref)) return;
+  delete assetUrlCache[ref];
+  delete imageDims[ref];
+};
+window.addEventListener('nexus-asset-ready', onAssetReadyEvent);
+onUnmounted(() => window.removeEventListener('nexus-asset-ready', onAssetReadyEvent));
 const resolveAssetUrl = (url: string | undefined): string => {
   if (!url) return '';
   if (!isAssetRef(url)) return url; // 旧 data: 或外链，直接用
@@ -3663,8 +3787,10 @@ const imageStyle = (ref: string | undefined): Record<string, string> => {
 
 // 当前页所有图片引用预热，确保首屏就有 src；同时预读自然尺寸，让虚拟滚动的估算高度接近真实值
 watch(
-  () => activePage.value?.tasks,
-  (tasks) => {
+  // 封面单独变化（tasks 不变）时也要预热，否则新加的封面读不到自然尺寸
+  () => [activePage.value?.tasks, activePage.value?.cover] as const,
+  () => {
+    const tasks = activePage.value?.tasks;
     if (!tasks) return;
     const refs = tasks
       .filter((t: Task) => t.type === 'image' && isAssetRef(t.payload?.url))
@@ -4307,33 +4433,30 @@ const coverStyle = (cover: string) => {
   };
 };
 
-// 封面的自然宽高比。图片是 DataURL/远程 URL，无法从字段直接得知，
-// 故预加载一次读取 naturalWidth/naturalHeight（仅请求一次，浏览器有缓存）。
-const coverNatural = ref<{ w: number; h: number } | null>(null);
-watch(
-  () => activePage.value?.cover,
-  (cover) => {
-    coverNatural.value = null;
-    if (!cover || cover.startsWith('gradient:')) return;
-    const img = new Image();
-    img.onload = () => {
-      if (img.naturalWidth > 0 && img.naturalHeight > 0) coverNatural.value = { w: img.naturalWidth, h: img.naturalHeight };
-    };
-    img.src = cover;
-  },
-  { immediate: true },
-);
+// 封面自然尺寸：图库 / 本地上传的封面是 `asset:<id>` 引用，
+// 上面的资产预热已把真实宽高写进响应式的 imageDims。
+// 旧实现直接 `img.src = 'asset:xxx'` 必然加载失败，尺寸恒为 null、高度一直回落
+// 到固定 240px —— 这正是「比 Notion 矮一截」的根因。
+const coverNatural = computed(() => {
+  const cover = activePage.value?.cover;
+  if (!cover || cover.startsWith('gradient:')) return null;
+  const d = imageDims[cover];
+  return d && d.w > 0 && d.h > 0 ? { w: d.w, h: d.h } : null;
+});
 
-// 封面高度：按图片自然比例推算，clamp 在 200~420px。
-// 渐变无自然比例，用固定 240px。
-// 效果：横幅全景图 → 矮（不浪费纵向空间）；竖构图人像 → 高（能容纳更多身体，而非只露头）。
+// 封面高度对齐 Notion：以视口高度为基准（约 30vh，桌面 900px 高 ≈ 270px，
+// 1080p ≈ 324px），而不是按图片原始比例等比展开全出血横幅。
+// 旧公式 approxW / aspect 对 16:9 图会算出 800px 再被 clamp 到 420px，
+// 配合上面恒为 null 的尺寸，实际观感在 240 与 420 之间跳且多数偏矮。
+// 现在只按「竖构图 / 超宽横幅」做小幅修正，高度稳定、不随图片比例剧烈跳动。
 const coverHeight = computed(() => {
+  const base = Math.round(Math.max(240, Math.min(340, viewportH.value * 0.3)));
   const n = coverNatural.value;
-  if (!n) return 240;
-  // 内容列宽度未知（全出血），用窗口宽度近似；clamp 保证任何视口下都不失控
-  const approxW = Math.min(window.innerWidth, 1600);
-  const h = Math.round(approxW / (n.w / n.h));
-  return Math.max(200, Math.min(420, h));
+  if (!n) return base;                       // 渐变 / 尺寸尚未就绪
+  const aspect = n.w / n.h;
+  // 竖构图多给一点纵向空间（人像不只露头），超宽全景少一点（不浪费首屏）
+  const delta = aspect < 1 ? 36 : aspect < 1.5 ? 16 : aspect > 3 ? -28 : 0;
+  return Math.max(220, Math.min(380, base + delta));
 });
 
 // 拖动重新取景：把垂直拖拽距离映射到 coverPos（0~100）
@@ -4836,6 +4959,9 @@ const updateTask = (id: string, updates: Partial<Task>) => {
   const task = activePage.value.tasks.find((t: Task) => t.id === id);
   if (task) {
     Object.assign(task, updates);
+    // P2 Phase A：默认关闭的 Yjs 影子双写。只在正文真的被改写时写影子，
+    // 且影子层内部吞掉所有异常，绝不影响 legacy pages 的提交链路。
+    if (typeof updates.content === 'string') dualWriteBlock(id, updates.content);
     markDirty(activePage.value.id);   // P1：显式标记本页为脏（替代原先每页 deep watch 的隐式触发）
   }
 };

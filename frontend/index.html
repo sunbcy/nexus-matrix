@@ -14,6 +14,48 @@
     -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>frontend</title>
+    <script>
+      // 白屏兜底：入口 bundle 404 / 脚本异常时把原因显示出来，而不是留一片纯白。
+      // 只在 #app 确实没渲染任何内容时接管；应用随后挂载成功会自动撤掉提示。
+      (function () {
+        var shown = false;
+        function show(msg) {
+          if (shown) return;
+          if (!document.body) { document.addEventListener('DOMContentLoaded', function () { show(msg); }); return; }
+          var app = document.getElementById('app');
+          if (app && app.innerHTML.trim()) return;
+          shown = true;
+          var box = document.createElement('div');
+          box.setAttribute('data-nexus-boot-error', '');
+          box.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:24px;background:#0b0d10;color:#e6edf3;font:13px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;';
+          var card = document.createElement('div');
+          card.style.cssText = 'max-width:720px;width:100%;border:1px solid #30363d;border-radius:8px;padding:20px;word-break:break-word;';
+          card.textContent = 'NEXUS 应用加载失败\n\n' + msg + '\n\n请硬刷新（Cmd/Ctrl + Shift + R）；若仍失败，请把浏览器控制台（Console）里的错误发出来。';
+          box.appendChild(card);
+          document.body.appendChild(box);
+          if (app) {
+            var mo = new MutationObserver(function () {
+              if (app.innerHTML.trim()) { box.remove(); mo.disconnect(); }
+            });
+            mo.observe(app, { childList: true, subtree: true });
+          }
+        }
+        window.addEventListener('error', function (e) {
+          if (e.target && e.target !== window && e.target.tagName) {
+            show('静态资源加载失败：' + (e.target.src || e.target.href || e.target.tagName));
+            return;
+          }
+          show((e.message || '脚本异常') + (e.filename ? ' @ ' + e.filename : ''));
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason;
+          show('未处理的异步异常：' + String((r && r.message) || r || 'unknown'));
+        });
+        window.addEventListener('load', function () {
+          setTimeout(function () { show('入口脚本未执行（资源 404 / 被拦截 / 脚本异常）'); }, 5000);
+        });
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>
