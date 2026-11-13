@@ -396,11 +396,12 @@
                  流内排布下手柄永远在可视区内，代价是块文字比标题右移约 36px
                  （Notion 移动端同样是手柄占行内位置）。
 
-                 槽内只保留悬浮手柄：所有块类型标记（复选框 / 折叠三角 / 圆点 / 序号 /
-                标注图标）均已移入正文流内共用同一列（对齐 Notion：同缩进行内左侧符号
-                一列、文字起点全局一致），故移动端槽位恒为 w-9(36px)；
-                桌面仍由 md:w-[84px] 外槽覆盖。 -->
-            <div class="shrink-0 ml-0 self-stretch flex items-start justify-end pr-1 w-9 md:-ml-[84px] md:w-[84px]">
+                 槽位内除悬浮手柄外还会渲染「块类型标记」（复选框 / 折叠三角 / 圆点 /
+                序号 / 标注图标），它们右对齐贴紧正文左缘（-4px）、共用同一列，
+                故正文文字落在缩进层级左缘、不被标记推挤（避免嵌套块叠加后像「多缩进一级」）。
+                移动端按 hasBlockMarker 分档（无标记 w-9 / 有标记 w-16），桌面由
+                md:w-[84px] 外槽覆盖。 -->
+            <div class="shrink-0 ml-0 self-stretch flex items-start justify-end pr-1 md:-ml-[84px] md:w-[84px]" :class="hasBlockMarker(task) ? 'w-16' : 'w-9'">
               <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-[1.5]" :class="getFontSizeClass(task)">
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
@@ -435,53 +436,40 @@
                   </div>
                 </div>
 
-                <!-- 所有块类型标记均已移入正文流内（见下方 EDITABLE_TYPES 前），槽内只保留手柄 -->
+                <!-- 块类型标记：与手柄同容器、右对齐贴紧正文左缘（-4px），保证各类型符号右缘
+                     严格对齐、共用一列。复选框/折叠三角/圆点/序号/标注图标全部入槽，正文文字落在
+                     缩进层级左缘（不额外缩进，避免嵌套块叠加后像「多缩进一级」）。桌面由
+                     md:-ml-[84px] 把槽拉到正文外，不占流宽、不推挤文字。 -->
+                <div v-if="task.type === 'bullet'" class="w-5 shrink-0 flex items-center justify-center">
+                  <div class="w-1.5 h-1.5 rounded-full bg-accent/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
+                </div>
+                <div v-else-if="task.type === 'numbered'" class="w-5 shrink-0 flex items-center justify-end">
+                  <span class="font-['JetBrains_Mono',monospace] text-[13px] text-accent/80 select-none">{{ getNumberedIndex(task) }}.</span>
+                </div>
+                <div v-else-if="task.type === 'todo'" class="w-5 shrink-0 flex items-center justify-center">
+                  <div class="relative w-[1em] h-[1em] flex items-center justify-center">
+                    <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
+                           class="peer appearance-none w-[1em] h-[1em] border-[1.5px] border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
+                           style="clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px)" />
+                    <svg class="absolute w-[0.7em] h-[0.7em] text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
+                      <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                </div>
+                <button v-else-if="isCollapsible(task)"
+                        @click="toggleCollapse(task)"
+                        class="relative w-5 h-5 shrink-0 flex items-center justify-center text-dim active:text-accent active:bg-panel rounded transition-colors before:absolute before:-inset-2 before:content-['']"
+                        :title="task.payload?.collapsed ? '展开' : '折叠'">
+                  <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+                <div v-else-if="task.type === 'callout'" class="w-5 shrink-0 flex items-start justify-center select-none text-[15px] leading-5">
+                  {{ task.payload?.icon || '💡' }}
+                </div>
               </div>
             </div>
 
             <!-- 引用竖线：装饰元素，贴在文字左侧（quote 的 flex-1 有 pl-4 让出空间） -->
             <div v-if="task.type === 'quote'" class="absolute -left-4 top-2 bottom-2 w-0.5 bg-warn rounded-full shadow-[0_0_8px_rgba(255,176,0,0.4)]"></div>
-
-            <!-- todo 复选框：正文流内、压在正文左缘（对齐 Notion——复选框与其它行文字平齐，
-                 待办文字跟在复选框右侧）。垂直对齐复用手柄槽的同款方案：
-                 mt-[2px] 抵消 ce-block 的 py-0.5，h-[1lh] 锚定首行行高中线。
-                 尺寸对齐 Notion：方框 = 1em（等于正文字号 16px），而非缩到字形可见高度；
-                 Notion 靠「与字号等大的方框 + 垂直居中于行盒 + 1.5px 细边框」达到协调，
-                 对勾约为方框的 70%。-->
-            <div v-if="task.type === 'todo'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-[1.5]" :class="getFontSizeClass(task)">
-              <div class="relative w-[1em] h-[1em] flex items-center justify-center">
-                <input type="checkbox" :checked="task.completed" @change="(e) => updateTask(task.id, { completed: (e.target as HTMLInputElement).checked })"
-                       class="peer appearance-none w-[1em] h-[1em] border-[1.5px] border-line bg-void checked:border-accent checked:bg-accent/20 cursor-pointer transition-all rounded-none outline-none"
-                       style="clip-path: polygon(2px 0, 100% 0, 100% calc(100% - 2px), calc(100% - 2px) 100%, 0 100%, 0 2px)" />
-                <svg class="absolute w-[0.7em] h-[0.7em] text-accent pointer-events-none transition-opacity" :class="task.completed ? 'opacity-100' : 'opacity-0'" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3">
-                  <path stroke-linecap="square" stroke-linejoin="miter" d="M5 13l4 4L19 7" />
-                </svg>
-              </div>
-            </div>
-
-            <!-- 折叠三角：正文流内、与 todo 复选框共用同一列（对齐 Notion——同一缩进行内
-                 左侧符号对齐：三角/复选框都在文字左缘，文字跟在其后）。故不在左侧手柄槽，
-                 且始终可见（Notion 的 toggle 箭头不依赖 hover）。 -->
-            <div v-if="isCollapsible(task)" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center leading-[1.5]" :class="getFontSizeClass(task)">
-              <button @click="toggleCollapse(task)"
-                      class="relative w-[1em] h-[1em] flex items-center justify-center text-dim hover:text-accent rounded transition-colors before:absolute before:-inset-2 before:content-['']"
-                      :title="task.payload?.collapsed ? '展开' : '折叠'">
-                <svg class="w-[0.875em] h-[0.875em] transition-transform duration-150" :class="{ 'rotate-90': !task.payload?.collapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
-              </button>
-            </div>
-
-            <!-- 无序圆点 / 序号 / 标注图标：与复选框、折叠三角共用同一列（正文流内），
-                 文字起点与 todo/toggle 行完全一致。序号右对齐使「.」贴近正文，
-                 多位数（10. 及以上）由 min-w 让列自增、文字随之右移。 -->
-            <div v-if="task.type === 'bullet'" class="shrink-0 w-[1em] mr-1.5 mt-[2px] h-[1lh] flex items-center justify-center leading-[1.5]" :class="getFontSizeClass(task)">
-              <div class="w-1.5 h-1.5 rounded-full bg-accent/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
-            </div>
-            <div v-else-if="task.type === 'numbered'" class="shrink-0 mr-1.5 mt-[2px] h-[1lh] flex items-center justify-end min-w-[1em] leading-[1.5]" :class="getFontSizeClass(task)">
-              <span class="font-['JetBrains_Mono',monospace] text-[13px] text-accent/80 select-none">{{ getNumberedIndex(task) }}.</span>
-            </div>
-            <div v-else-if="task.type === 'callout'" class="shrink-0 w-[1em] mr-1.5 mt-[2px] h-[1lh] flex items-center justify-center select-none leading-[1.5]" :class="getFontSizeClass(task)">
-              <span class="text-[15px] leading-none">{{ task.payload?.icon || '💡' }}</span>
-            </div>
 
             <template v-if="EDITABLE_TYPES.includes(task.type)">
               <!-- ContentEditable 富文本 -->
@@ -1470,8 +1458,13 @@ const handleSearchHotkey = (e: KeyboardEvent) => {
 const HEADING_LEVEL: Record<string, number> = { h1: 1, h2: 2, h3: 3 };
 const isCollapsible = (task: Task) => task.type === 'toggle' || !!HEADING_LEVEL[task.type];
 
-// 所有块类型标记（复选框 / 折叠三角 / 圆点 / 序号 / 标注图标）均已移入正文流内
-// 共用同一列，左槽只保留悬浮手柄，移动端槽位恒为 w-9（手柄 36px）。
+// 左槽内除悬浮手柄外还会渲染「块类型标记」的块。移动端槽位为流内排布，
+// 必须按此分档留足宽度（手柄 36 + gap 4 + 标记 20 + pr-1 4 = 64px），
+// 否则标记会溢出到右侧 flex-1 正文区，表现为蓝点/序号压在文字上。
+// 复选框与折叠三角/圆点/序号/标注图标全部入槽、共用同一列。
+const hasBlockMarker = (task: Task) =>
+  task.type === 'todo' || task.type === 'bullet' || task.type === 'numbered' ||
+  isCollapsible(task) || task.type === 'callout';
 
 // === 折叠引擎 ===
 // toggle：隐藏其后所有层级更深的块，直到遇到同级或更浅的块
