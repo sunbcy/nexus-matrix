@@ -6,6 +6,9 @@ pydantic==2.13.4
 authlib
 # authlib 的 Starlette 集成（服务端 OAuth 中转）依赖 httpx
 httpx
+# 出站 HTTPS（封面图库代理）的 CA bundle。httpx 已间接依赖，显式声明避免
+# 精简安装里缺失导致 urllib 报 CERTIFICATE_VERIFY_FAILED。
+certifi
 PyJWT
 # Starlette 的 SessionMiddleware（OAuth state 校验）依赖，部分精简安装缺失，显式声明
 itsdangerous

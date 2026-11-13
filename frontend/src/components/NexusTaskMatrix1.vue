@@ -224,30 +224,49 @@
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
            高度按图片自然比例自适应（clamp 200~420px），而非固定 240px ——
            固定高度 + 宽横幅会让竖构图人像只剩头部（实测 1000×240 ≈ 4.2:1，宽屏 6~7:1）。
-           桌面端 hover 浮出操作条；触屏无 hover，故点击封面后常驻显示。
-           按住拖动可垂直重新取景（object-position-y），比任何自动裁切都可靠。 -->
-      <div v-if="activePage.cover" class="relative group/cover shrink-0 overflow-hidden select-none"
+           交互：无封面时点「添加封面」直接从图库随机加一张；已有封面时点击图片
+           才浮出组合按键（更改 / 调整位置 / 移除），点「更改」才打开设置面板。 -->
+      <div v-if="activePage.cover" class="page-cover relative shrink-0 overflow-hidden select-none"
            :style="{ height: `${coverHeight}px` }"
-           :class="coverDragging ? 'cursor-grabbing' : 'cursor-grab'"
-           @mousedown="coverTouched = true; startCoverDrag($event)"
-           @touchstart.stop="coverTouched = true; startCoverDrag($event.touches[0] as any)">
+           :class="coverRepositioning ? (coverDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'"
+           @mousedown="onCoverPointerDown($event)"
+           @touchstart.stop="onCoverPointerDown($event)">
         <div class="w-full h-full transition-[background-position] duration-100"
              :style="coverStyle(activePage.cover)"></div>
         <!-- pt-safe：封面全出血延伸到状态栏下时，操作条避开状态栏 -->
-        <div class="absolute top-3 right-4 pt-safe flex items-center gap-1.5 transition-opacity z-10"
-             :class="coverTouched || coverDragging ? 'opacity-100' : 'opacity-0 group-hover/cover:opacity-100'">
-          <button @click.stop="openCoverPicker($event)"
-                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-display active:text-accent active:border-accent rounded-sm transition-colors backdrop-blur-sm">
-            更换封面
-          </button>
-          <button @click.stop="removeCover"
-                  class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-dim active:text-danger active:border-danger rounded-sm transition-colors backdrop-blur-sm">
-            移除
-          </button>
+        <div class="cover-action-bar absolute top-3 right-4 pt-safe flex items-center gap-1.5 transition-opacity z-10"
+             :class="coverActionsVisible || coverRepositioning ? 'opacity-100' : 'opacity-0 pointer-events-none'">
+          <template v-if="coverRepositioning">
+            <span class="px-2 py-1 text-[11px] bg-void/90 border border-line text-display rounded-sm backdrop-blur-sm">
+              上下拖动图片调整位置
+            </span>
+            <button @click.stop="saveCoverPosition"
+                    class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-accent border border-accent text-onaccent rounded-sm transition-colors">
+              完成
+            </button>
+            <button @click.stop="cancelCoverPosition"
+                    class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-dim active:text-danger active:border-danger rounded-sm transition-colors backdrop-blur-sm">
+              取消
+            </button>
+          </template>
+          <template v-else>
+            <button @click.stop="openCoverPicker($event)"
+                    class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-display active:text-accent active:border-accent rounded-sm transition-colors backdrop-blur-sm">
+              更改
+            </button>
+            <button @click.stop="beginCoverReposition"
+                    class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-display active:text-accent active:border-accent rounded-sm transition-colors backdrop-blur-sm">
+              调整位置
+            </button>
+            <button @click.stop="removeCover"
+                    class="px-3 py-2 md:px-2.5 md:py-1 text-xs bg-void/90 border border-line text-dim active:text-danger active:border-danger rounded-sm transition-colors backdrop-blur-sm">
+              移除
+            </button>
+          </template>
         </div>
-        <!-- 拖动取景提示：仅在 hover 时淡入，不干扰日常浏览 -->
-        <div class="absolute bottom-2 left-4 text-[10px] text-display/50 opacity-0 group-hover/cover:opacity-100 transition-opacity pointer-events-none">
-          拖动可重新取景
+        <!-- 仅「调整位置」模式下提示可拖动，日常浏览不干扰 -->
+        <div v-if="coverRepositioning" class="absolute bottom-2 left-4 text-[10px] text-display/50 pointer-events-none">
+          拖动图片可重新取景
         </div>
         <!-- 摄影师署名（Unsplash 等图库的硬性合规要求） -->
         <div v-if="coverCredit" class="absolute bottom-2 right-4 text-[10px] text-display/70 backdrop-blur-sm bg-void/60 px-2 py-0.5 rounded-sm">
@@ -282,11 +301,12 @@
              </template>
             </template>
           </div>
-          <button v-if="!activePage.cover" @click="openCoverPicker($event)"
-                  class="shrink-0 flex items-center gap-1.5 px-3 py-2 md:px-2 md:py-1 text-xs text-dim active:text-accent rounded-sm transition-colors"
-                  title="设置页眉封面">
+          <!-- 一键随机：直接从平台图库取一张没用过的封面，不必先打开设置面板 -->
+          <button v-if="!activePage.cover" @click="addRandomCover($event)" :disabled="coverApplying"
+                  class="shrink-0 flex items-center gap-1.5 px-3 py-2 md:px-2 md:py-1 text-xs text-dim active:text-accent rounded-sm transition-colors disabled:opacity-50"
+                  title="随机添加一张封面">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
-            添加封面
+            {{ coverApplying ? '正在添加…' : '添加封面' }}
           </button>
           <!-- 页面级「···」菜单入口（对齐 Notion：页面操作收敛到内容页右上角） -->
           <button class="shrink-0 w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim active:text-accent hover:text-display hover:bg-panel transition-colors"
@@ -1124,6 +1144,7 @@
     <PageCoverPicker v-if="coverAnchorEl"
                      :current="activePage?.cover"
                      :anchor-el="coverAnchorEl"
+                     :used-photo-ids="usedCoverPhotoIds"
                      @select="setCover"
                      @remove="removeCover"
                      @close="closeCoverPicker" />
@@ -1147,6 +1168,8 @@ import {randomEmoji} from '../composables/emoji';
 import {getAsset, isAssetRef, resolveAsset, saveImageAsset, warmAssets} from '../composables/assets';
 import {hasNotionIdSuffix, stripNotionId} from '../composables/zipImport';
 import {blockContentKey, docFingerprint, findLeadingTitleEcho, planDuplicatePages, planWronglyKilledBlocks} from '../composables/importMerge';
+import type {CoverMeta} from '../composables/imageProviders';
+import {fetchRandomCover} from '../composables/providerRegistry';
 import SettingsPanel from './SettingsPanel.vue';
 import PageIconPicker from './PageIconPicker.vue';
 import PageCoverPicker, {COVER_GRADIENTS} from './PageCoverPicker.vue';
@@ -1163,7 +1186,7 @@ interface Task {
   deletedAt?: number;   // 块级墓碑时间戳（ms）。整页替换/去重时被换掉的旧块打此戳随同步上推
   updatedAt?: number;   // 客户端生成的时间戳（ms），供块级 LWW 合并
 }
-interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; updatedAt?: number; icon?: string; cover?: string; coverPos?: number; deletedAt?: number; isTemplate?: boolean; prevId?: string | null; }
+interface Page { id: string; title: string; tasks: Task[]; parentId: string | null; isFavorite: boolean; isExpanded: boolean; updatedAt?: number; icon?: string; cover?: string; coverPos?: number; coverMeta?: CoverMeta; deletedAt?: number; isTemplate?: boolean; prevId?: string | null; }
 
 // 可承载富文本光标的块类型（图片 / 代码块 / 看板 / 分割线不参与纯文本行级光标逻辑）
 const EDITABLE_TYPES = ['text', 'h1', 'h2', 'h3', 'quote', 'todo', 'bullet', 'numbered', 'toggle', 'callout'];
@@ -1222,6 +1245,8 @@ const closeTopmostOverlay = (): boolean => {
   if (actionMenuConfig.value.isOpen) { actionMenuConfig.value.isOpen = false; return true; }
   if (iconPicker.value) { closeIconPicker(); return true; }
   if (coverAnchorEl.value) { closeCoverPicker(); return true; }
+  if (coverRepositioning.value) { cancelCoverPosition(); return true; }
+  if (coverActionsVisible.value) { coverActionsVisible.value = false; return true; }
   if (mentionTaskId.value) { closeMention(); return true; }
   return false;
 };
@@ -2431,6 +2456,10 @@ onMounted(async () => {
     // 图标选择器自身处理外部点击，这里只兜底页面级关闭
     if (!target.closest('.icon-picker-popup')) closeIconPicker();
     if (!target.closest('.cover-picker-popup')) closeCoverPicker();
+    // 点击封面以外的区域收起组合按键；封面自身与操作条不算外部点击
+    if (!target.closest('.cover-action-bar, .page-cover') && !coverRepositioning.value) {
+      coverActionsVisible.value = false;
+    }
   };
   document.addEventListener('mousedown', handleGlobalClick);
 
@@ -4237,7 +4266,27 @@ const closeIconPicker = () => { iconPicker.value = null; };
 // === 页眉封面（Page Cover，对齐 Notion）===
 // cover 存的是图片 URL/DataURL，或 `gradient:<id>` 标记（零存储成本的渐变色）
 const coverAnchorEl = ref<HTMLElement | null>(null);
-const coverTouched = ref(false); // 触屏：点击封面上浮操作条
+// 组合按键只在点击封面后浮出；「调整位置」是独立模式，普通模式下禁止拖动改取景。
+const coverActionsVisible = ref(false);
+const coverRepositioning = ref(false);
+const coverApplying = ref(false);
+let coverPosBefore: number | undefined;
+
+// 切页时清掉上一页遗留的浮层状态，避免新页面一进来就带着操作条
+watch(activePageId, () => {
+  coverActionsVisible.value = false;
+  coverRepositioning.value = false;
+  coverAnchorEl.value = null;
+  coverPosBefore = undefined;
+});
+
+// 本账号所有文档已经用过的图库图片 id：打开选择器时交给图库代理排除，
+// 保证默认推荐的一定是「自己文档中从没出现过」的封面。随页面同步，跨设备一致。
+const usedCoverPhotoIds = computed<string[]>(() =>
+  pages.value
+    .map((p) => p.coverMeta?.photoId)
+    .filter((id): id is string => !!id),
+);
 
 const coverStyle = (cover: string) => {
   if (cover.startsWith('gradient:')) {
@@ -4320,25 +4369,85 @@ const startCoverDrag = (e: { clientY: number }) => {
   document.addEventListener('touchend', onUp);
 };
 
+const onCoverPointerDown = (e: MouseEvent | TouchEvent) => {
+  // 操作条上的按钮不启动拖动，否则点「完成 / 更改」时轻微位移会改掉取景
+  const target = e.target as HTMLElement | null;
+  if (target?.closest?.('.cover-action-bar')) return;
+  coverActionsVisible.value = true;
+  // 只有进入「调整位置」模式才允许拖动，避免点一下封面就误改构图
+  if (!coverRepositioning.value) return;
+  const y = 'touches' in e && e.touches.length > 0 ? e.touches[0].clientY : (e as MouseEvent).clientY;
+  startCoverDrag({ clientY: y });
+};
+
+const beginCoverReposition = () => {
+  coverPosBefore = activePage.value?.coverPos;
+  coverRepositioning.value = true;
+};
+const saveCoverPosition = () => {
+  coverRepositioning.value = false;
+  coverActionsVisible.value = false;
+  coverPosBefore = undefined;
+};
+const cancelCoverPosition = () => {
+  if (activePage.value) activePage.value.coverPos = coverPosBefore;
+  coverRepositioning.value = false;
+  coverActionsVisible.value = false;
+  coverPosBefore = undefined;
+};
+
+/** 无封面时的一键随机：直接从图库源应用，不弹设置面板。 */
+const addRandomCover = async (e: MouseEvent) => {
+  if (coverApplying.value || !activePage.value) return;
+  // currentTarget 只在事件派发期间有效，await 之后再读会是 null，先同步留一份
+  const anchor = (e.currentTarget as HTMLElement) ?? null;
+  coverApplying.value = true;
+  try {
+    const result = await fetchRandomCover(usedCoverPhotoIds.value);
+    if (result) { setCover(result.cover, result.meta); return; }
+    // 平台未配置密钥、用户也没自填 Key、或图库暂时不可用：退回设置面板，
+    // 至少还能选渐变 / 本地上传，不让按钮点了没反应。
+    openCoverPickerAt(anchor);
+  } catch (err) {
+    console.warn('[NEXUS] 随机封面失败，回退到设置面板', err);
+    openCoverPickerAt(anchor);
+  } finally {
+    coverApplying.value = false;
+  }
+};
+
+const openCoverPickerAt = (el: HTMLElement | null) => {
+  coverActionsVisible.value = false;
+  coverAnchorEl.value = el;
+};
+// 只有点组合按键里的「更改」才打开完整设置 UI
 const openCoverPicker = (e: MouseEvent) => {
   e.stopPropagation();
-  coverAnchorEl.value = (e.currentTarget as HTMLElement) ?? null;
+  openCoverPickerAt((e.currentTarget as HTMLElement) ?? null);
 };
 const closeCoverPicker = () => { coverAnchorEl.value = null; };
-const setCover = (cover: string, credit?: { author: string; authorUrl: string; source: string; sourceUrl: string }) => {
+const setCover = (cover: string, meta?: CoverMeta) => {
   if (activePage.value) {
     activePage.value.cover = cover;
     // 换图时重置取景点，避免沿用上一张图的构图偏移
     activePage.value.coverPos = undefined;
+    // 图库选图带来源元数据；渐变 / 上传 / 外链要清掉旧署名与「已用过」记录
+    activePage.value.coverMeta = meta;
   }
-  coverCredit.value = credit ?? null; // 渐变/本地上传无署名
+  coverActionsVisible.value = false;
+  coverRepositioning.value = false;
   closeCoverPicker();
 };
-// 署名信息：图库选图时附带保存（Unsplash 的硬性合规要求）
-const coverCredit = ref<{ author: string; authorUrl: string; source: string; sourceUrl: string } | null>(null);
+// 署名由页面字段派生：刷新、切页、换设备后都不会丢（Unsplash 的硬性合规要求）。
+const coverCredit = computed(() => activePage.value?.coverMeta ?? null);
 const removeCover = () => {
-  if (activePage.value) { activePage.value.cover = undefined; activePage.value.coverPos = undefined; }
-  coverTouched.value = false;
+  if (activePage.value) {
+    activePage.value.cover = undefined;
+    activePage.value.coverPos = undefined;
+    activePage.value.coverMeta = undefined;
+  }
+  coverActionsVisible.value = false;
+  coverRepositioning.value = false;
   closeCoverPicker();
 };
 

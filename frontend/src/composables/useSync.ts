@@ -4,6 +4,7 @@ import {newBlockId, newPageId} from './ids';
 import {getRuntimeConfig, isNativeShell} from '../runtimeConfig';
 import {apiFetch} from './nativeHttp';
 import {collectAssetRefs, mergeImportOverwrite, stripLeadingTitleEcho} from './importMerge';
+import type {CoverMeta} from './imageProviders';
 
 // === 数据结构 ===
 export interface Task {
@@ -32,6 +33,7 @@ export interface Page {
   icon?: string;        // 文档图标（Notion 的 Page Icon），单个 emoji 字符
   cover?: string;       // 页眉封面（Notion 的 Cover）：图片 URL/DataURL，或 `gradient:<id>`
   coverPos?: number;    // 封面垂直取景点，0=顶部 100=底部，默认 35（偏上，利于人像）。用于拖动重新构图
+  coverMeta?: CoverMeta; // 封面来源（图库图片 id + 署名）：随页面同步，用于署名持久化与「没用过的封面」去重
   deletedAt?: number;   // 墓碑时间戳（ms）。非空表示该页已被删除，参与同步合并，避免删除被另一端「复活」
   isTemplate?: boolean; // 模板页：从侧边栏树隐藏，收进「模板」区，可一键套用新建副本
   prevId?: string | null;  // 同一父级下的前一个页面 id（页面顺序链，与块的 prevId 同思路；根页也有链）
@@ -106,7 +108,7 @@ export const orderTasks = (tasks: Task[]): Task[] => {
 // 「页面排序、封面取景、模板标记」即使打上了新时间戳也不会被另一端采纳，
 // 表现为「改了但不同步」。deletedAt 由墓碑分支单独处理，不在此列。
 const PAGE_SCALAR_FIELDS = [
-  'title', 'icon', 'cover', 'coverPos', 'parentId', 'isFavorite', 'isExpanded',
+  'title', 'icon', 'cover', 'coverPos', 'coverMeta', 'parentId', 'isFavorite', 'isExpanded',
   'isTemplate', 'prevId',
 ] as const;
 
@@ -273,7 +275,7 @@ const blockFingerprint = (t: Task): string =>
  */
 const pageFingerprint = (p: Page): string =>
   JSON.stringify([
-    p.title, p.icon, p.cover, p.coverPos, p.parentId, p.isFavorite, p.isExpanded,
+    p.title, p.icon, p.cover, p.coverPos, p.coverMeta ?? null, p.parentId, p.isFavorite, p.isExpanded,
     p.deletedAt ?? 0, p.isTemplate ?? false, p.prevId ?? null,
     p.tasks.map(blockFingerprint),
   ]);
@@ -535,7 +537,7 @@ const watchPages = (pagesRef: Ref<Page[]>): (() => void) => {
   // 不必在每个 mutation 点手写 markDirty（过去漏掉的地方就永远不同步）。
   // 块内容改动仍由编辑器显式 markDirty，避免回到「一次击键 traverse 全库」的老问题。
   const pageSignature = (p: Page) => [
-    p.title, p.icon, p.cover, p.coverPos, p.parentId, p.isFavorite, p.isExpanded,
+    p.title, p.icon, p.cover, p.coverPos, p.coverMeta, p.parentId, p.isFavorite, p.isExpanded,
     p.deletedAt, p.isTemplate, p.prevId, p.tasks,
   ];
 

@@ -5,19 +5,21 @@
 // localStorage 仅约 5MB，且 Base64 会膨胀 33%；封面通常是 1500x500 的大图，
 // 不压缩的话两三张就会撑爆配额（而同一个存储键里还存着图片块的 Base64）。
 // 因此这里限制到 1600x600 以内、JPEG q0.82，实测可把体积压到 100KB 量级。
-import {nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
-import {getProvider, PROVIDERS} from '../composables/providerRegistry';
+import {computed, nextTick, onMounted, onUnmounted, ref, watch} from 'vue';
+import {getProvider, isPlatformGalleryEnabled, PLATFORM_PROVIDER, PROVIDERS, saveGalleryPhoto} from '../composables/providerRegistry';
 import {saveImageAsset} from '../composables/assets';
 import {getProviderKey, setProviderKey} from '../composables/providerKeys';
-import type {CoverPhoto, ImageProvider} from '../composables/imageProviders';
+import type {CoverMeta, CoverPhoto, ImageProvider} from '../composables/imageProviders';
 
 const props = defineProps<{
   current?: string;
   anchorEl?: HTMLElement | null;
+  /** 本账号所有文档已使用过的图库图片 id，用于「从没用过」的默认推荐 */
+  usedPhotoIds?: string[];
 }>();
 
 const emit = defineEmits<{
-  (e: 'select', cover: string, credit?: { author: string; authorUrl: string; source: string; sourceUrl: string }): void;
+  (e: 'select', cover: string, meta?: CoverMeta): void;
   (e: 'remove'): void;
   (e: 'close'): void;
 }>();
@@ -62,7 +64,9 @@ const submitUrl = () => {
   emit('select', href);
 };
 
-// === 图库（Unsplash / Pexels）===
+// === 图库 ===
+// 平台已配置密钥 → 走后端代理（默认，用户零配置）；否则回退到自填 Key 的直连模式。
+const platformEnabled = ref(false);
 const activeProviderId = ref(PROVIDERS[0]?.id ?? 'unsplash');
 const activeProvider = ref<ImageProvider | undefined>(PROVIDERS[0]);
 const apiKey = ref('');
@@ -73,25 +77,41 @@ const galleryLoading = ref(false);
 const galleryError = ref('');
 const galleryDone = ref(false); // 是否已翻到底（避免无谓请求）
 
-const loadGallery = async (reset = false) => {
+// 打开面板自动加载到的第一张「本账号从没用过」的封面，做成一键推荐。
+const featuredPhoto = computed<CoverPhoto | null>(() => galleryPhotos.value[0] ?? null);
+// 推荐图已单独展示，网格里不再重复它
+const morePhotos = computed<CoverPhoto[]>(() =>
+  platformEnabled.value ? galleryPhotos.value.slice(1) : galleryPhotos.value,
+);
+
+const loadGallery = async (reset = false, shuffle = false) => {
   if (!activeProvider.value) return;
   if (reset) { galleryPage.value = 1; galleryDone.value = false; galleryPhotos.value = []; }
   if (galleryDone.value || galleryLoading.value) return;
 
   const key = apiKey.value.trim();
-  if (!key) {
+  if (!platformEnabled.value && !key) {
     galleryError.value = `需要 ${activeProvider.value.name} API Key`;
     return;
   }
   galleryLoading.value = true;
   galleryError.value = '';
   try {
-    const photos = await activeProvider.value.search(galleryQuery.value, galleryPage.value, key);
-    if (photos.length === 0) {
+    const photos = await activeProvider.value.search(
+      galleryQuery.value, galleryPage.value, key, props.usedPhotoIds ?? [], shuffle,
+    );
+    // 双保险：即便 Provider 漏过滤，也不把已用过的封面摆到用户面前
+    const used = new Set(props.usedPhotoIds ?? []);
+    const fresh = photos.filter((p) => !used.has(p.id));
+    if (fresh.length === 0) {
       galleryDone.value = true;
-      if (galleryPage.value === 1) galleryError.value = '未找到相关图片';
+      if (galleryPage.value === 1) {
+        galleryError.value = platformEnabled.value
+          ? '暂时没有更多未使用过的封面，点「换一批」试试'
+          : '未找到相关图片';
+      }
     } else {
-      galleryPhotos.value = reset ? photos : [...galleryPhotos.value, ...photos];
+      galleryPhotos.value = reset ? fresh : [...galleryPhotos.value, ...fresh];
       galleryPage.value += 1;
     }
   } catch (e: any) {
@@ -99,6 +119,7 @@ const loadGallery = async (reset = false) => {
     galleryDone.value = true;
   } finally {
     galleryLoading.value = false;
+    void nextTick(updatePos);
   }
 };
 
@@ -118,18 +139,16 @@ const pickFromGallery = async (photo: CoverPhoto) => {
   galleryLoading.value = true;
   galleryError.value = '';
   try {
-    const res = await fetch(photo.fullUrl);
-    if (!res.ok) throw new Error(`下载失败：HTTP ${res.status}`);
-    const blob = await res.blob();
-    // 封面存为独立资产，页面 JSON 里只留 asset: 引用（理由同图片块）
-    const ref = await saveImageAsset(new File([blob], 'cover.jpg', { type: blob.type || 'image/jpeg' }));
-    const dataUrl = ref;
-    // 合规要求：选用时通知图库（Unsplash 的 download 计数端点）
+    // 与「一键随机封面」共用下载 / 落盘逻辑
+    const coverRef = await saveGalleryPhoto(photo);
+    // 合规要求：选用时通知图库（平台模式由后端代发 download 计数）
     activeProvider.value?.onSelected?.(photo, apiKey.value.trim());
-    emit('select', dataUrl, {
+    emit('select', coverRef, {
+      photoId: photo.id,
       author: photo.author,
       authorUrl: photo.authorUrl,
-      source: activeProvider.value?.name ?? '',
+      // 平台代理的 Provider 名是「精选图库」，署名必须写真实图库名才合规
+      source: platformEnabled.value ? 'Unsplash' : (activeProvider.value?.name ?? ''),
       sourceUrl: photo.sourceUrl,
     });
   } catch (e: any) {
@@ -145,15 +164,25 @@ const galleryScroll = (e: Event) => {
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) void loadGallery();
 };
 
-// 弹窗定位：贴在锚点下方，不超出视口
+// 弹窗定位：贴在锚点下方，不超出视口。
+// 推荐卡片是异步加载出来的，弹窗高度会变化，因此按实际高度重算而不是写死 300。
+const popupRef = ref<HTMLElement | null>(null);
 const pos = ref({ top: 0, left: 0 });
 const updatePos = () => {
   const el = props.anchorEl;
-  if (!el) return;
-  const r = el.getBoundingClientRect();
   const W = 300;
+  const H = popupRef.value?.offsetHeight || 340;
+  // 锚点已被卸载（例如一键添加失败后异步回退打开）时居中显示，避免弹窗停在左上角
+  if (!el || !el.isConnected) {
+    pos.value = {
+      top: Math.max(8, Math.round((window.innerHeight - H) / 2)),
+      left: Math.max(8, Math.round((window.innerWidth - W) / 2)),
+    };
+    return;
+  }
+  const r = el.getBoundingClientRect();
   pos.value = {
-    top: Math.min(r.bottom + 6, window.innerHeight - 300),
+    top: Math.max(8, Math.min(r.bottom + 6, window.innerHeight - H - 8)),
     left: Math.max(8, Math.min(r.left - 60, window.innerWidth - W - 8)),
   };
 };
@@ -172,11 +201,19 @@ onMounted(() => {
   setTimeout(() => document.addEventListener('click', onDocClick), 0);
   window.addEventListener('resize', onScrollOrResize);
   window.addEventListener('scroll', onScrollOrResize, true);
-  // 预填已保存的 Key 并加载首批图库
-  void getProviderKey(activeProviderId.value).then((k) => {
-    apiKey.value = k;
-    void loadGallery(true);
-  });
+  // 打开即就绪：平台配好密钥时自动拉一批「没用过」的封面，用户只需点一下推荐图；
+  // 平台未配置时才回退到自填 Key 的旧流程。
+  void (async () => {
+    platformEnabled.value = await isPlatformGalleryEnabled();
+    if (platformEnabled.value) {
+      activeProvider.value = PLATFORM_PROVIDER;
+      activeProviderId.value = PLATFORM_PROVIDER.id;
+      await loadGallery(true);
+    } else {
+      apiKey.value = await getProviderKey(activeProviderId.value);
+      if (apiKey.value) await loadGallery(true);
+    }
+  })();
 });
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick);
@@ -186,7 +223,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="cover-picker-popup fixed z-[70] w-[300px] bg-void border border-line shadow-2xl rounded-md overflow-hidden flex flex-col"
+  <div ref="popupRef" class="cover-picker-popup fixed z-[70] w-[300px] max-h-[70vh] bg-void border border-line shadow-2xl rounded-md overflow-hidden flex flex-col"
        :style="{ top: `${pos.top}px`, left: `${pos.left}px` }">
     <div class="px-3 py-2 border-b border-line/60 text-xs font-bold text-display tracking-wide shrink-0">设置页眉封面</div>
 
@@ -194,9 +231,17 @@ onUnmounted(() => {
       <!-- 图库（Unsplash） -->
       <div v-if="activeProvider">
         <div class="flex items-center justify-between mb-1.5">
-          <div class="text-[10px] text-dim uppercase tracking-wider">图库</div>
-          <!-- 多图库时显示切换按钮；目前仅 Unsplash，故隐藏 -->
-          <template v-if="PROVIDERS.length > 1">
+          <div class="text-[10px] text-dim uppercase tracking-wider">{{ platformEnabled ? '为你推荐' : '图库' }}</div>
+          <button v-if="platformEnabled" @click="loadGallery(true, true)" :disabled="galleryLoading"
+                  class="text-[10px] text-dim hover:text-accent transition-colors disabled:opacity-50">
+            换一批
+          </button>
+          <a v-else :href="activeProvider.keyHelpUrl" target="_blank" rel="noopener"
+             class="text-[10px] text-dim hover:text-accent transition-colors">
+            申请 Key ↗
+          </a>
+          <!-- 多图库时显示切换按钮（仅自填 Key 模式，目前只有 Unsplash 故隐藏） -->
+          <template v-if="!platformEnabled && PROVIDERS.length > 1">
             <button v-for="p in PROVIDERS" :key="p.id"
                     @click="activeProviderId = p.id; onProviderChange()"
                     class="px-1.5 py-0.5 text-[10px] rounded-sm transition-colors"
@@ -204,25 +249,39 @@ onUnmounted(() => {
               {{ p.name }}
             </button>
           </template>
-          <a :href="activeProvider.keyHelpUrl" target="_blank" rel="noopener"
-             class="text-[10px] text-dim hover:text-accent transition-colors">
-            申请 Key ↗
-          </a>
         </div>
 
-        <!-- API Key 输入：用户自填，存 localStorage 独立键（不参与页面同步） -->
-        <div class="flex gap-1.5 mb-2">
-          <input v-model="apiKey" type="password" :placeholder="`${activeProvider.name} API Key`"
-                 @keydown.enter.prevent="saveKey"
-                 @blur="saveKey"
-                 class="flex-1 bg-surface border border-line focus:border-accent outline-none px-2 py-1.5 text-xs text-display rounded-sm transition-colors" />
-          <button @click="saveKey" class="px-2.5 py-1.5 text-xs font-bold text-onaccent bg-accent hover:bg-accent2 rounded-sm transition-colors">保存</button>
+        <!-- 仅平台未配置密钥时，才回退到用户自填 Key -->
+        <template v-if="!platformEnabled">
+          <div class="mb-2 text-[10px] text-dim leading-relaxed">
+            平台运营可在后台 .env 配置 <span class="text-accent">UNSPLASH_ACCESS_KEY</span>，配置后所有用户免填 Key、打开即用。
+          </div>
+          <div class="flex gap-1.5 mb-2">
+            <input v-model="apiKey" type="password" :placeholder="`${activeProvider.name} API Key`"
+                   @keydown.enter.prevent="saveKey"
+                   @blur="saveKey"
+                   class="flex-1 bg-surface border border-line focus:border-accent outline-none px-2 py-1.5 text-xs text-display rounded-sm transition-colors" />
+            <button @click="saveKey" class="px-2.5 py-1.5 text-xs font-bold text-onaccent bg-accent hover:bg-accent2 rounded-sm transition-colors">保存</button>
+          </div>
+          <a :href="activeProvider.keyHelpUrl" target="_blank" rel="noopener"
+             class="block text-[10px] text-dim hover:text-accent transition-colors mb-2">
+            没有 Key？去 {{ activeProvider.name }} 申请 ↗
+          </a>
+        </template>
+
+        <!-- 默认推荐：打开面板就已加载好的第一张「本账号从没用过」的封面，一键即用 -->
+        <div v-else-if="featuredPhoto" class="mb-2 rounded-sm border border-line overflow-hidden">
+          <div class="h-[86px] bg-surface bg-cover bg-center"
+               :style="{ backgroundImage: `url('${featuredPhoto.thumbUrl}')` }"></div>
+          <button @click="pickFromGallery(featuredPhoto)" :disabled="galleryLoading"
+                  class="w-full flex items-center justify-between gap-2 px-2.5 py-2 text-[11px] hover:bg-panel transition-colors disabled:opacity-50">
+            <span class="text-dim truncate">你的文档还没用过这张</span>
+            <span class="shrink-0 font-bold text-accent">使用这张 →</span>
+          </button>
         </div>
-        <!-- 申请入口：Unsplash 需注册开发者应用获取 Access Key -->
-        <a :href="activeProvider.keyHelpUrl" target="_blank" rel="noopener"
-           class="block text-[10px] text-dim hover:text-accent transition-colors mb-2">
-          没有 Key？去 {{ activeProvider.name }} 申请 ↗
-        </a>
+        <div v-else-if="galleryLoading" class="mb-2 rounded-sm border border-line px-2.5 py-4 text-center text-[11px] text-dim">
+          正在为你挑一张没用过的封面…
+        </div>
 
         <!-- 搜索框 -->
         <div class="flex gap-1.5 mb-2">
@@ -242,8 +301,8 @@ onUnmounted(() => {
         </div>
 
         <!-- 图片网格：3 列，滚动到底自动加载下一页 -->
-        <div v-if="galleryPhotos.length > 0" class="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto custom-scrollbar" @scroll="galleryScroll">
-          <button v-for="p in galleryPhotos" :key="p.id"
+        <div v-if="morePhotos.length > 0" class="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto custom-scrollbar" @scroll="galleryScroll">
+          <button v-for="p in morePhotos" :key="p.id"
                   @click="pickFromGallery(p)"
                   :disabled="galleryLoading"
                   class="relative h-[52px] rounded-sm border border-line hover:border-accent transition-colors overflow-hidden disabled:opacity-50"
@@ -254,7 +313,9 @@ onUnmounted(() => {
 
         <!-- 加载中 / 已到底 -->
         <div v-if="galleryLoading" class="text-[11px] text-dim text-center py-2">加载中…</div>
-        <div v-else-if="galleryDone && galleryPhotos.length > 0" class="text-[11px] text-dim text-center py-1.5">— 已到底部 —</div>
+        <div v-else-if="galleryDone && galleryPhotos.length > 0" class="text-[11px] text-dim text-center py-1.5">
+          {{ platformEnabled ? '· 点「换一批」看更多 ·' : '— 已到底部 —' }}
+        </div>
 
         <!-- 署名要求提示（Unsplash 的硬性合规要求） -->
         <div v-if="galleryPhotos.length > 0" class="text-[10px] text-dim/70 leading-relaxed pt-1">

@@ -192,10 +192,19 @@ BACKEND_PORT=${BACKEND_PORT}
 DATABASE_URL=${DATABASE_URL}
 STATIC_DIR=${DEPLOY_DIR}/frontend/dist
 RELOAD=0
+# 平台级封面图库：填入 Unsplash Access Key 后，所有用户打开封面选择器即可直接用，
+# 无需各自申请/填写 Key。密钥只在服务端使用，不会下发浏览器。留空则回退到自填模式。
+UNSPLASH_ACCESS_KEY=${UNSPLASH_ACCESS_KEY:-}
+# 出站 HTTPS 证书：后端日志若报 CERTIFICATE_VERIFY_FAILED，指定 CA 文件即可
+# （macOS: /private/etc/ssl/cert.pem；Linux: /etc/ssl/certs/ca-certificates.crt）。
+# 受控内网可临时设 UNSPLASH_INSECURE=1 跳过校验（有中间人风险，勿在公网使用）。
+UNSPLASH_CA_BUNDLE=${UNSPLASH_CA_BUNDLE:-}
+UNSPLASH_INSECURE=${UNSPLASH_INSECURE:-0}
 EOF
   chown nexus:nexus "${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
   log "已写入 ${ENV_FILE}"
+  log "如需启用平台图库：在 ${ENV_FILE} 填入 UNSPLASH_ACCESS_KEY 后重启后端"
 fi
 
 # ---------- 6. 构建前端（可选）----------

@@ -3,8 +3,9 @@
 // 设计目标：让 Unsplash / Pexels 等图库可以互换，PageCoverPicker 只依赖这里的接口。
 // 每个 Provider 负责三件事：搜索、把搜索结果转成缩略图 URL、把选中的图转成可下载 URL。
 //
-// 关于 API Key：由用户在各平台申请后自行填入设置，存 localStorage（独立键，不参与页面同步）。
-// 这样 Key 不会进代码仓库，泄露范围仅限用户自己的浏览器——与 LocalFirst 定位一致。
+// 关于 API Key：平台运营时在 backend/.env 一次性配置 UNSPLASH_ACCESS_KEY，
+// 由后端代理调用图库、密钥永不下发浏览器，用户打开封面选择器即可直接用。
+// 仅当平台未配置时，才回退到「用户自填 Key + localStorage」的旧路径。
 
 export interface CoverPhoto {
   id: string;
@@ -24,19 +25,38 @@ export interface CoverPhoto {
   dimensions?: string;
 }
 
+/** 封面署名（Unsplash 等图库的硬性合规要求） */
+export interface CoverCredit {
+  author: string;
+  authorUrl: string;
+  source: string;
+  sourceUrl: string;
+}
+
+/**
+ * 封面来源元数据：随页面一起同步。
+ * 既让署名在刷新 / 换设备后不丢，也让「本账号从没用过的封面」有可判定的依据。
+ */
+export interface CoverMeta extends CoverCredit {
+  photoId: string;
+}
+
 export interface ImageProvider {
   id: string;
   name: string;
-  /** 是否需要 API Key */
+  /** 是否需要用户自填 API Key（平台代理为 false） */
   needsKey: boolean;
-  /** 申请 Key 的地址，未配置时引导用户去这里 */
+  /** 申请 Key 的地址，仅自填模式用到 */
   keyHelpUrl: string;
   /**
    * 搜索图片。
-   * @param query 关键词（空字符串表示「精选/随机」）
-   * @param page  页码，从 1 开始
+   * @param query   关键词（空字符串表示「精选/随机」）
+   * @param page    页码，从 1 开始
+   * @param key     用户自填 Key；平台代理会忽略
+   * @param exclude 本账号文档中已使用过的图库图片 id，Provider 应过滤掉
+   * @param refresh 是否强制换一批（跳过服务端缓存）
    */
-  search(query: string, page: number, key: string): Promise<CoverPhoto[]>;
+  search(query: string, page: number, key: string, exclude?: string[], refresh?: boolean): Promise<CoverPhoto[]>;
   /** 选用成功后的回调，用于图库要求的下载计数等合规动作 */
   onSelected?(photo: CoverPhoto, key: string): void;
 }

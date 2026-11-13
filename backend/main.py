@@ -4,7 +4,10 @@ import hmac
 import json
 import logging
 import os
+import ssl
 import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -61,6 +64,60 @@ logger = logging.getLogger("NexusSync")
 VERSION = "1.0.0"
 #: 进程启动时间，用于计算 uptime
 START_TIME = time.time()
+
+# ============================================================
+# 平台级封面图库配置
+# ------------------------------------------------------------
+# 作为平台运营时，图库 Access Key 由管理员在 backend/.env（或环境变量）里
+# 一次性配置：UNSPLASH_ACCESS_KEY=xxx。密钥只在服务端使用，永不下发浏览器，
+# 用户打开封面选择器即可直接用，无需各自申请 / 填写 Key。
+# 未配置时 /api/cover/config 返回 enabled=false，前端回退到「自填 Key」旧路径。
+# ============================================================
+UNSPLASH_ACCESS_KEY = (os.getenv("UNSPLASH_ACCESS_KEY") or "").strip()
+UNSPLASH_API = "https://api.unsplash.com"
+
+# 出站 HTTPS 的证书配置。python.org 版 macOS Python / pyenv / 精简容器经常找不到
+# 系统根证书（urllib 直接抛 CERTIFICATE_VERIFY_FAILED），企业代理的自签 CA 同理。
+# 按「管理员指定 → certifi → 系统常见路径 → OpenSSL 默认」依次回退。
+UNSPLASH_CA_BUNDLE = (os.getenv("UNSPLASH_CA_BUNDLE") or os.getenv("SSL_CERT_FILE") or "").strip()
+UNSPLASH_INSECURE = (os.getenv("UNSPLASH_INSECURE") or "").strip().lower() in ("1", "true", "yes")
+
+
+def _cover_ssl_context() -> "ssl.SSLContext":
+    if UNSPLASH_INSECURE:
+        # 仅用于受控内网 / 本地调试：跳过校验会把 Access Key 暴露给中间人，
+        # 必须由管理员显式开启，绝不默认启用。
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    candidates = [UNSPLASH_CA_BUNDLE]
+    try:
+        import certifi
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    candidates += [
+        "/private/etc/ssl/cert.pem",            # macOS 系统根证书
+        "/etc/ssl/certs/ca-certificates.crt",   # Debian / Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",     # RHEL / CentOS
+        "/etc/ssl/cert.pem",
+    ]
+    for path in candidates:
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            ctx = ssl.create_default_context(cafile=path)
+            if ctx.get_ca_certs():              # 确认真的加载到了证书，而不是空文件
+                return ctx
+        except (OSError, ssl.SSLError):
+            continue
+    return ssl.create_default_context()         # 最后交给 OpenSSL 默认路径
+
+COVER_CACHE_TTL = 600          # 随机精选批的缓存时长（秒），避免反复打开选择器耗尽 API 配额
+COVER_FETCH_COUNT = 30         # 一次向图库取多少张，过滤掉已用过的之后仍有余量
+_cover_cache: Dict[str, tuple] = {}   # (room|query) -> (ts, photos)
 
 # ============================================================
 # 多租户鉴权（阶段四：上云 / 公网服务）
@@ -333,7 +390,7 @@ def _heal_chain(live: List[Dict]) -> List[Dict]:
 # 必须与前端 useSync.ts 的 PAGE_SCALAR_FIELDS 完全一致：漏一个字段就有一类
 # 用户操作（页面排序 prevId、封面取景 coverPos、模板标记 isTemplate）永远不同步。
 PAGE_SCALAR_FIELDS = [
-    "title", "icon", "cover", "coverPos", "parentId", "isFavorite", "isExpanded",
+    "title", "icon", "cover", "coverPos", "coverMeta", "parentId", "isFavorite", "isExpanded",
     "isTemplate", "prevId",
 ]
 
@@ -810,6 +867,141 @@ async def me(room: str = Depends(get_room)):
         "device_count": len(manager.rooms.get(room, [])),
         "auth_required": bool(get_allowed_keys()),
     }
+
+
+# ============================================================
+# 封面图库代理：平台 Access Key 只在服务端使用，永不下发浏览器
+# ============================================================
+def _unsplash_get(path: str):
+    """同步调用 Unsplash，放到线程池里跑；client_id 由服务端注入。"""
+    sep = "&" if "?" in path else "?"
+    url = f"{UNSPLASH_API}{path}{sep}client_id={urllib.parse.quote(UNSPLASH_ACCESS_KEY)}"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/json",
+        "User-Agent": "NexusMatrix/1.0",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=12, context=_cover_ssl_context()) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        code = getattr(e, "code", None)
+        if code == 401:
+            raise RuntimeError("平台配置的 Unsplash Key 无效")
+        if code == 403:
+            raise RuntimeError("Unsplash 访问被拒（速率限制或应用被限制）")
+        # URLError 会把 SSLCertVerificationError 包进字符串，两种特征一起识别；
+        # 否则用户只看到一串英文堆栈，不知道该改哪里。
+        if isinstance(e, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(e).upper():
+            raise RuntimeError(
+                "图库 HTTPS 证书校验失败：请在 backend/.env 设置 "
+                "UNSPLASH_CA_BUNDLE=<CA 文件>（macOS: /private/etc/ssl/cert.pem；"
+                "Linux: /etc/ssl/certs/ca-certificates.crt），或安装 certifi 后重启后端；"
+                "受控内网可临时设 UNSPLASH_INSECURE=1（跳过校验，有风险）"
+            )
+        raise RuntimeError(f"Unsplash 请求失败：{code or e}")
+
+
+def _cover_sized(raw: str, w: int, h: int = 0) -> str:
+    """在 urls.raw 上叠加尺寸参数，保留原有 query（尤其合规要求的 ixid）。"""
+    if not raw:
+        return ""
+    u = urllib.parse.urlsplit(raw)
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(u.query, keep_blank_values=True)
+         if k not in ("w", "h", "fit", "q", "crop")]
+    q += [("w", str(w)), ("fit", "crop" if h else "max"), ("q", "80")]
+    if h:
+        q += [("h", str(h)), ("crop", "faces,entropy")]
+    return urllib.parse.urlunsplit((u.scheme, u.netloc, u.path, urllib.parse.urlencode(q), u.fragment))
+
+
+def _cover_map(p: Dict) -> Dict:
+    raw = (p.get("urls") or {}).get("raw") or ""
+    user = p.get("user") or {}
+    width, height = p.get("width") or 0, p.get("height") or 0
+    return {
+        "id": p.get("id") or "",
+        "author": user.get("name") or "Unknown",
+        "authorUrl": (user.get("links") or {}).get("html") or "https://unsplash.com",
+        "thumbUrl": _cover_sized(raw, 400, 150),
+        "fullUrl": _cover_sized(raw, 1600),
+        "aspect": (width / height) if width and height else None,
+        "dimensions": f"{width} × {height}" if width and height else None,
+        "sourceUrl": (p.get("links") or {}).get("html") or "https://unsplash.com",
+    }
+
+
+@app.get("/api/cover/config")
+async def cover_config():
+    """不鉴权：只暴露能力开关，绝不返回密钥本身。纯本地模式也能探测。"""
+    return {
+        "enabled": bool(UNSPLASH_ACCESS_KEY),
+        "provider": "unsplash",
+        "needsKey": False,
+    }
+
+
+@app.get("/api/cover/gallery")
+async def cover_gallery(
+    query: str = "",
+    exclude: str = "",
+    refresh: int = 0,
+    room: str = Depends(get_room),
+):
+    """返回一批「本账号文档里没用过」的封面候选。
+
+    exclude 是前端从全部 pages 的 coverMeta.photoId 收集来的已用图片 id，
+    服务端过滤后再返回，保证每次打开选择器看到的都是新鲜封面。
+    随机精选批按 room 缓存，避免反复打开面板耗尽 Unsplash 的每小时配额。
+    """
+    if not UNSPLASH_ACCESS_KEY:
+        return {"success": False, "error": "平台尚未配置 UNSPLASH_ACCESS_KEY", "data": []}
+
+    q = query.strip()
+    excluded = {x for x in (exclude or "").split(",") if x}
+    cache_key = f"{room}|{q.lower()}"
+
+    def fetch() -> List[Dict]:
+        if q:
+            path = f"/search/photos?query={urllib.parse.quote(q)}&page=1&per_page={COVER_FETCH_COUNT}"
+            raw_list = (_unsplash_get(path) or {}).get("results") or []
+        else:
+            path = f"/photos/random?count={COVER_FETCH_COUNT}"
+            data = _unsplash_get(path)
+            raw_list = data if isinstance(data, list) else ([data] if data else [])
+        return [_cover_map(p) for p in raw_list if isinstance(p, dict) and p.get("id")]
+
+    try:
+        now = time.time()
+        cached = _cover_cache.get(cache_key)
+        use_cache = bool(cached) and not refresh and (now - cached[0]) < COVER_CACHE_TTL
+        photos = cached[1] if use_cache else await asyncio.to_thread(fetch)
+        if not use_cache:
+            _cover_cache[cache_key] = (now, photos)
+
+        items = [p for p in photos if p["id"] not in excluded][:24]
+        if not items and excluded:
+            # 缓存里的图恰好全被用过：强制回源再取一批，不让用户看到空面板
+            photos = await asyncio.to_thread(fetch)
+            _cover_cache[cache_key] = (time.time(), photos)
+            items = [p for p in photos if p["id"] not in excluded][:24]
+        return {"success": True, "data": items, "provider": "unsplash"}
+    except Exception as e:
+        logger.warning(f"封面图库加载失败 room={room[:8]}: {e}")
+        return {"success": False, "error": str(e), "data": []}
+
+
+@app.get("/api/cover/download/{photo_id}")
+async def cover_download(photo_id: str, room: str = Depends(get_room)):
+    """Unsplash 合规要求：每次选用都要触发 download 计数，由服务端代发。"""
+    if not UNSPLASH_ACCESS_KEY:
+        return {"success": False}
+    try:
+        await asyncio.to_thread(
+            _unsplash_get, f"/photos/{urllib.parse.quote(photo_id, safe='')}/download"
+        )
+    except Exception as e:
+        logger.warning(f"封面选用计数失败: {e}")
+    return {"success": True}
 
 
 # REST API: 获取某 room 的所有页面
