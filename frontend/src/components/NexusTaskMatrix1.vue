@@ -386,15 +386,13 @@
             <!-- 缩进引导线已移除：默认态几乎不可见（bg-panel），层级感由 marginLeft 缩进本身承担，
                  留着只会让多层嵌套的页面看起来布满竖线（对齐 Notion：无引导线）。 -->
 
-            <!-- 左槽（统一垂直对齐容器）：把「+号 / 拖拽点 / 块类型标记」收进同一个 flex 容器，
-                 使它们与右侧文字首行的水平中线严格对齐。
+            <!-- 垂直对齐容器：手柄与块类型标记各自套用本容器，使其与右侧文字首行的水平中线严格对齐。
 
-                 为什么不再各自 absolute + 硬编码 top：
-                 文字行高随块类型变化（text 15px→24.4px，h2 20px→32.5px，h1 24px→39px），
-                 任何硬编码 top 都对不上，表现为控件整体偏高（即截图中的问题）。
+                 为什么不用硬编码 top：文字行高随块类型变化（text→24px，h2→32.5px，h1→39px），
+                 任何固定 top 都对不上，表现为控件整体偏高。
 
                  对齐原理（依赖两个值，改动时需同步）：
-                 - self-stretch 让槽位铺满内容区，items-start 让内部内容从顶部开始；
+                 - items-start 让内部内容从顶部开始；
                  - mt-[2px] 抵消 .ce-block 的 py-0.5，使内容盒顶边与文字行盒顶边齐平；
                  - h-[1lh] 把内容盒高度限制为「首行行高」，再 items-center 即精确落在行内中线。
                    lh 单位取元素自身的 line-height，故这里必须复用文字的 leading-[1.5]
@@ -403,26 +401,15 @@
                  鲁棒性：多行文本或图片等超高块同样正确（容器被拉高，但内容仍锚定首行）；
                  旧浏览器不支持 lh 单位时 height 退化为 auto，误差 < 0.5px，可接受。
 
-                 -ml-[84px] w-[84px]：把槽位整体拉到正文左边缘之外，不占流宽，
-                 从而保证各块类型的文字起点与标题左缘严格对齐。 -->
-            <!-- 手柄槽位：
-                 桌面 `-ml-[84px] w-[84px]`：拉到正文左边缘之外，不占流宽，
-                 保证各块类型的文字起点与标题左缘严格对齐。
-
-                 移动端**改为流内排布**（`ml-0`），不再用负 margin 外槽：
-                 负 margin 的槽位宽度必须与内容区左 padding 严格匹配，而 pl 一旦
-                 调整（历史上有过 pl-16→pl-6 的收紧）两者就会脱节——实测 412px 屏上
-                 手柄左边缘被推到 -40px，完全在屏幕外、点不到。
-                 流内排布下手柄永远在可视区内，代价是块文字比标题右移约 36px
-                 （Notion 移动端同样是手柄占行内位置）。
-
-                 槽位内除悬浮手柄外还会渲染「块类型标记」（复选框 / 折叠三角 / 圆点 /
-                序号 / 标注图标），它们右对齐贴紧正文左缘（-4px）、共用同一列，
-                故正文文字落在缩进层级左缘、不被标记推挤（避免嵌套块叠加后像「多缩进一级」）。
-                移动端按 hasBlockMarker 分档（无标记 w-9 / 有标记 w-16），桌面由
-                md:w-[84px] 外槽覆盖。 -->
-            <div class="shrink-0 ml-0 self-stretch flex items-start justify-end pr-1 md:-ml-[84px] md:w-[84px]" :class="hasBlockMarker(task) ? 'w-16' : 'w-9'">
-              <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-[1.5]" :class="getFontSizeClass(task)">
+                 水平布局见下方「手柄槽 + 标记列」两列：手柄桌面走临界外槽（不占流宽），
+                 标记列 in-flow 贴正文左缘、列表文字右缩进一列，与 Notion 一致。 -->
+            <!-- 左区拆成两列，对齐 Notion：
+                 ① 手柄槽（+ / 拖拽点）：桌面绝对定位到正文左侧留白（md:-translate-x-[84px]），
+                    不占流宽，正文左缘因此与标题严格对齐；移动端流内排布（触屏无 hover，需可达）。
+                 ② 标记列（复选框 / 折叠三角 / 圆点 / 序号 / 标注图标）：in-flow，宽一列(24px)，
+                    标记左缘贴合正文左缘（=标题左缘），列表文字随之右缩进一列，与 Notion 一致。 -->
+            <div class="shrink-0 self-stretch flex items-start justify-end pr-1 ml-0 w-9 md:absolute md:left-0 md:top-0 md:-translate-x-[84px] md:w-[84px] md:pointer-events-none">
+              <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-[1.5] md:pointer-events-auto" :class="getFontSizeClass(task)">
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
                 <div class="row-handles flex items-center gap-1 transition-opacity z-30"
@@ -455,11 +442,12 @@
                     </svg>
                   </div>
                 </div>
+              </div>
+            </div>
 
-                <!-- 块类型标记：与手柄同容器、右对齐贴紧正文左缘（-4px），保证各类型符号右缘
-                     严格对齐、共用一列。复选框/折叠三角/圆点/序号/标注图标全部入槽，正文文字落在
-                     缩进层级左缘（不额外缩进，避免嵌套块叠加后像「多缩进一级」）。桌面由
-                     md:-ml-[84px] 把槽拉到正文外，不占流宽、不推挤文字。 -->
+            <!-- 标记列（in-flow）：标记左缘贴合正文左缘（=标题左缘），列表文字随之右缩进一列（w-6=24px），对齐 Notion。 -->
+            <div v-if="hasBlockMarker(task)" class="shrink-0 w-6 flex items-start justify-start">
+              <div class="flex items-center mt-[2px] h-[1lh] leading-[1.5]" :class="getFontSizeClass(task)">
                 <div v-if="task.type === 'bullet'" class="w-5 shrink-0 flex items-center justify-center">
                   <div class="w-1.5 h-1.5 rounded-full bg-accent/80 shadow-[0_0_10px_rgba(0,240,255,0.4)]"></div>
                 </div>
