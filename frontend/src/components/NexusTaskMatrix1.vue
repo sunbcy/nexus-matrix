@@ -1134,7 +1134,7 @@
 <script setup lang="ts">
 import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue';
 import {
-  createRemotePage, dataVersion, markDirty, onlineDevices, syncStatus,
+  dataVersion, markDirty, onlineDevices, syncStatus,
   retrySync, setStorageWarning, initSync, flushPendingSave, setReconcilePage,
   closeSync, writePrevIds, writePagePrevIds, previewNotionZip, commitImportPages,
   type PageVersion, getPageHistory, deletePageVersion, clearPageHistory,
@@ -1963,7 +1963,7 @@ const insertPageLink = (taskId: string, pageId: string | null) => {
     // 无匹配时新建同名页面并链接（对齐 Notion 的 "+ Add new page"）
     const newPage: Page = { id: newPageId(), title: mentionQuery.value.trim() || '无标题', tasks: [], parentId: null, isFavorite: false, isExpanded: true };
     pages.value.push(newPage);
-    createRemotePage(newPage as any);
+    markDirty(newPage.id);   // 统一走本地变更入口，不再 REST / WS 双写
     targetId = newPage.id;
   }
   const target = pages.value.find(p => p.id === targetId);
@@ -2242,11 +2242,14 @@ const deleteSelectedBlocks = () => {
   const list = activePage.value.tasks;
   // 记录第一个被删块的位置，删除后把光标交还给相邻的可编辑块
   // （否则图片/看板这类非文本块删掉后光标悬空，用户无处继续打字）
-  const firstDeletedIdx = list.findIndex((t: Task) => selectedTaskIds.value.has(t.id));
-  const before = firstDeletedIdx > 0 ? list[firstDeletedIdx - 1] : null;
-  const after = firstDeletedIdx >= 0 ? list.slice(firstDeletedIdx + 1).find((t: Task) => !selectedTaskIds.value.has(t.id)) : null;
+  // 只在「活块」里找相邻块：墓碑块仍留在数组中，不能把光标交给它。
+  const live = list.filter((t: Task) => !t.deletedAt);
+  const ids = new Set(selectedTaskIds.value);
+  const firstDeletedIdx = live.findIndex((t: Task) => ids.has(t.id));
+  const before = firstDeletedIdx > 0 ? live[firstDeletedIdx - 1] : null;
+  const after = firstDeletedIdx >= 0 ? live.slice(firstDeletedIdx + 1).find((t: Task) => !ids.has(t.id)) : null;
 
-  list.splice(0, list.length, ...list.filter((t: Task) => !selectedTaskIds.value.has(t.id)));
+  softDeleteTasks(ids);
   clearBlockSelection();
   selectedMediaId.value = null;
 
@@ -2708,9 +2711,10 @@ const createPage = (parentId: string | null = null) => {
   pages.value.splice(0, pages.value.length, ...writePagePrevIds(pages.value));
   if (parentId) { const parent = pages.value.find(p => p.id === parentId); if (parent) parent.isExpanded = true; }
   activePageId.value = newId;
-  // 同步到后端（失败不影响本地编辑）
-  const created = pages.value.find(p => p.id === newId);
-  if (created) createRemotePage(created as any);
+  // 统一走 markDirty → CLIENT_UPDATE。原先同时调 REST POST /pages，
+  // 服务端会先落库一份「尚未打戳、空标题」的快照并覆盖客户端时间戳，
+  // 与紧随其后的 WS 结构推送形成无协调双写，另一端合并时新页被判为旧数据。
+  markDirty(newId);
   // Notion：新建页面后光标自动落在标题，方便直接命名
   focusTitle();
 };
@@ -2803,6 +2807,7 @@ const createFromTemplate = (tplId: string) => {
     coverPos: tpl.coverPos,
     isTemplate: false,
   });
+  markDirty(newId);
   selectPage(newId);
 };
 
@@ -3339,7 +3344,14 @@ const movePageTo = (draggedId: string, targetId: string, pos: 'top' | 'bottom' |
     list.splice(pos === 'top' ? ti : ti + 1, 0, dragged);
   }
   // 顺序已变：重写整条页面 prevId 链，保证跨端合并时顺序可确定性还原（与块级一致）
+  const prevBefore = new Map(list.map((p) => [p.id, p.prevId ?? null]));
   list.splice(0, list.length, ...writePagePrevIds(list));
+  // 只改数组元素、引用与 length 都不变 → 结构 watch 不会触发，排序会永远停在本端。
+  // prevId / parentId 都是同步字段，显式标脏，让统一上推口把顺序带到其它设备。
+  for (const p of list) {
+    if (prevBefore.get(p.id) !== (p.prevId ?? null)) markDirty(p.id);
+  }
+  markDirty(draggedId);
 };
 
 // === 触屏长按拖拽引擎（移动端块排序，对齐 Notion 移动端） ===
@@ -3509,15 +3521,33 @@ const titleInputRef = ref<HTMLInputElement | null>(null);
 // 都可能重写 input.value、打断组词，表现为「在光标处输入的字被追加到最末尾」。
 // 因此：编辑期间 DOM 即真相，绝不反向回写；只在未聚焦且数据确实变化时把值同步进 DOM。
 const titleComposing = ref(false);
+let titleComposingAt = 0;
+// WebView / 系统输入法偶尔不派发 compositionend（切页、输入控件被卸载、IME 被强杀）。
+// 组词标志若永久留在 true，标题回填会被一直挡住，表现为空白「无标题」直到点一下别处。
+const TITLE_COMPOSING_TIMEOUT = 2500;
+const composingActive = (): boolean => {
+  if (!titleComposing.value) return false;
+  if (Date.now() - titleComposingAt > TITLE_COMPOSING_TIMEOUT) {
+    titleComposing.value = false;
+    return false;
+  }
+  return true;
+};
 
 const onTitleInput = (e: Event) => {
   const v = (e.currentTarget as HTMLInputElement).value;
   const p = activePage.value;
   if (!p || p.title === v) return;
+  // 部分 IME 在组词开始时会先派发一个 value='' 的 input：直接写模型会把标题清空，
+  // 还会经 markDirty 把空标题同步到其它设备，变成「标题偶尔自己变空」。
+  if (composingActive() && v === '' && p.title) return;
   p.title = v;
   markDirty(p.id);
 };
-const onTitleCompositionStart = () => { titleComposing.value = true; };
+const onTitleCompositionStart = () => {
+  titleComposing.value = true;
+  titleComposingAt = Date.now();
+};
 const onTitleCompositionEnd = (e: CompositionEvent) => {
   titleComposing.value = false;
   // 部分输入法 compositionend 后不再派发 input，这里补一次，确保模型拿到最终值
@@ -3529,13 +3559,39 @@ const syncTitleDom = () => {
   const el = titleInputRef.value;
   const p = activePage.value;
   if (!el || !p) return;
-  if (document.activeElement === el || titleComposing.value) return;
   const v = p.title ?? '';
-  if (el.value !== v) el.value = v;
+  if (el.value === v) return;
+  // 组词中绝不回写：重写 input.value 会打断 composing span（Android IME）。
+  if (composingActive()) return;
+  const focused = document.activeElement === el;
+  // DOM 被清空但模型仍有值 = 非用户操作（input 重挂载 / 同步整表替换），必须自愈；
+  // 其余聚焦态的普通打字仍不回写，保护光标位置和未提交的输入。
+  if (focused && !(el.value === '' && v !== '')) return;
+  const caret = el.selectionStart ?? v.length;
+  el.value = v;
+  if (focused) {
+    const pos = Math.min(caret, v.length);
+    try { el.setSelectionRange(pos, pos); } catch { /* 不支持选区时忽略 */ }
+  }
 };
 
-// 切页 / 远端合并 / 历史版本恢复等外部改动：未编辑时同步进 DOM。
-watch([() => activePage.value?.title, activePageId], () => nextTick(syncTitleDom), { immediate: true });
+// 触发源必须包含「页面对象引用」和「input DOM 引用」：
+//   - 远端同步每次都会整表替换 pages，activePage 是新对象但 title 字符串相同，
+//     只监听 title 的 watch 不会触发；
+//   - <main :key="activePage.id"> 切页时整个重挂载，新 input 的 value 天然是空。
+// 这两种情况都必须重新回填，否则标题栏就停在 placeholder「无标题」。
+watch(
+  [() => activePage.value, () => activePage.value?.title, activePageId, titleInputRef],
+  (cur, prev) => {
+    // 切页时解除上一页遗留的组词保护（正文块早有同一处理，标题此前漏了）。
+    if (prev && cur[2] !== prev[2]) {
+      titleComposing.value = false;
+      titleComposingAt = 0;
+    }
+    nextTick(syncTitleDom);
+  },
+  { immediate: true },
+);
 // immediate 那次 DOM 尚未挂载，补一次首屏同步
 onMounted(() => { nextTick(syncTitleDom); });
 
@@ -4300,7 +4356,8 @@ const focusTitle = () => {
 const focusFirstEditableBlock = (pos: any = 'start') => {
   if (!activePage.value) return;
   const tasksList = activePage.value.tasks;
-  const idx = tasksList.findIndex((t: Task) => EDITABLE_TYPES.includes(t.type));
+  // 跳过墓碑块：删除改为软删后它们仍留在数组里，焦点不能落到已删除的块上
+  const idx = tasksList.findIndex((t: Task) => !t.deletedAt && EDITABLE_TYPES.includes(t.type));
   if (idx > -1) { setFocusConfig(tasksList[idx].id, pos); return; }
   const newId = newBlockId();
   tasksList.unshift({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0 });
@@ -4495,6 +4552,36 @@ const extendSelectionByKeyboard = (fromId: string, fromPos: number, targetId: st
   applyLogicalSelection(safeAnchor, focus);
 };
 
+// === 块删除统一走墓碑（多端同步正确性的关键） ===
+// 物理 splice 删除在多端下必然「复活」：mergePages / 后端 _tasks_lww 都是「只增不减的并集」，
+// 本地删掉的块只要另一端（或服务端）仍持有，下一次广播就会把它当「另一端新增的块」push 回来，
+// 表现为「边删边冒出来、删不干净、另一设备内容干扰本端删除」。
+// 打 deletedAt 墓碑后，删除意图随上推到达各端，合并逻辑会就地标记，不会复活。
+// 注意：只改块属性不会触发 id 序列 watch，必须显式 markDirty 才会上推。
+const softDeleteTasks = (ids: Set<string>): number => {
+  if (!activePage.value || ids.size === 0) return 0;
+  const now = Date.now();
+  let n = 0;
+  for (const t of activePage.value.tasks) {
+    if (ids.has(t.id) && !t.deletedAt) {
+      t.deletedAt = now;
+      t.updatedAt = now;
+      n++;
+    }
+  }
+  if (n > 0) {
+    // 墓碑不参与 prevId 链：不重写的话，后继块的 prevId 仍指向已删块，
+    // 合并时 orderTasks 会把它当成断链「头节点」，导致整页顺序错乱。
+    // 只就地写回 prevId 值：writePrevIds 返回的是新对象，整表替换会换掉所有块的对象
+    // 引用，可能干扰正在编辑的 DOM 与响应式订阅。
+    const tasks = activePage.value.tasks;
+    const rewritten = writePrevIds(tasks);
+    for (let i = 0; i < tasks.length; i++) tasks[i].prevId = rewritten[i].prevId;
+    markDirty(activePage.value.id);
+  }
+  return n;
+};
+
 // 删除逻辑选区覆盖的内容：中间块整块删除，首尾块保留未选中的部分并合并
 const deleteSelectionContents = (): boolean => {
   const logical = getLogicalSelection();
@@ -4530,7 +4617,8 @@ const deleteSelectionContents = (): boolean => {
     cutBlock(lastEl, 0, hi.offset);                     // 终点块：删到选区末端
     const merged = firstEl.innerHTML + lastEl.innerHTML;
     updateTask(firstTask.id, { content: merged });
-    list.splice(firstIdx + 1, lastIdx - firstIdx);      // 移除中间块与终点块
+    // 中间块与终点块打墓碑（不物理 splice，否则会被另一端广播复活）
+    softDeleteTasks(new Set(list.slice(firstIdx + 1, lastIdx + 1).map((t: Task) => t.id)));
     setFocusConfig(firstTask.id, lo.offset);
   }
   selAnchor.value = null; selFocus.value = null;
@@ -4642,7 +4730,7 @@ const updateTask = (id: string, updates: Partial<Task>) => {
     markDirty(activePage.value.id);   // P1：显式标记本页为脏（替代原先每页 deep watch 的隐式触发）
   }
 };
-const deleteTask = (id: string) => { if (!activePage.value) return; activePage.value.tasks = activePage.value.tasks.filter((t: Task) => t.id !== id); };
+const deleteTask = (id: string) => { softDeleteTasks(new Set([id])); };
 
 // 当前「激活」的多媒体块（图片等）：用于触屏无 hover 时仍能显示操作浮层
 const selectedMediaId = ref<string | null>(null);
@@ -4672,19 +4760,12 @@ const deleteBlockAndFocus = (task: Task) => {
   const idx = list.findIndex((t: Task) => t.id === task.id);
   if (idx === -1) return;
 
-  // 软删：打 deletedAt 墓碑，而不是硬 splice。
-  // 原因：_merge_pages（前端 mergePages / 后端 _tasks_lww）是「块级尽量保留双方」，
-  // 硬删让块从 tasks 消失后上推，合并时发现其他端仍持有该块就会把它恢复，
-  // 表现为「叉掉又复活 / 其他设备删不掉」。墓碑随上推到达各端，合并逻辑会就地
-  // 给对应块打相同墓碑（前端 142 行 / 后端 359 行），删除才能正确传播。
-  // 注意：只改块属性不会触发 pageWatch 的浅订阅，必须显式 markDirty 才会上推。
-  const now = Date.now();
-  task.deletedAt = now;
-  task.updatedAt = now;
-  selectedMediaId.value = null;
-
+  // 统一复用 softDeleteTasks：打墓碑 + 重写 prevId 链 + 标脏上推。
+  // （原因见 softDeleteTasks 注释：物理删除在多端下会被另一端的旧快照复活。）
   // 不再本地删除资产：块墓碑仍引用该 asset，且其他端可能正在显示 / 回源，
   // 删本地 blob 会导致其他端破图。孤儿资产由独立的未使用清理处理。
+  softDeleteTasks(new Set([task.id]));
+  selectedMediaId.value = null;
 
   const mark = () => { if (activePage.value) markDirty(activePage.value.id); };
   // 焦点跳到前一个 / 后一个「活」的可编辑块（跳过已软删的块）
@@ -5472,7 +5553,8 @@ const handleEmptyClick = (e: MouseEvent) => {
   if ((e.target as HTMLElement).closest('.task-item-container') || (e.target as HTMLElement).closest('.fixed')) return;
   // 跨块拖拽选区 / 已有选区时，绝不新建块或抢焦点（click 会冒泡到本容器）
   if (pointerDragged || hasTextSelection()) return;
-  const tasksList = activePage.value.tasks; const lastTask = tasksList[tasksList.length - 1];
+  const tasksList = activePage.value.tasks;
+  const lastTask = [...tasksList].reverse().find((t: Task) => !t.deletedAt);
   if (lastTask && lastTask.content === '' && ['text', 'todo'].includes(lastTask.type)) setFocusConfig(lastTask.id, 'end');
   else { const newId = newBlockId(); tasksList.push({ id: newId, type: 'text', content: '', completed: false, indentLevel: 0 }); setFocusConfig(newId, 'start'); }
 };

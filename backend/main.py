@@ -230,7 +230,9 @@ def _ts_of(page: Dict) -> str:
     deleted = _norm_ts(page.get("deletedAt")) if page.get("deletedAt") else ""
     if deleted:
         return deleted
-    return _norm_ts(page.get("updatedAt"))
+    # 缺时间戳必须返回「零值」：_norm_ts(None) 会返回当前时间，把一条没有戳的
+    # 旧快照抬成最新，ACK 的采纳判定与水位计算都会整体失真。
+    return _norm_ts(page.get("updatedAt")) if page.get("updatedAt") else "0"
 
 
 async def _water_mark(room: str, pages: Optional[List[Dict]] = None) -> int:
@@ -328,7 +330,12 @@ def _heal_chain(live: List[Dict]) -> List[Dict]:
 
 
 # 页面标量字段（对齐前端 useSync.ts 的 PAGE_SCALAR_FIELDS）
-PAGE_SCALAR_FIELDS = ["title", "icon", "cover", "parentId", "isFavorite", "isExpanded"]
+# 必须与前端 useSync.ts 的 PAGE_SCALAR_FIELDS 完全一致：漏一个字段就有一类
+# 用户操作（页面排序 prevId、封面取景 coverPos、模板标记 isTemplate）永远不同步。
+PAGE_SCALAR_FIELDS = [
+    "title", "icon", "cover", "coverPos", "parentId", "isFavorite", "isExpanded",
+    "isTemplate", "prevId",
+]
 
 
 def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]:
@@ -348,12 +355,22 @@ def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]
 
     def _scalar_lww(base: Dict, other: Dict) -> None:
         """把 other 中严格更新的标量字段覆盖进 base（就地）。"""
-        base_upd = _norm_ts(base.get("updatedAt"))
-        other_upd = _norm_ts(other.get("updatedAt"))
+        base_upd = _norm_ts(base["updatedAt"]) if base.get("updatedAt") else "0"
+        other_upd = _norm_ts(other["updatedAt"]) if other.get("updatedAt") else "0"
         if other_upd and base_upd and other_upd > base_upd:
             for f in PAGE_SCALAR_FIELDS:
                 if f in other:
                     base[f] = other[f]
+                elif f in base:
+                    if f == "title":
+                        # 标题缺失只可能是旧数据 / 异常快照，不当成「清空标题」：
+                        # 用户主动清空会写 ""（字段仍存在），无需 pop。否则服务端
+                        # 会丢掉标题，各端同步后标题栏都变成「无标题」。
+                        continue
+                    # 客户端把字段设成 undefined 时 JSON 会省略该键：视为「明确删除」。
+                    # 否则「移除封面 / 清除图标 / 取消模板」在服务端永远清不掉，
+                    # 新设备 INITIAL_SYNC 拉到的仍是旧值（删了又复活）。
+                    base.pop(f)
             base["updatedAt"] = other_upd
 
     def _tasks_lww(base_tasks, other_tasks):
@@ -380,7 +397,21 @@ def _merge_pages(incoming: List[Dict], existing_pages: List[Dict]) -> List[Dict]
             bt = by_id.get(oid)
             if bt is None:
                 out.append(dict(ot))           # 另一端新增的块
-            elif (_norm_ts(ot.get("updatedAt")) or "0") >= (_norm_ts(bt.get("updatedAt")) or "0"):
+            elif bt.get("deletedAt"):
+                # 【多端删除错乱修复】服务端已经记着这个块被删了，另一端发来的
+                # 只是删除发生前的旧活块（它还没收到/应用墓碑）。旧逻辑 bt.update(ot)
+                # 会用旧内容覆盖并让块看起来又活了，广播给各端就是「边删边复活」。
+                # 只有另一端确实在删除之后又编辑了它，才允许清除墓碑复活。
+                # 注意 _norm_ts(None) 会返回「当前时间」，绝不能直接喂给它缺省值，
+                # 否则一个没有 updatedAt 的旧活块会被误判为「比墓碑更新」而复活。
+                bt_del = _norm_ts(bt["deletedAt"]) if bt.get("deletedAt") else "0"
+                ot_ts = _norm_ts(ot["updatedAt"]) if ot.get("updatedAt") else "0"
+                if ot_ts > bt_del:
+                    bt.pop("deletedAt", None)
+                    bt.update(ot)
+            elif (_norm_ts(ot["updatedAt"]) if ot.get("updatedAt") else "0") >= (
+                _norm_ts(bt["updatedAt"]) if bt.get("updatedAt") else "0"
+            ):
                 bt.update(ot)                  # 远端块更新 → 浅合并覆盖
         # 墓碑块不参与 prevId 链，统一挪到末尾，避免其 prevId=null 破坏活块顺序
         dead = [t for t in out if t.get("deletedAt")]
@@ -490,15 +521,69 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def _broadcast_room(room: str) -> None:
-    """REST 写操作后，把该 room 最新数据广播给同 room 的 WS 设备。
-    没有在线设备时直接返回（数据已落库，新设备建连时会收到 INITIAL_SYNC 补发）。"""
-    if not manager.rooms.get(room):
+# SERVER_BROADCAST 单帧字节上限：Cloudflare / 隧道对超大 WS 帧会静默丢弃，
+# 这正是「REST 写完后整房间一帧全量广播」在公网环境下时灵时不灵的原因。
+# 与 INITIAL_SYNC 同理按页切分；每帧都是完整的页子集，前端 mergePages 是
+# 并集合并且逐帧串行应用，未提及的页保持原样。
+BROADCAST_MAX_BYTES = 96 * 1024
+
+
+def _split_broadcast_chunks(pages: List[Dict]) -> List[List[Dict]]:
+    chunks: List[List[Dict]] = []
+    buf: List[Dict] = []
+    buf_bytes = 0
+    for p in pages:
+        pb = len(json.dumps(p, ensure_ascii=False).encode("utf-8"))
+        if buf and buf_bytes + pb > BROADCAST_MAX_BYTES:
+            chunks.append(buf)
+            buf = []
+            buf_bytes = 0
+        buf.append(p)
+        buf_bytes += pb
+    if buf:
+        chunks.append(buf)
+    return chunks
+
+
+async def _broadcast_pages(
+    room: str, pages: List[Dict], sender: Optional[WebSocket] = None
+) -> None:
+    """增量 + 分片广播：只发本次真正变化的页，且按字节切成小帧。
+
+    sender 由 WS 通道传入以排除发起者；REST 通道没有 socket，广播给所有在线
+    设备（数据已由同一写入口落库，接收端合并后不会产生回环）。
+    """
+    if not pages or not manager.rooms.get(room):
         return
-    pages = await db.load_pages(room)
-    await manager.broadcast(
-        json.dumps({"type": "SERVER_BROADCAST", "data": pages}), room=room
-    )
+    for chunk in _split_broadcast_chunks(pages):
+        await manager.broadcast(
+            json.dumps({"type": "SERVER_BROADCAST", "data": chunk}, ensure_ascii=False),
+            room=room,
+            sender=sender,
+        )
+
+
+async def _apply_incoming(
+    room: str,
+    incoming_list: List[Dict],
+    sender: Optional[WebSocket] = None,
+    existing_pages: Optional[List[Dict]] = None,
+) -> List[Dict]:
+    """服务端唯一写入口：WS CLIENT_UPDATE 与 REST POST / PUT / DELETE 全部走这里。
+
+    统一「读现状 → 块级合并 → 挑出变更页 → 落库 → 增量分片广播」五步。
+    此前三个 REST 端点各自手写整页覆盖 / 无条件刷时间戳 / 全量广播，
+    与 WS 的合并语义完全不同，制造出「新建页在另一台设备不出现」这类竞态。
+    """
+    if existing_pages is None:
+        existing_pages = await db.load_pages(room)
+    existing_snap = {p["id"]: p for p in existing_pages}
+    merged = _merge_pages([dict(p) for p in incoming_list], existing_pages)
+    changed = _changed_pages(merged, existing_snap)
+    for p in changed:
+        await _persist_page(p, room)
+    await _broadcast_pages(room, changed, sender=sender)
+    return changed
 
 
 @app.get("/api/health")
@@ -759,53 +844,40 @@ async def get_page(page_id: str, room: str = Depends(get_room)):
     return {"success": False, "error": "Page not found"}
 
 
-# REST API: 创建新页面
+# REST API：三个端点只负责把 incoming 交给统一写入口，不再自己实现
+# 合并 / 时间戳 / 广播，语义与 WS CLIENT_UPDATE 完全一致。
 @app.post("/api/pages")
 async def create_page(page: Dict, room: str = Depends(get_room)):
-    new_page = {
-        "id": page.get("id") or f"page-{len(await db.load_pages(room)) + 1}-{int(time.time())}",
-        "title": page.get("title", "未命名子程序"),
-        "tasks": page.get("tasks", []),
-        "updatedAt": _now_iso(),
-    }
-    # 保留客户端传来的其它字段（icon/cover/parentId/isFavorite 等）
-    for k, v in page.items():
-        if k not in new_page:
-            new_page[k] = v
-    await _persist_page(new_page, room)
-    await _broadcast_room(room)
-    return {"success": True, "data": new_page}
+    incoming = dict(page)
+    incoming["id"] = incoming.get("id") or f"page-{len(await db.load_pages(room)) + 1}-{int(time.time())}"
+    incoming.setdefault("title", "未命名子程序")
+    incoming.setdefault("tasks", [])
+    # 保留客户端时间戳：原先无条件盖 _now_iso()，会让「尚未打戳的空标题快照」
+    # 比客户端随后推送的正式快照还新，另一端合并时新页被判成旧数据。
+    incoming.setdefault("updatedAt", _now_iso())
+    changed = await _apply_incoming(room, [incoming])
+    saved = next((p for p in changed if p.get("id") == incoming["id"]), incoming)
+    return {"success": True, "data": saved}
 
 
-# REST API: 更新页面
 @app.put("/api/pages/{page_id}")
 async def update_page(page_id: str, page: Dict, room: str = Depends(get_room)):
-    pages = await db.load_pages(room)
-    for p in pages:
-        if p["id"] == page_id:
-            # 墓碑优先：客户端若带 deletedAt，保留它（删除要能传播，不能被服务端时间盖掉）
-            incoming = dict(page)
-            if incoming.get("deletedAt"):
-                incoming["deletedAt"] = _norm_ts(incoming.get("deletedAt"))
-            merged = {**p, **incoming, "updatedAt": _now_iso()}
-            await _persist_page(merged, room)
-            await _broadcast_room(room)
-            return {"success": True, "data": merged}
-    return {"success": False, "error": "Page not found"}
+    incoming = dict(page)
+    incoming["id"] = page_id
+    incoming.setdefault("updatedAt", _now_iso())
+    # 墓碑要能传播：时间戳归一但保留客户端的删除时刻，不能被服务端当前时间盖掉
+    if incoming.get("deletedAt"):
+        incoming["deletedAt"] = _norm_ts(incoming["deletedAt"])
+    changed = await _apply_incoming(room, [incoming])
+    saved = next((p for p in changed if p.get("id") == page_id), incoming)
+    return {"success": True, "data": saved}
 
 
-# REST API: 删除页面（墓碑，不真删）
 @app.delete("/api/pages/{page_id}")
 async def delete_page(page_id: str, room: str = Depends(get_room)):
-    pages = await db.load_pages(room)
-    for p in pages:
-        if p["id"] == page_id:
-            p["deletedAt"] = _now_iso()
-            p["updatedAt"] = p["deletedAt"]
-            await _persist_page(p, room)
-            await _broadcast_room(room)
-            return {"success": True, "message": "Page tombstoned"}
-    return {"success": False, "error": "Page not found"}
+    ts = _now_iso()
+    await _apply_incoming(room, [{"id": page_id, "deletedAt": ts, "updatedAt": ts}])
+    return {"success": True, "message": "Page tombstoned"}
 
 
 # === 阶段二 2.3：图片资产同步端点（按 room 隔离）===
@@ -996,47 +1068,32 @@ async def websocket_endpoint(websocket: WebSocket):
             if payload.get("type") == "CLIENT_UPDATE":
                 incoming = payload.get("data")
                 incoming_list = incoming if isinstance(incoming, list) else []
-                accepted_ids = []
                 existing_pages = await db.load_pages(room)
                 existing_snap = {p["id"]: p for p in existing_pages}
-                if incoming_list:
-                    for inc in incoming_list:
-                        pid = inc.get("id")
-                        if not pid:
-                            continue
-                        cur = existing_snap.get(pid)
-                        # 阶段三 ACK 细粒度：本端推送的页若「服务端原本没有」或
-                        # 「其时间戳 >= 服务端现有页」，即被 LWW 采纳，纳入已确认集合。
-                        if cur is None or _ts_of(inc) >= _ts_of(cur):
-                            accepted_ids.append(pid)
-                merged = _merge_pages(incoming_list, existing_pages)
-                # 只落库真正变化的页：_merge_pages 的结果是全量并集，
-                # 若原样遍历会把「每次按键」放大成对全部页的写。
-                changed = _changed_pages(merged, existing_snap)
-                for p in changed:
-                    await _persist_page(p, room)
+                # 阶段三 ACK 细粒度：本端推送的页若「服务端原本没有」或
+                # 「其时间戳 >= 服务端现有页」，即被 LWW 采纳，纳入已确认集合。
+                accepted_ids = []
+                for inc in incoming_list:
+                    pid = inc.get("id")
+                    if not pid:
+                        continue
+                    cur = existing_snap.get(pid)
+                    if cur is None or _ts_of(inc) >= _ts_of(cur):
+                        accepted_ids.append(pid)
 
-                # 阶段二 2.1：回 ACK 给发送者（cursor = 该 room 合并后的水位戳）
+                # 与 REST 共用的唯一写入口：合并 → 落库变更页 → 增量分片广播。
+                # 广播是页子集的并集合并语义，发送方由 sender 排除，不产生回环。
+                await _apply_incoming(
+                    room, incoming_list, sender=websocket, existing_pages=existing_pages
+                )
+
+                # 阶段二 2.1：回 ACK 给发送者（cursor = 该 room 当前水位戳）
                 await websocket.send_text(json.dumps({
                     "type": "ACK",
-                    "cursor": await _water_mark(room, merged),
+                    "cursor": await _water_mark(room),
                     "clientSeq": payload.get("clientSeq"),
                     "acceptedIds": accepted_ids,
                 }))
-
-                # 触发向同 room 已联网的设备同步数据广播（同步中继）
-                #
-                # 只广播变更页（增量），不再发全量。
-                # 前端对 SERVER_BROADCAST 与 INITIAL_SYNC 走的是同一条
-                # mergePages 合并路径（见 useSync.ts），因此发子集是安全的：
-                # 未提及的页在接收端保持原样，不会被删除。
-                # 无变更时不广播，避免空包刷屏（发送方仍会收到上面的 ACK）。
-                if changed:
-                    await manager.broadcast(
-                        json.dumps({"type": "SERVER_BROADCAST", "data": changed}),
-                        room=room,
-                        sender=websocket,
-                    )
 
     except WebSocketDisconnect:
         pass

@@ -1,4 +1,4 @@
-import {ref, type Ref, watch} from 'vue';
+import {nextTick, ref, type Ref, watch} from 'vue';
 import {getStore} from './storage';
 import {newBlockId, newPageId} from './ids';
 import {getRuntimeConfig, isNativeShell} from '../runtimeConfig';
@@ -102,7 +102,20 @@ export const orderTasks = (tasks: Task[]): Task[] => {
  * 页面级标量的逐字段合并：谁的时间戳新就采用谁。
  * 不做整页替换——否则「改了标题」会连带把另一端刚编辑的 icon/cover 冲掉。
  */
-const PAGE_SCALAR_FIELDS = ['title', 'icon', 'cover', 'parentId', 'isFavorite', 'isExpanded'] as const;
+// 必须覆盖**所有会随同步传播的页面标量**：漏掉 prevId / coverPos / isTemplate 时，
+// 「页面排序、封面取景、模板标记」即使打上了新时间戳也不会被另一端采纳，
+// 表现为「改了但不同步」。deletedAt 由墓碑分支单独处理，不在此列。
+const PAGE_SCALAR_FIELDS = [
+  'title', 'icon', 'cover', 'coverPos', 'parentId', 'isFavorite', 'isExpanded',
+  'isTemplate', 'prevId',
+] as const;
+
+// 时间戳归一：本地墓碑用 ms 数字，后端墓碑可能是 ISO 字符串，混用会导致比较失真
+const tsOf = (v: unknown): number => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string') { const n = Date.parse(v); return Number.isNaN(n) ? 0 : n; }
+  return 0;
+};
 
 const mergePages = (local: Page[], remote: Page[]): Page[] => {
   const out: Page[] = local.map((p) => ({ ...p, tasks: [...p.tasks] }));
@@ -114,7 +127,7 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
     // 否则已删页面会被另一端的下一次 CLIENT_UPDATE 推回来「复活」。
     // 仅当本地页面的删除戳比远端更晚时才保留本地（极端并发：本地后删、远端先删）。
     if (rp.deletedAt) {
-      if (lp && !(lp.deletedAt && (lp.deletedAt ?? 0) > (rp.deletedAt ?? 0))) {
+      if (lp && !(lp.deletedAt && tsOf(lp.deletedAt) > tsOf(rp.deletedAt))) {
         const idx = out.findIndex((p) => p.id === rp.id);
         if (idx >= 0) out.splice(idx, 1);
       }
@@ -124,10 +137,17 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
 
     // 页面级标量：逐字段按 updatedAt 比较。
     // 远端更新 → 采用远端；否则保留本地。这样「本端刚改的字段」不会被旧远端覆盖。
-    const remoteNewer = (rp.updatedAt ?? 0) > (lp.updatedAt ?? 0);
+    // 后端落库时 updatedAt 是 ISO 字符串、本地是 ms 数字，必须统一归一后再比较。
+    const remoteNewer = tsOf(rp.updatedAt) > tsOf(lp.updatedAt);
     if (remoteNewer) {
       for (const f of PAGE_SCALAR_FIELDS) {
-        (lp as unknown as Record<string, unknown>)[f] = (rp as unknown as Record<string, unknown>)[f];
+        const rv = (rp as unknown as Record<string, unknown>)[f];
+        const lv = (lp as unknown as Record<string, unknown>)[f];
+        // 标题是页面身份：字段整体缺失（JSON 会省略 undefined）属于旧数据 / 异常快照，
+        // 不能当成「用户主动清空标题」，否则另一台的标题栏会突然显示「无标题」。
+        // 真正清空会写 ''（字段仍在），其它标量字段缺失仍按删除处理（移除封面要能同步）。
+        if (f === 'title' && rv === undefined && lv !== undefined) continue;
+        (lp as unknown as Record<string, unknown>)[f] = rv;
       }
       lp.updatedAt = rp.updatedAt;
     }
@@ -138,21 +158,42 @@ const mergePages = (local: Page[], remote: Page[]): Page[] => {
     const localBlocks = new Map(lp.tasks.map((t) => [t.id, t]));
     for (const rt of rp.tasks) {
       const lt = localBlocks.get(rt.id);
-      // 远端块是墓碑：标记本地对应块为删除。删除戳具有权威性，避免旧内容被拉回。
+      const rtDel = tsOf(rt.deletedAt);
+      // 远端块是墓碑：给本地对应块打上删除戳。删除戳具有权威性，避免旧内容被拉回。
       // 本地根本没有该块时，不新增死块（它本就不存在，无需「复活」）。
-      if (rt.deletedAt) {
+      if (rtDel > 0) {
         if (lt) {
-          lt.deletedAt = rt.deletedAt;
-          (lt as { updatedAt?: number }).updatedAt = (rt as { updatedAt?: number }).updatedAt ?? lt.updatedAt;
+          const ltDel = tsOf(lt.deletedAt);
+          // 只在远端删除更晚时覆盖本地；本地删得更晚/本地还活着才不打。
+          // 注意：本地还活着（ltDel=0）时远端墓碑必须生效——这是别的设备刚删的块。
+          if (rtDel >= ltDel) {
+            lt.deletedAt = rtDel;
+            (lt as { updatedAt?: number }).updatedAt = (rt as { updatedAt?: number }).updatedAt ?? lt.updatedAt;
+          }
         }
         continue;
       }
       // 本端没有的块：直接加入（另一端新增的）
       if (!lt) { lp.tasks.push({ ...rt }); continue; }
+      // 【关键】本端已删除的块，绝不能被另一端的旧快照「复活」：
+      // 另一端在删除发生前发出的 CLIENT_UPDATE / SERVER_BROADCAST 里这个块还是活的，
+      // 旧逻辑 rtTs >= ltTs 时 Object.assign 会把 deletedAt 抹掉（rt 里没这个字段不会主动删，
+      // 但 rt.deletedAt 为 undefined 的显式字段、以及 page 整体替换都会清掉），
+      // 于是「边删边冒出来」。只有当远端块的确晚于本地删除时间（用户在另一台设备
+      // 于删除后重新编辑了它）才允许复活。
+      const ltDel = tsOf(lt.deletedAt);
+      if (ltDel > 0) {
+        const rtTs = tsOf((rt as { updatedAt?: number }).updatedAt);
+        if (rtTs > ltDel) {
+          (lt as { deletedAt?: unknown }).deletedAt = undefined;
+          Object.assign(lt, rt);
+        }
+        continue;
+      }
       // 两端都有：谁的块时间戳新就保留谁。
       // 块没有 updatedAt（旧数据）时退化为「远端优先」，与历史行为一致，不至于丢块。
-      const ltTs = (lt as { updatedAt?: number }).updatedAt ?? 0;
-      const rtTs = (rt as { updatedAt?: number }).updatedAt ?? 0;
+      const ltTs = tsOf((lt as { updatedAt?: number }).updatedAt);
+      const rtTs = tsOf((rt as { updatedAt?: number }).updatedAt);
       if (rtTs >= ltTs) {
         Object.assign(lt, rt);
       }
@@ -213,16 +254,63 @@ const orderPages = (pages: Page[]): Page[] => {
  *
  * 块级：同样只在块内容真的变了时才打戳，这样 mergePages 才能逐块判断谁更新。
  */
-const pageFingerprint = (p: Page): string =>
+/**
+ * 单个块的同步字段指纹。页面指纹与「是否给块打戳」共用这一份规则，
+ * 避免两处字段清单漂移（只在其中一处加 prevId，块顺序变化就永远推不出去）。
+ * 刻意不含块自身的 updatedAt：打戳本身不该改变指纹。
+ * payload 必须参与：代码块正文、图片 URL、看板卡片都只存在 payload 里。
+ */
+const blockFingerprint = (t: Task): string =>
   JSON.stringify([
-    p.title, p.icon, p.cover, p.parentId, p.isFavorite, p.isExpanded, p.deletedAt ?? 0, p.isTemplate ?? false,
-    // 块只取「内容」参与指纹，不取块自身的 updatedAt——否则打戳本身就会改变指纹
-    p.tasks.map((t) => [t.id, t.type, t.content, t.completed, t.indentLevel, t.deletedAt ?? 0]),
+    t.id, t.type, t.content, t.completed, t.indentLevel,
+    t.prevId ?? null, t.payload ?? null, t.deletedAt ?? 0,
   ]);
 
-// 上一次打戳时各页/各块的内容指纹，用于判断「是否真的变了」
+/**
+ * 页面指纹覆盖所有参与同步的字段。缺一个字段 = 一类用户操作永远不同步：
+ * 之前漏了 prevId / coverPos / 块 payload，导致「拖动排序」「封面重新取景」
+ * 「改代码块」都只在本端生效。
+ */
+const pageFingerprint = (p: Page): string =>
+  JSON.stringify([
+    p.title, p.icon, p.cover, p.coverPos, p.parentId, p.isFavorite, p.isExpanded,
+    p.deletedAt ?? 0, p.isTemplate ?? false, p.prevId ?? null,
+    p.tasks.map(blockFingerprint),
+  ]);
+
+// 上一次「已提交」状态的内容指纹，用于判断「是否真的变了」
 const pageStampCache = new Map<string, string>();
 const blockStampCache = new Map<string, string>();
+
+const writeBaselineFor = (p: Page): void => {
+  pageStampCache.set(p.id, pageFingerprint(p));
+  for (const t of p.tasks) blockStampCache.set(t.id, blockFingerprint(t));
+};
+
+// 启动时把「已落盘的现状」设为基线：后续只有真正被用户改动的页才会打戳上推。
+const initStampBaseline = (pages: Page[]): void => {
+  pageStampCache.clear();
+  blockStampCache.clear();
+  for (const p of pages) writeBaselineFor(p);
+};
+
+/**
+ * 远端数据应用后，把**来自远端的页**设为已提交基线（不打时间戳、不推送）。
+ *
+ * 这是「应用远端 → 本端不回环」的正确解法：此前只靠 remoteApplying 把 watch
+ * 回调丢掉，4s 后的 reconcile 看到指纹与旧基线不符，会把刚收到的远端快照当成
+ * 「本地漏改」重新打戳推回去，形成 A 推 → B 广播 → A 又推的回环。
+ *
+ * 只处理 remoteIds（本次广播 / 初始同步真正带来的页），且跳过 skipIds（应用窗口
+ * 内本端产生的编辑、以及此前已标脏待提交的页）——这些留给 commitPages 打戳上推。
+ * 本地新建的页不在 remoteIds 中，基线保持缺失，下一次提交自然会把它推出去。
+ */
+const resyncStampBaseline = (pages: Page[], remoteIds: Set<string>, skipIds: Set<string>): void => {
+  for (const p of pages) {
+    if (!remoteIds.has(p.id) || skipIds.has(p.id)) continue;
+    writeBaselineFor(p);
+  }
+};
 
 // onlyIds：只指纹这些页（调用方已明确知道哪些页动过）。
 // 不给时按全量处理（结构变化等低频场景）。
@@ -238,10 +326,10 @@ const stampUpdated = (pages: Page[], onlyIds?: string[]): string[] => {
     p.updatedAt = now;
     changed.push(p.id);
 
-    for (const t of p.tasks as unknown as Array<Record<string, unknown>>) {
-      const bfp = JSON.stringify([t.type, t.content, t.completed, t.indentLevel, t.deletedAt ?? 0]);
-      if (blockStampCache.get(String(t.id)) === bfp) continue;  // 块没变 → 不打戳
-      blockStampCache.set(String(t.id), bfp);
+    for (const t of p.tasks) {
+      const bfp = blockFingerprint(t);
+      if (blockStampCache.get(t.id) === bfp) continue;  // 块没变 → 不打戳
+      blockStampCache.set(t.id, bfp);
       t.updatedAt = now;
     }
   }
@@ -318,14 +406,24 @@ const stripDeadBlobImages = (html: string): string => {
     .replace(/(\s|&nbsp;)+$/g, '');
 };
 
+// 后端落库会把 updatedAt/deletedAt 归一成 ISO 字符串，本地统一用 ms 数字。
+// 入口处一次性转换，让 stampUpdated 打戳、mergePages 比较、cursor 计算拿到同源数据。
+const normalizeTs = (v: unknown): number | undefined => {
+  const ms = tsOf(v);
+  return ms > 0 ? ms : undefined;
+};
+
 export const sanitizeLoadedPages = (pages: Page[]): Page[] =>
   pages.map((p) => ({
     ...p,
-    // 后端 tombstone 的 deletedAt 是 ISO 字符串，本地统一用 ms 数字戳比较，
-    // 这里一次性转成数字，保证 mergePages / stampUpdated 与本地数据同源。
-    deletedAt: p.deletedAt ? (typeof p.deletedAt === 'string' ? Date.parse(p.deletedAt) : p.deletedAt) : undefined,
+    updatedAt: normalizeTs(p.updatedAt),
+    deletedAt: normalizeTs(p.deletedAt),
     tasks: (p.tasks ?? []).map((t) => {
-      let task = t.content && t.content.indexOf('blob:') > -1 ? { ...t, content: stripDeadBlobImages(t.content) } : t;
+      let task: Task = { ...t, updatedAt: normalizeTs(t.updatedAt), deletedAt: normalizeTs(t.deletedAt) };
+      if (task.content && task.content.indexOf('blob:') > -1) {
+        // blob: URL 随文档卸载即失效，重启后必然变成破图。
+        task = { ...task, content: stripDeadBlobImages(task.content) };
+      }
       // 历史bug自愈：旧版触发「[] +空格」快捷键时 DOM 残留会被后续编辑写进持久化数据，
       // 待办块内容只剩「[]」这一确凿残留特征，加载时清掉（范围极窄，不误伤正常文本）。
       // 注意浏览器 contenteditable 把空格存成不间断空格 \u00A0，旧数据里是「[]\u00A0」而非「[] 」，
@@ -384,7 +482,23 @@ let socket: WebSocket | null = null;
 let wsUrl = '';
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempts = 0;
-let remoteApplying = false;   // 标记：正在应用远端数据，避免回环广播
+// === 同步状态域（三个入口共享的唯一状态）===
+//   本地变更：captureLocalChange / requestCommit → commitPages（唯一上推口）
+//   远端变更：applyRemotePages（唯一应用口）
+//   服务端写入：_apply_incoming（backend，WS 与 REST 共用）
+// 三者互不感知对方的实现细节，修某个 CRUD 不需要再往同步层打补丁。
+let remoteApplying = false;   // 仅在 applyRemotePages 的应用窗口内为 true
+// 应用窗口内发生的本地页变更既不丢弃、也不立刻推送，先暂存：
+// 应用结束后统一补提交，否则「边删边收到广播」时删除会被静默吞掉。
+// 无 id 的结构回调主要来自远端整表赋值本身，不用暂存——真实的「本地新建页」
+// 由 applyRemotePages 比对应用前后的 id 集合单独识别并补推。
+let pendingLocalDirty = new Set<string>();
+const captureLocalChange = (id?: string): void => {
+  if (id) pendingLocalDirty.add(id);
+};
+// 广播按到达顺序串行应用：多条 SERVER_BROADCAST 各自 await 后整表赋值会互相覆盖，
+// 后完成的旧快照可能把先完成的新快照（含刚删的墓碑）盖回去。
+let remoteApplyChain: Promise<void> = Promise.resolve();
 let stopWatch: (() => void) | null = null;  // 页面订阅的取消函数，closeSync 时清理，防 HMR 重复订阅
 let currentPagesRef: Ref<Page[]> | null = null;
 let backendReachable = false;   // 探测到确有后端（REST 探针成功或 WS 已连）才做网络推送；纯本地模式一律不推，杜绝 /api 404 噪音
@@ -408,12 +522,23 @@ let structureDirty = false;             // 发生了结构变化（增删页 / �
 
 const watchPages = (pagesRef: Ref<Page[]>): (() => void) => {
   const onChange = (id?: string) => {
-    if (remoteApplying) return;                // 远端应用期间不回推，避免无限回环
+    // 远端应用窗口内不立刻回推，但**必须暂存**：原先直接 return 会把此时
+    // 新建 / 删除页这类结构变更永久吞掉（新增页在另一台设备上始终不出现）。
+    if (remoteApplying) { captureLocalChange(id); return; }
     requestCommit(id);
   };
 
   // 让「每页一个 deep watch」的集合与当前 pages 保持一致：
   // 新增页补订阅、删除页退订、整表替换（撤销/导入）时按对象身份重建。
+  // 页面级同步字段签名：只读标量 + tasks 引用，**不 deep traverse 块内容**。
+  // 于是「改标题 / 图标 / 封面 / 收藏 / 墓碑 / 排序」全部由这一处 watch 进入提交口，
+  // 不必在每个 mutation 点手写 markDirty（过去漏掉的地方就永远不同步）。
+  // 块内容改动仍由编辑器显式 markDirty，避免回到「一次击键 traverse 全库」的老问题。
+  const pageSignature = (p: Page) => [
+    p.title, p.icon, p.cover, p.coverPos, p.parentId, p.isFavorite, p.isExpanded,
+    p.deletedAt, p.isTemplate, p.prevId, p.tasks,
+  ];
+
   const syncPageWatchers = () => {
     const pages = pagesRef.value ?? [];
     const alive = new Set<string>();
@@ -422,7 +547,7 @@ const watchPages = (pagesRef: Ref<Page[]>): (() => void) => {
       const cur = pageWatchStops.get(p.id);
       if (cur && cur.obj === p) continue;      // 仍是同一个对象，保留已有订阅
       if (cur) cur.stop();
-      const stop = watch(() => p, () => onChange(p.id));   // 浅订阅：只在页面对象整体替换时触发（字段改动走 markDirty，不再整页遍历）
+      const stop = watch(() => pageSignature(p), () => onChange(p.id));
       pageWatchStops.set(p.id, { obj: p, stop });
     }
     for (const [id, rec] of [...pageWatchStops]) {
@@ -431,9 +556,12 @@ const watchPages = (pagesRef: Ref<Page[]>): (() => void) => {
   };
   syncPageWatchers();
 
-  // 结构变化：数组被整体替换、push/pop/splice（length 变化）时重建订阅并按全量提交
+  // 结构变化：整表替换 / push / splice 替换元素时都要重建按页订阅。
+  // 展开每页对象让 getter 订阅数组索引：writePagePrevIds 那种「length 不变、
+  // 元素全换」的写法若只监听 length，旧订阅会一直挂在已废弃的对象上，
+  // 之后所有字段改动都检测不到。
   const stopStructure = watch(
-    () => [pagesRef.value, pagesRef.value?.length],
+    () => [pagesRef.value, pagesRef.value?.length, ...(pagesRef.value ?? []).map((p) => p)],
     () => { syncPageWatchers(); onChange(); },
   );
 
@@ -583,13 +711,66 @@ const requestCommit = (id?: string) => {
   if (id) dirtyPageIds.add(id); else structureDirty = true;
   if (currentPagesRef) debouncedCommit(currentPagesRef.value);
 };
+// 本地内容变更的唯一显式入口：编辑器改任意字段 / 块 / 顺序都走这里。
 export const markDirty = (pageId: string) => {
-  if (remoteApplying) return;           // 远端应用期间不回推，避免回环广播
+  if (remoteApplying) { captureLocalChange(pageId); return; }
   requestCommit(pageId);
 };
+const flushPendingLocalDirty = () => {
+  const ids = [...pendingLocalDirty];
+  pendingLocalDirty.clear();
+  for (const id of ids) requestCommit(id);
+};
+
+/**
+ * 远端数据的唯一应用入口：INITIAL_SYNC / SERVER_BROADCAST / REST 全量兜底共用。
+ *
+ * 串行化（remoteApplyChain）+ 以内存 pagesRef 为合并基准 + 应用窗口隔离 +
+ * 基线重建 + 窗口内本地变更补提交，这一整套对「新增、删除、编辑、排序、并发」
+ * 是同一套语义，不再为每种 CRUD 分别加时间窗补丁。
+ */
+const applyRemotePages = (incoming: Page[]): void => {
+  const remoteIds = new Set(incoming.map((p) => p.id));
+  remoteApplyChain = remoteApplyChain.then(async () => {
+    remoteApplying = true;
+    const beforeIds = new Set((currentPagesRef?.value ?? []).map((p) => p.id));
+    let hasLocalNewPage = false;
+    try {
+      const current = currentPagesRef?.value ?? [];
+      // 以内存为基准：磁盘在 300ms 防抖窗口内仍是操作前的旧快照，
+      // 用它做 base 会把刚删的块 / 刚建的页覆盖回去。
+      const base = current.length > 0 ? mergePages(current, incoming) : incoming;
+      const ordered = orderPages(base);
+      // 远端整表赋值本身必然产生一次结构 watch，不能把它当成本地改动，
+      // 否则每条广播都会无谓地 dataVersion++ 并全量扫描；但用户恰好在
+      // 应用窗口内新建的页必须识别出来并补推给其它设备。
+      hasLocalNewPage = ordered.some((p) => !beforeIds.has(p.id) && !remoteIds.has(p.id));
+      if (currentPagesRef) currentPagesRef.value = ordered;
+      lastSyncError.value = '';
+      await saveLocal(currentPagesRef?.value ?? []);
+    } catch (e) {
+      lastSyncError.value = '同步接收失败：' + (e instanceof Error ? e.message : String(e));
+      console.error('[NEXUS] 远端数据应用失败', e);
+    } finally {
+      // Vue watch 异步 flush：让「整表赋值」引发的回调在标志仍为 true 时跑完，
+      // 否则它会在复位后执行，把远端数据误判成本地改动推回去形成回环。
+      await nextTick();
+      remoteApplying = false;
+      // 先把远端带来的页设成「已提交」，再补提交本端窗口内的编辑。
+      // 顺序不能反：先 flush 会把本地编辑写进基线，导致它们永远不再被上推。
+      const skip = new Set<string>([...pendingLocalDirty, ...dirtyPageIds]);
+      resyncStampBaseline(currentPagesRef?.value ?? [], remoteIds, skip);
+      flushPendingLocalDirty();
+      if (hasLocalNewPage) requestCommit();   // 全量扫描把窗口内新建的页打戳上推
+    }
+  });
+};
+
 const reconcile = () => {
   const pages = currentPagesRef?.value;
-  if (!pages || !reconcilePageId || document.visibilityState === 'hidden') return;
+  // 远端应用期间跳过对账：此刻 pages 是刚收到的远端快照，指纹差异会被误判为
+  // 「本地漏改」而打新戳上推，把旧快照回灌给服务端并广播到其它设备。
+  if (remoteApplying || !pages || !reconcilePageId || document.visibilityState === 'hidden') return;
   const p = pages.find((x) => x.id === reconcilePageId);
   if (!p) return;
   // 激活页当前内容指纹 ≠ 上次提交时打的戳，且没被显式标脏 → 有漏网修改，补一次提交
@@ -598,6 +779,29 @@ const reconcile = () => {
     dirtyPageIds.add(p.id);
     commitPages(pages);   // 直接提交（debouncedCommit.flush 仅在「有挂起调用」时才执行，这里没有，故直接调 commitPages）
   }
+};
+
+// CLIENT_UPDATE 单帧字节上限：Cloudflare / 隧道会静默丢弃数 MB 的 WS 帧。
+// 一次提交可能包含全库（首次补齐页面 prevId 链、导入后重基线），不切片就会
+// 「明明推了，另一端什么也没收到」。每帧都是完整的页子集，服务端走同一个
+// 写入口按并集合并，逐帧处理与一次全量等价。
+const WS_UPLOAD_MAX_BYTES = 96 * 1024;
+const chunkPagesForUpload = (pages: Page[]): Page[][] => {
+  const chunks: Page[][] = [];
+  let buf: Page[] = [];
+  let bytes = 0;
+  for (const p of pages) {
+    const size = new TextEncoder().encode(JSON.stringify(p)).length;
+    if (buf.length && bytes + size > WS_UPLOAD_MAX_BYTES) {
+      chunks.push(buf);
+      buf = [];
+      bytes = 0;
+    }
+    buf.push(p);   // 单页超预算也单独成帧，不无限循环
+    bytes += size;
+  }
+  if (buf.length) chunks.push(buf);
+  return chunks.length ? chunks : [[]];
 };
 
 // 防抖持久化：本地写入 + 远端推送（写入时打 updatedAt，供后端 LWW）
@@ -617,9 +821,13 @@ const persistPages = async (pages: Page[], changedIds?: string[]) => {
     outboxPages = pages;
     const changedSet = changedIds && changedIds.length ? new Set(changedIds) : null;
     const payload = changedSet ? pages.filter((p) => changedSet.has(p.id)) : pages;
-    try {
-      sendWS({ type: 'CLIENT_UPDATE', data: payload, clientSeq });
-    } catch (e) { /* 发送瞬间断线：留在 outbox，onopen 会补发 */ }
+    // 多帧共用同一个 clientSeq：服务端逐帧回 ACK，前端按 acceptedIds 逐步从
+    // outbox 剔除已确认页；任一帧丢失时重连仍会补发完整快照。
+    for (const chunk of chunkPagesForUpload(payload)) {
+      try {
+        sendWS({ type: 'CLIENT_UPDATE', data: chunk, clientSeq });
+      } catch (e) { /* 发送瞬间断线：留在 outbox，onopen 会补发 */ }
+    }
   } else {
     // 阶段二 2.1：离线时把最新快照压入 outbox（累积，不丢）。
     // onopen 重连后立即补发这一份，对齐其它端。
@@ -677,21 +885,8 @@ const fallbackInitialPull = async () => {
   if (!currentPagesRef) return;
   const remote = await fetchRemotePages(0);
   if (!remote) return;
-  try {
-    const existing = await loadLocal();
-    const base = (existing && existing.length > 0)
-      ? mergePages(existing, sanitizeLoadedPages(remote))
-      : sanitizeLoadedPages(remote);
-    remoteApplying = true;
-    currentPagesRef.value = orderPages(base);
-    await saveLocal(currentPagesRef.value);
-    remoteApplying = false;
-    lastSyncError.value = '';
-  } catch (e) {
-    remoteApplying = false;
-    lastSyncError.value = '同步接收失败：' + (e instanceof Error ? e.message : String(e));
-    console.error('[NEXUS] 初始 REST 兜底失败', e);
-  }
+  // 与 WS 的 INITIAL_SYNC 走完全相同的合并 / 基线 / 补提交语义
+  applyRemotePages(sanitizeLoadedPages(remote));
 };
 
 // 推送全量到服务端（服务端会广播给其他设备）
@@ -702,7 +897,10 @@ export const pushAll = async (pages: Page[]) => {
   outboxSeq = clientSeq;
   outboxPages = pages;
   try {
-    await sendWS({ type: 'CLIENT_UPDATE', data: pages, clientSeq });
+    // 与 persistPages 同一套分片规则：全量补发同样不能塞进一条数 MB 的 WS 帧
+    for (const chunk of chunkPagesForUpload(pages)) {
+      await sendWS({ type: 'CLIENT_UPDATE', data: chunk, clientSeq });
+    }
   } catch (e) {
     // WS 正在连接中：onopen 会补发 outbox，这里别再逐页 REST（否则每次启动都 121 个串行 PUT）。
     if (socket && socket.readyState === WebSocket.CONNECTING) return;
@@ -717,6 +915,22 @@ export const pushAll = async (pages: Page[]) => {
   }
 };
 
+/**
+ * 「整表替换」的唯一提交入口：备份恢复 / Markdown 导入 / ZIP 导入都走这里。
+ * 落盘 + 重建基线 + 全量上推顺序固定：若不重建基线，整表赋值触发的 watch 会在
+ * 300ms 后把全库当成「本端新编辑」逐页打新戳再推一遍，把其它设备刚改的内容冲掉。
+ */
+const commitReplaceAll = async (pages: Page[]): Promise<void> => {
+  if (!currentPagesRef) return;
+  currentPagesRef.value = pages;
+  initStampBaseline(pages);
+  await saveLocal(pages);
+  await pushAll(pages);
+};
+
+// 兼容旧调用方保留，但编辑器已不再直连 REST：任何本地变更一律走 markDirty → CLIENT_UPDATE。
+// REST 与 WS 现在共用服务端同一个写入口（_apply_incoming），双写只会制造竞态。
+/** @deprecated 使用 markDirty / commitReplaceAll */
 export const createRemotePage = async (page: Page) => {
   if (!SYNC_SERVER && !backendReachable) return null;   // 纯本地：无后端可推，跳过避免 404
   try {
@@ -852,33 +1066,17 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
         } else {
           incoming = sanitizeLoadedPages(msg.data as Page[]);
         }
-        // 不再「本地优先整页丢弃」，而是按块合并：本地与远端各自的编辑都尽量保留。
-        // 这是从 LWW 整页覆盖走向 CRDT 的第一步；后续接 Yjs 时可整体替换本函数。
-        // 阶段二 2.2：用合并数据的最大时间戳更新本地水位，作为下次增量拉取的 since。
+        // 阶段二 2.2：用本批数据的最大时间戳更新本地水位，作为下次增量拉取的 since。
+        // 存量数据里时间戳可能是 ISO 字符串，统一经 tsOf 归一，避免 NaN 污染 cursor。
         let maxTs = 0;
         for (const p of incoming) {
-          maxTs = Math.max(maxTs, (p.updatedAt ?? 0) as number, (p.deletedAt ?? 0) as number);
-          for (const t of p.tasks as Array<{ updatedAt?: number }>) {
-            maxTs = Math.max(maxTs, (t.updatedAt ?? 0) as number);
-          }
+          maxTs = Math.max(maxTs, tsOf(p.updatedAt), tsOf(p.deletedAt));
+          for (const t of p.tasks) maxTs = Math.max(maxTs, tsOf(t.updatedAt));
         }
         if (maxTs > lastSyncCursor.value) { lastSyncCursor.value = maxTs; void saveCursor(); }
-        void (async () => {
-          try {
-            const existing = await loadLocal();
-            // 本地有数据则按块合并（尽量双向保留），否则直接采用远端（首次装机/换设备）。
-            // 合并是幂等的，重复应用同一份数据不会有副作用（remoteApplying 已阻断 watch 回环）。
-            const base = (existing && existing.length > 0) ? mergePages(existing, incoming) : incoming;
-            remoteApplying = true;
-            pagesRef.value = orderPages(base);
-            await saveLocal(pagesRef.value);
-            remoteApplying = false;
-          } catch (e) {
-            remoteApplying = false;
-            lastSyncError.value = '同步接收失败：' + (e instanceof Error ? e.message : String(e));
-            console.error('[NEXUS] INITIAL_SYNC 应用失败', e);
-          }
-        })();
+        // SERVER_BROADCAST 是服务端按字节切分的独立增量帧：每帧都是完整的页子集，
+        // 逐帧串行应用即可（mergePages 是并集合并，未提及的页保持原样）。
+        applyRemotePages(incoming);
       }
       if (msg.type === 'DEVICE_COUNT') {
         onlineDevices.value = typeof msg.data === 'number' ? msg.data : 0;
@@ -1021,6 +1219,15 @@ export const closeSync = () => {
   if (reconTimer) { clearInterval(reconTimer); reconTimer = null; }
   if (socket) { socket.onclose = null; socket.close(); socket = null; }
   if (stopWatch) { stopWatch(); stopWatch = null; }
+  // 同步状态域整体复位：HMR / 重复挂载时不能把上一次会话的「待补提交」和
+  // 应用链带进新会话，否则新连接会立刻提交一批已失效的页 id。
+  pendingLocalDirty.clear();
+  remoteApplying = false;
+  remoteApplyChain = Promise.resolve();
+  dirtyPageIds.clear();
+  structureDirty = false;
+  pageStampCache.clear();
+  blockStampCache.clear();
   syncStatus.value = 'offline';
   currentPagesRef = null;
 };
@@ -1058,11 +1265,8 @@ export const importBackup = async (file: File): Promise<{ ok: boolean; message: 
     // 与 loadLocal 走同一份清洗：把后端墓碑的 ISO 字符串时间戳统一成 ms 数字
     // （否则 mergePages 里比较 deletedAt 会出错），并剔除失效的 blob: 图片引用。
     const restored = sanitizeLoadedPages(pages);
-    currentPagesRef.value = restored;
-    // 【修复】此前只调用 pushAll，本地落盘全靠 watchPages 的按页订阅——而替换整个
-    // 数组时订阅未必触发，表现为「提示导入成功、刷新后又变回旧数据」。显式写一次。
-    await saveLocal(restored);
-    await pushAll(restored); // 携带 updatedAt，后端按 LWW 合并
+    // 显式落盘 + 基线 + 上推，不依赖 watch 兜底（整表替换时按页订阅未必触发）。
+    await commitReplaceAll(restored);
     return { ok: true, message: `已导入 ${restored.length} 个页面` };
   } catch (e) {
     return { ok: false, message: '解析失败：' + (e as Error).message };
@@ -1113,8 +1317,7 @@ export const importMarkdown = async (
       isExpanded: true,
     };
 
-    currentPagesRef.value = [...currentPagesRef.value, page];
-    await pushAll(currentPagesRef.value);
+    await commitReplaceAll([...currentPagesRef.value, page]);
 
     const detail = `导入「${title}」：${kept.length} 个块` + (downgraded > 0 ? `，${downgraded} 行降级为文本` : '');
     return { ok: true, message: detail, detail };
@@ -1137,8 +1340,7 @@ export const importNotionZip = async (
       return { ok: false, message: 'ZIP 中未找到可导入的 Markdown 文件' };
     }
 
-    currentPagesRef.value = [...currentPagesRef.value, ...result.pages];
-    await pushAll(currentPagesRef.value);
+    await commitReplaceAll([...currentPagesRef.value, ...result.pages]);
 
     // 落库复核（与向导式导入同一道闸）：复验 asset: 引用、补存导入时没下下来的外链图
     const { verifyImportedAssets } = await import('./zipImport');
@@ -1269,7 +1471,6 @@ export const commitImportPages = async (
         }
       }
     }
-    currentPagesRef.value = next;
     // 回收被换掉的旧图：否则「压缩版」和「原图版」会在 IndexedDB 里同时躺着，白占一份
     const stillUsed = collectAssetRefs(next);
     const orphans = [...replacedRefs].filter((r) => !stillUsed.has(r));
@@ -1279,7 +1480,7 @@ export const commitImportPages = async (
       reclaimed = orphans.length;
     }
 
-    await pushAll(currentPagesRef.value);
+    await commitReplaceAll(next);
 
     // 落库复核：确认每个 asset: 引用都真在本地 store，并对导入时没下下来的外链图后台补存一次。
     // 顺序很重要——必须在页面已并入 currentPagesRef 之后改，这样补存的图能跟着一起落盘。
@@ -1443,6 +1644,9 @@ export const initSync = async (pagesRef: Ref<Page[]>): Promise<boolean> => {
   //
   // 同时 stampUpdated 也不再在每次触发时跑：它要给每页算内容指纹（JSON.stringify 全页
   // blocks），同样与全库规模成正比。现在合并进防抖，并且只指纹被标记的那些页。
+  // 初始化完成的这份数据就是「已提交」状态：不设基线的话，4s 后的对账会把
+  // 刚加载的全库当成漏改，逐页打新戳推回服务端，形成启动即回环。
+  initStampBaseline(pagesRef.value);
   stopWatch = watchPages(pagesRef);
   // P1 过渡期对账：每 4s 用廉价指纹兜一次漏网修改（防漏保存），closeSync 时清理
   if (reconTimer) clearInterval(reconTimer);
