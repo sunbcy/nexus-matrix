@@ -276,7 +276,7 @@
            :class="coverRepositioning ? (coverDragging ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'"
            @mousedown="onCoverPointerDown($event)"
            @touchstart.stop="onCoverPointerDown($event)">
-        <div class="w-full h-full transition-[background-position] duration-100"
+        <div class="w-full h-full" :class="coverDragging ? '' : 'transition-[background-position] duration-100'"
              :style="coverStyle(activePage.cover)"></div>
         <!-- pt-safe：封面全出血延伸到状态栏下时，操作条避开状态栏 -->
         <div class="cover-action-bar absolute top-3 right-4 pt-safe flex items-center gap-1.5 transition-opacity z-10"
@@ -5335,10 +5335,13 @@ const startCoverDrag = (e: { clientY: number }) => {
     if (!coverDragStart) return;
     const y = 'touches' in ev && ev.touches.length > 0 ? ev.touches[0].clientY : (ev as MouseEvent).clientY;
     const dy = y - coverDragStart.y;
-    // 120px 拖拽 = 全范围，兼顾精细与效率
-    // 方向：向下拖(dy>0) 图片跟手向下移 → 露出更上部 → coverPos 减小（0=顶 100=底）。
-    // 修复：原先用 +，导致向下拖图片反而上移，与「按住图片拖动」的手势相反。
-    const next = Math.max(0, Math.min(100, coverDragStart.pos - (dy / 120) * 100));
+    // 抓取封面期间阻止页面滚动：否则触屏/触控板会把竖直拖动当成页面滚动，
+    // 导致「拖不到图片底部」（手势被滚动吞掉）。
+    if (ev.cancelable && 'touches' in ev) ev.preventDefault();
+    // 120px 拖拽 = 全范围，兼顾精细与效率。
+    // 「平移视野」手势：向下拖(dy>0) 视野下移 → 露出图片更靠下的部分 → coverPos 增大（0=顶 100=底）。
+    // 即往下拖就能把视野推到图片底部，符合封面裁切器的常见直觉。
+    const next = Math.max(0, Math.min(100, coverDragStart.pos + (dy / 120) * 100));
     if (activePage.value) activePage.value.coverPos = Math.round(next);
   };
   const onUp = () => {
@@ -5351,9 +5354,9 @@ const startCoverDrag = (e: { clientY: number }) => {
   };
   document.addEventListener('mousemove', onMove);
   document.addEventListener('mouseup', onUp);
-  // 本手势全程不调用 preventDefault（页面仍可正常滚动），因此用 passive:true：
-  // 非 passive 会让浏览器等主线程跑完 touchmove 才滚动，白白拖慢封面区域的滑动手感。
-  document.addEventListener('touchmove', onMove, { passive: true });
+  // 抓取封面拖动期间要独占触摸手势（非 passive），由 onMove 里 preventDefault 阻止页面滚动，
+  // 否则竖直拖动会被当成页面滚动，封面取景拖不到位。
+  document.addEventListener('touchmove', onMove, { passive: false });
   document.addEventListener('touchend', onUp);
 };
 
