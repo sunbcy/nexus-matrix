@@ -448,12 +448,14 @@
 
                  水平布局见下方「手柄槽 + 标记列」两列：手柄桌面走临界外槽（不占流宽），
                  标记列 in-flow 贴正文左缘、列表文字右缩进一列，与 Notion 一致。 -->
-            <!-- 左区拆成两列，对齐 Notion：
-                 ① 手柄槽（+ / 拖拽点）：桌面绝对定位到正文左侧留白（md:-translate-x-[84px]），
-                    不占流宽，正文左缘因此与标题严格对齐；移动端流内排布（触屏无 hover，需可达）。
+            <!-- 左区对齐 Notion（手机 / 桌面分治）：
+                 ① 手柄槽（+ / 6 点拖拽）：仅 md+ 渲染，绝对定位到正文左侧留白
+                    （md:-translate-x-[84px]），不占流宽。
+                    手机端整体 hidden：Notion Android 行前没有 6 个点，且聚焦时冒出手柄
+                    既突兀又会占掉 36px 正文宽度。移除后正文左缘与标题严格对齐。
                  ② 标记列（复选框 / 折叠三角 / 圆点 / 序号 / 标注图标）：in-flow，宽一列(24px)，
-                    标记左缘贴合正文左缘（=标题左缘），列表文字随之右缩进一列，与 Notion 一致。 -->
-            <div class="shrink-0 self-stretch flex items-start justify-end pr-1 ml-0 w-9 md:absolute md:left-0 md:top-0 md:-translate-x-[84px] md:w-[84px] md:pointer-events-none">
+                    列表文字随之右缩进一列，与 Notion 一致。 -->
+            <div class="hidden md:flex md:absolute md:left-0 md:top-0 md:-translate-x-[84px] md:w-[84px] md:items-start md:justify-end md:pr-1 md:pointer-events-none">
               <div class="flex items-center gap-1 mt-[2px] h-[1lh] leading-[1.5] md:pointer-events-auto" :class="getFontSizeClass(task)">
                 <!-- 悬浮控制手柄：桌面端只跟随鼠标所在行；触屏无 hover，退化为聚焦该块时显示。
                      可见性完全由 CSS 媒体查询决定，刻意不用「hover 或聚焦」二选一 -->
@@ -751,7 +753,8 @@
     <!-- 悬浮防遮挡菜单 & 全局操作菜单 (与之前一致，保持精简引用) -->
     <!-- ... -->
     <!-- 选中文本后的浮动格式工具栏（对齐 Notion 的 selection toolbar） -->
-    <div v-if="formatToolbar.visible"
+    <!-- 触屏常驻工具条：块操作面板打开时先让位，关闭后自动恢复（visible 状态保留） -->
+    <div v-if="formatToolbar.visible && !actionMenuConfig.isOpen"
          class="format-toolbar fixed z-50 flex items-center gap-0.5 px-1 py-1 bg-void border border-line shadow-2xl rounded-sm"
          :class="isCoarsePointer ? 'format-toolbar--touch' : ''"
          :style="formatToolbarStyle">
@@ -769,6 +772,12 @@
       <button @pointerdown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
         <span class="px-1 bg-warn/30 text-warn rounded-sm">H</span>
       </button>
+      <!-- 手机端移除行前 6 点手柄后，变类型 / 块操作入口收敛到键盘上方工具条 -->
+      <template v-if="isCoarsePointer">
+        <div class="w-px h-4 bg-panel mx-0.5"></div>
+        <button @pointerdown.prevent="openActionMenuForCurrentBlock()" title="变类型 / 转换区块" class="ft-btn font-bold text-xs">T⇄</button>
+        <button @pointerdown.prevent="openActionMenuForCurrentBlock()" title="块操作（复制 / 删除 / 移动）" class="ft-btn font-bold">⋯</button>
+      </template>
       <!-- 颜色面板：触屏时工具条吸底，面板必须向上展开，否则画到键盘底下 -->
       <div v-if="colorPanel"
            class="absolute left-0 flex gap-1 px-2 py-1.5 bg-void border border-line shadow-2xl rounded-sm"
@@ -2638,8 +2647,8 @@ onMounted(async () => {
   // 安卓 WebView 长按选词由系统建立 DOM Selection，只派发 selectionchange，
   // 不派发 mouseup —— 旧逻辑因此只会在桌面鼠标选区后显示格式工具栏，手机上
   // 选中文字只剩系统级 ActionMode（复制/全选/分享），无法加粗/斜体/加链接。
-  // 触屏下统一监听 selectionchange：只要 .ce-block 内出现非空选区，就弹出与 Web
-  // 相同的可编辑工具栏（formatToolbarStyle 在触屏会吸底并放大触摸目标）。
+  // 触屏下统一监听 selectionchange：光标落在 .ce-block 内即常驻可编辑工具条
+  // （不再要求先选中文字），formatToolbarStyle 在触屏会吸底并放大触摸目标。
   // 系统原生菜单保留在顶部，用于复制/粘贴，二者不冲突。
   // 防抖 120ms：拖动系统选区手柄时 selectionchange 高频触发，避免工具栏反复重排。
   // 桌面仍只走 mouseup，保持原有行为一像素不变。
@@ -3155,6 +3164,8 @@ const onBlockFocus = (id: string) => {
   focusedTaskId.value = id;
   editingBlockId.value = id;
   setFocusConfig(id, null);
+  // 触屏：光标入块立刻显示键盘上方常驻工具条（selectionchange 有时晚于 focus 派发）
+  if (isCoarsePointer.value) showFormatToolbarForSelection();
 };
 const onBlockBlur = () => {
   activeSlashTaskId.value = null;
@@ -3162,6 +3173,13 @@ const onBlockBlur = () => {
   // 组词（composition）期间的瞬时 blur（Android 输入法常见）不释放编辑标记，
   // 否则 syncDomFromTasks/setInputRef 会误判为「已离开块」而回写 innerHTML 吞掉输入。
   if (isComposing.value) return;
+  // 触屏：真正离开编辑器后收起常驻工具条；切到另一块时 nextTick 后焦点已在新块，不收。
+  if (isCoarsePointer.value) {
+    nextTick(() => {
+      const ae = document.activeElement as HTMLElement | null;
+      if (!ae?.closest?.('.ce-block')) hideFormatToolbar();
+    });
+  }
   // 延迟释放且只清自己：切块时 blur/focus 同一 tick，别把新块的 id 清掉
   const id = editingBlockId.value;
   nextTick(() => { if (editingBlockId.value === id) editingBlockId.value = null; });
@@ -3176,12 +3194,33 @@ const hideFormatToolbar = () => { formatToolbar.value.visible = false; colorPane
  * 为什么需要它：安卓 WebView 长按选词由系统建立 DOM Selection 并弹出原生
  * ActionMode（复制/全选/分享），全程不派发 mouseup —— 旧逻辑只在 mouseup 里
  * 显示工具栏，于是手机上选中文字后完全没有「可编辑」入口（加粗/斜体/链接/颜色）。
- * 改为监听 selectionchange 后，只要编辑器内出现非空选区就显示同一套工具栏，
- * 与 Web 端行为一致；触屏下 formatToolbarStyle 会把它吸到底部并放大触摸目标。
+ * 改为监听 selectionchange 后，触屏下只要光标落在 .ce-block 内就常驻同一套工具栏
+ * （片选与折叠光标共用），与 Notion Android 键盘上方工具条一致；
+ * formatToolbarStyle 在触屏会把它吸到底部并放大触摸目标。桌面仍只在非空选区浮出。
  *
  * 只接管 .ce-block 内的选区：标题输入框、设置面板、其它输入框仍交给系统处理。
  */
 const showFormatToolbarForSelection = (): boolean => {
+  // 触屏（手机）：Notion Android 形态——只要光标落在内容块里，键盘上方就常驻一条
+  // 工具栏（加粗/斜体/变类型…），不再要求先长按选中文字。片选与折叠光标共用同一条，
+  // 触屏样式吸底，不依赖选区矩形。仅接管 .ce-block：标题、设置面板等仍交给系统。
+  if (isCoarsePointer.value) {
+    const sel = window.getSelection();
+    const node = sel?.focusNode ?? sel?.anchorNode;
+    const fromSel = node
+      ? (node.nodeType === 3 ? node.parentElement : node as HTMLElement)?.closest('.ce-block')
+      : null;
+    const ae = document.activeElement as HTMLElement | null;
+    const fromFocus = ae?.isContentEditable ? ae.closest('.ce-block') : null;
+    if (!fromSel && !fromFocus) return false;
+    // 值未变就不写 ref：输入 / selectionchange 高频触发，避免每次击键都重渲染工具条
+    const t = formatToolbar.value;
+    if (!(t.visible && t.x === 0 && t.y === 0)) {
+      formatToolbar.value = { visible: true, x: 0, y: 0 };
+    }
+    return true;
+  }
+  // 桌面：仅在 .ce-block 内出现非空选区时浮在选区上/下方（原逻辑一像素不变）
   if (!hasTextSelection()) return false;
   const range = window.getSelection()?.getRangeAt(0);
   if (!range) return false;
@@ -3447,6 +3486,20 @@ const onCompositionEnd = (e: CompositionEvent, task: Task) => {
   else updateTask(task.id, { content: target.innerHTML });
 };
 const actionMenuConfig = ref({ isOpen: false, x: 0, y: 0, taskId: '' });
+
+// 手机端移除行前 6 点手柄后，块操作菜单改由键盘上方格式工具栏的「⋯」承接。
+// 从当前选区 / 焦点块反推 blockId；触屏下菜单位置由底部面板 CSS 决定，x/y 仅桌面占位。
+const openActionMenuForCurrentBlock = () => {
+  const sel = window.getSelection();
+  const node = sel?.focusNode ?? sel?.anchorNode;
+  const el = node ? (node.nodeType === 3 ? node.parentElement : node as HTMLElement) : null;
+  const row = el?.closest('[data-block-id]') as HTMLElement | null;
+  const id = row?.dataset.blockId || focusedTaskId.value;
+  if (!id) return;
+  // 不主动隐藏工具条：模板用 !actionMenuConfig.isOpen 让位，面板关闭后常驻工具条自动恢复
+  colorPanel.value = null;
+  actionMenuConfig.value = { isOpen: true, x: 0, y: 0, taskId: id };
+};
 const formatMenuConfig = ref({ isOpen: false, x: 0, y: 0, position: 'top', activeTaskId: '' });
 
 // 拖拽排序状态
@@ -6201,8 +6254,11 @@ defineExpose({ exportMarkdown });
    用媒体查询区分设备能力，而非 JS 判断，好处是零运行时开销、且不依赖 UA 嗅探：
    - 支持真实 hover 的设备（桌面）：只跟随鼠标所在行。光标停在哪一行完全不显示，
      与 Notion 一致。此前用「hover 或聚焦」会导致光标停留行常驻手柄。
-   - 无 hover 能力的设备（触屏）：hover 不可用，退化为「聚焦该块时显示」（is-active）。
-     这是触屏唯一的可达路径，必须保留。
+   - 无 hover 能力的设备（触屏）：hover 不可用，md+ 的大屏触屏设备退化为
+     「聚焦该块时显示」（is-active）。
+   - 手机（< md）：手柄槽模板已用 `hidden md:flex` 整体不渲染，避免行前 6 个点
+     在聚焦时冒出并挤占正文宽度（Notion Android 形态）。块操作菜单改由键盘上方
+     格式工具栏的「⋯」承接。
    注意手柄是 .task-item-container 的绝对定位子元素（left:-72px 溢出到容器外），
    CSS :hover 会覆盖溢出的后代，所以鼠标移到手柄上时手柄不会闪退。 */
 .row-handles { opacity: 0; }

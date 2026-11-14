@@ -43,8 +43,8 @@ fun AndroidWebView(
                 // 避免阅读时下滑误触发。enabled=false（内容编辑页）时整体禁用。
                 override fun canChildScrollUp(): Boolean = !controller.atTop.value
             }
-            srl.setColorSchemeColors(0xFF00F0FF.toInt())
-            srl.setProgressBackgroundColorSchemeColor(0xFF14161A.toInt())
+            srl.setColorSchemeColors(0xFF2383E2.toInt())
+            srl.setProgressBackgroundColorSchemeColor(0xFFF7F7F5.toInt())
             (webView.parent as? ViewGroup)?.removeView(webView)
             webView.layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,

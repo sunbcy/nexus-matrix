@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 与 Web 端 src/style.css 的品牌变量对齐：
-         nexus-void / cyan-glow。 -->
-    <color name="nexusBackground">#090a0c</color>
+    <!-- 冷启动 windowBackground / 系统启动画面底色。
+         Web 端默认主题已改为「纸白」(theme.ts DEFAULT_THEME='paper', #ffffff)；
+         这里保持深色会让 App 启动时先闪一下黑屏再切白，观感割裂。 -->
+    <color name="nexusBackground">#FFFFFF</color>
     <color name="colorPrimary">#00F0FF</color>
     <color name="colorPrimaryDark">#00B8CC</color>
     <color name="colorAccent">#00F0FF</color>

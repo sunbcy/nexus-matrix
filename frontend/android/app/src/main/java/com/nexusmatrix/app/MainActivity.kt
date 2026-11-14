@@ -39,8 +39,8 @@ class MainActivity : BridgeActivity() {
         // 时读平台属性 android:windowActionBar，启动主题必须是 AppCompat 主题。
         setTheme(R.style.AppTheme_NoActionBar)
         // 边到边（Notion 移动端形态）：WebView 延伸到状态栏/手势栏区域，原生壳不占高度。
-        // 系统栏透明 + 亮色图标（暗色 UI）；状态栏与底部手势区均由 Web 侧
-        // viewport-fit=cover + env(safe-area-inset-*) 自行避开（底部已无 NavigationBar）。
+        // 系统栏透明 + 深色图标（Web 默认「纸白」浅色主题，深色图标才看得清）；
+        // 状态栏与底部手势区均由 Web 侧 viewport-fit=cover + env(safe-area-inset-*) 避开。
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
@@ -48,7 +48,7 @@ class MainActivity : BridgeActivity() {
         // 启动画面：API 31+ 由系统读取 AppTheme.NoActionBar 上的 windowSplashScreen* 属性；
         // API 26-30 无兼容层（installSplashScreen 静态方法在本机 Gradle 缓存中的
         // core-splashscreen:1.0.1 上解析异常，且不影响主功能），冷启动期间显示
-        // 主题的深色 windowBackground（nexusBackground），观感可接受。
+        // 主题的 windowBackground（现为纸白，与 Web 默认主题一致）。
         super.onCreate(savedInstanceState)
 
         val webView = try {
@@ -69,8 +69,8 @@ class MainActivity : BridgeActivity() {
             Log.e(TAG, "注册 NexusNativeBridge 失败", e)
         }
 
-        // WebView 默认白底，冷启动/刷新时会闪一下白屏；改为品牌深色（与 Web 端 nexus-void 一致）
-        webView.setBackgroundColor(0xFF090A0C.toInt())
+        // 与 Web 默认「纸白」主题一致；深色会与启动画面 / 正文形成黑→白闪烁
+        webView.setBackgroundColor(0xFFFFFFFF.toInt())
 
         // 本地存储加固：显式打开 DOM Storage 与 Database（IndexedDB）。
         // 这两项在部分 WebView/ROM 上并非默认开启，一旦关闭，Web 侧的 IndexedDB
@@ -83,6 +83,11 @@ class MainActivity : BridgeActivity() {
                 // 允许 file/https 混合场景下的本地存储访问，避免资产加载时 origin 受限
                 allowContentAccess = true
                 allowFileAccess = true
+                // 入口 index.html 的 URL 恒为 https://localhost/，覆盖安装时 WebView 的 HTTP
+                // 缓存可能复用旧 index.html → 引用 APK 里已删除的旧 hash bundle → 白屏。
+                // f415de8 给线上 SPA 加的 Cache-Control:no-store 管不到本地资源，
+                // 这里在原生侧显式禁缓存，保证每次启动都读到 APK 内最新入口。
+                cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
             }
         } catch (e: Throwable) {
             Log.e(TAG, "WebView 存储设置失败", e)
