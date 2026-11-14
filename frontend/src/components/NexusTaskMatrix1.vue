@@ -263,7 +263,7 @@
 
     <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
     <Transition name="page-fade" mode="out-in">
-    <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage && (!isMobile || mobileView === 'content')" :ref="onMainRef" @scroll="onEditorScroll" @touchstart.passive="onEditorTouchStart" @touchmove.passive="onEditorTouchMove" @touchend.passive="onEditorTouchEnd" @touchcancel.passive="onEditorTouchEnd">
+    <main class="flex-1 relative custom-scrollbar flex flex-col" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'" :key="activePage ? activePage.id : 'none'" v-if="activePage && (!isMobile || mobileView === 'content')" :ref="onMainRef" @scroll="onEditorScroll" @touchstart.passive="onEditorTouchStart" @touchmove.passive="onEditorTouchMove" @touchend.passive="onEditorTouchEnd" @touchcancel.passive="onEditorTouchEnd" @contextmenu="onEditorContextMenu">
       <div class="w-full h-1 bg-accent shadow-[0_0_10px_rgba(0,240,255,0.4)] shrink-0"></div>
 
       <!-- 页眉封面（Notion 的 Cover）：全出血，位于内容列之外、标题之上。
@@ -352,6 +352,12 @@
                   title="随机添加一张封面">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
             {{ coverApplying ? '正在添加…' : '添加封面' }}
+          </button>
+          <!-- 移动端内容页全局搜索：侧栏搜索框在「列表页」，进入文档后无法触达。
+               复用同一份 searchQuery / searchResults / 最近访问 / 收藏。 -->
+          <button class="md:hidden shrink-0 w-11 h-11 flex items-center justify-center rounded-sm text-dim active:text-accent active:bg-panel transition-colors"
+                  @click="openSearchSheet" title="全局搜索" aria-label="全局搜索">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
           </button>
           <!-- 页面级「···」菜单入口（对齐 Notion：页面操作收敛到内容页右上角） -->
           <button class="shrink-0 w-11 h-11 md:w-8 md:h-8 flex items-center justify-center rounded-sm text-dim active:text-accent hover:text-display hover:bg-panel transition-colors"
@@ -754,34 +760,47 @@
     <!-- ... -->
     <!-- 选中文本后的浮动格式工具栏（对齐 Notion 的 selection toolbar） -->
     <!-- 触屏常驻工具条：块操作面板打开时先让位，关闭后自动恢复（visible 状态保留） -->
-    <div v-if="formatToolbar.visible && !actionMenuConfig.isOpen"
+    <div v-if="formatToolbar.visible && toolbarActive && !actionMenuConfig.isOpen && !anyMobileSheetOpen"
          class="format-toolbar fixed z-50 flex items-center gap-0.5 px-1 py-1 bg-void border border-line shadow-2xl rounded-sm"
          :class="isCoarsePointer ? 'format-toolbar--touch' : ''"
          :style="formatToolbarStyle">
-      <button @pointerdown.prevent="execFormat('bold')" title="加粗 (Ctrl/Cmd+B)" class="ft-btn font-bold">B</button>
-      <button @pointerdown.prevent="execFormat('italic')" title="斜体 (Ctrl/Cmd+I)" class="ft-btn italic">I</button>
-      <button @pointerdown.prevent="execFormat('underline')" title="下划线 (Ctrl/Cmd+U)" class="ft-btn underline">U</button>
-      <button @pointerdown.prevent="execFormat('strikeThrough')" title="删除线 (Ctrl/Cmd+Shift+S)" class="ft-btn line-through">S</button>
-      <div class="w-px h-4 bg-panel mx-0.5"></div>
-      <button @pointerdown.prevent="execFormat('code')" title="行内代码 (Ctrl/Cmd+E)" class="ft-btn font-['JetBrains_Mono',monospace] text-xs">&lt;/&gt;</button>
-      <button @pointerdown.prevent="execFormat('link')" title="链接 (Ctrl/Cmd+K)" class="ft-btn">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
-      </button>
-      <div class="w-px h-4 bg-panel mx-0.5"></div>
-      <button @pointerdown.prevent="colorPanel = colorPanel === 'text' ? null : 'text'" title="文本颜色" class="ft-btn font-bold">A</button>
-      <button @pointerdown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
-        <span class="px-1 bg-warn/30 text-warn rounded-sm">H</span>
-      </button>
-      <!-- 手机端移除行前 6 点手柄后，变类型 / 块操作入口收敛到键盘上方工具条 -->
+      <!-- Notion 键盘条最左固定「+」：打开「插入 / 转换」合并面板。手机端没有行前 + 按钮，
+           也不该强迫用户切到符号键盘打 /。桌面端行前已有外槽 +，这里不重复。 -->
+      <button v-if="isCoarsePointer" @pointerdown.prevent="openInsertSheet()" title="插入 / 转换" aria-label="插入或转换区块" class="ft-btn font-bold text-lg text-accent">+</button>
+      <div v-if="isCoarsePointer" class="w-px h-4 bg-panel mx-0.5"></div>
+      <!-- 开关态由 queryCommandState 显式计算，按压态由 JS 定时器清除：
+           触屏 :hover/:active 会粘滞且 pointerdown.prevent 抑制合成 mouseup，
+           不能再让浏览器伪类决定「按钮有没有被按下」。 -->
+      <button @pointerdown.prevent="onFormatPress('bold')" :class="{ 'ft-btn--on': activeFormats.bold, 'ft-btn--pressed': pressedFormat === 'bold' }" title="加粗 (Ctrl/Cmd+B)" class="ft-btn font-bold">B</button>
+      <button @pointerdown.prevent="onFormatPress('italic')" :class="{ 'ft-btn--on': activeFormats.italic, 'ft-btn--pressed': pressedFormat === 'italic' }" title="斜体 (Ctrl/Cmd+I)" class="ft-btn italic">I</button>
+      <button @pointerdown.prevent="onFormatPress('underline')" :class="{ 'ft-btn--on': activeFormats.underline, 'ft-btn--pressed': pressedFormat === 'underline' }" title="下划线 (Ctrl/Cmd+U)" class="ft-btn underline">U</button>
+      <button @pointerdown.prevent="onFormatPress('strikeThrough')" :class="{ 'ft-btn--on': activeFormats.strikeThrough, 'ft-btn--pressed': pressedFormat === 'strikeThrough' }" title="删除线 (Ctrl/Cmd+Shift+S)" class="ft-btn line-through">S</button>
+      <!-- 触屏只保留高频格式键（+ / B I U S / T⇄ / ⋯ / 收键盘 = 8 个 44px 按钮），
+           低频的行内代码 / 链接 / 文字颜色 / 高亮收进「+」面板的「更多格式」，
+           否则 12 个按钮会把 412px 宽的键盘条撑出屏幕。桌面端保持全量不变。 -->
+      <template v-if="!isCoarsePointer">
+        <div class="w-px h-4 bg-panel mx-0.5"></div>
+        <button @pointerdown.prevent="execFormat('code')" title="行内代码 (Ctrl/Cmd+E)" class="ft-btn font-['JetBrains_Mono',monospace] text-xs">&lt;/&gt;</button>
+        <button @pointerdown.prevent="execFormat('link')" title="链接 (Ctrl/Cmd+K)" class="ft-btn">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+        </button>
+        <div class="w-px h-4 bg-panel mx-0.5"></div>
+        <button @pointerdown.prevent="colorPanel = colorPanel === 'text' ? null : 'text'" title="文本颜色" class="ft-btn font-bold">A</button>
+        <button @pointerdown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" title="背景高亮" class="ft-btn relative">
+          <span class="px-1 bg-warn/30 text-warn rounded-sm">H</span>
+        </button>
+      </template>
+      <!-- 手机端移除行前 6 点手柄后，变类型 / 块操作入口收敛到键盘上方工具条。
+           T⇄ 打开「转换区块为」完整面板；⋯ 打开 Notion 式自有块菜单（复制/移动/转换/删除）。 -->
       <template v-if="isCoarsePointer">
         <div class="w-px h-4 bg-panel mx-0.5"></div>
         <button @pointerdown.prevent="openActionMenuForCurrentBlock()" title="变类型 / 转换区块" class="ft-btn font-bold text-xs">T⇄</button>
-        <button @pointerdown.prevent="openActionMenuForCurrentBlock()" title="块操作（复制 / 删除 / 移动）" class="ft-btn font-bold">⋯</button>
+        <button @pointerdown.prevent="openBlockMenu(resolveToolbarBlockId())" title="块操作（复制 / 移动 / 删除）" class="ft-btn font-bold">⋯</button>
+        <button @pointerdown.prevent="runToolbarCommand('dismiss')" title="收起键盘" aria-label="收起键盘" class="ft-btn text-xs">⌨</button>
       </template>
       <!-- 颜色面板：触屏时工具条吸底，面板必须向上展开，否则画到键盘底下 -->
-      <div v-if="colorPanel"
-           class="absolute left-0 flex gap-1 px-2 py-1.5 bg-void border border-line shadow-2xl rounded-sm"
-           :class="isCoarsePointer ? 'bottom-full mb-1' : 'top-full mt-1'">
+      <div v-if="colorPanel && !isCoarsePointer"
+           class="absolute left-0 flex gap-1 px-2 py-1.5 bg-void border border-line shadow-2xl rounded-sm top-full mt-1">
         <button v-for="c in colorPalette" :key="c.value"
                 @pointerdown.prevent="applyColor(c.value)"
                 class="color-swatch w-5 h-5 rounded-sm border border-line hover:scale-110 transition-transform"
@@ -791,8 +810,9 @@
     </div>
 
     <!-- 链接输入弹窗（替代原生 prompt：原生弹窗会抢焦点导致选区丢失，且观感突兀） -->
-    <div v-if="linkDialog.visible" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm" @click.self="closeLinkDialog">
-      <div class="w-[420px] bg-void border border-line shadow-2xl rounded-md overflow-hidden">
+    <div v-if="linkDialog.visible" class="nexus-link-dialog fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-3"
+         :style="fullOverlayStyle" @touchstart.passive.self="armBackdrop($event)" @mousedown.self="armBackdrop($event)" @click.self="closeFromBackdrop(closeLinkDialog)">
+      <div class="w-full max-w-[420px] max-h-full overflow-y-auto bg-void border border-line shadow-2xl rounded-md">
         <div class="px-4 py-3 border-b border-line/60 flex items-center gap-2">
           <svg class="w-4 h-4 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
           <span class="text-sm font-bold tracking-wide text-display">{{ linkDialog.editEl ? '编辑链接' : '添加链接' }}</span>
@@ -861,10 +881,12 @@
       </div>
     </div>
 
-    <!-- 底部面板遮罩（仅触屏）：低于面板(z-50)但高于内容，点击即关闭 -->
+    <!-- 底部面板遮罩（仅触屏）：低于面板(z-50)但高于内容。
+         关闭走 closeFromBackdrop：过滤「打开瞬间」触屏补发的合成 click，
+         否则短按 T⇄ 只会看到面板闪一下（长按不派发合成 click 反而能保持）。 -->
     <div v-if="actionMenuConfig.isOpen && isCoarsePointer"
-         class="fixed inset-0 z-40 bg-black/60"
-         @click="actionMenuConfig.isOpen = false"></div>
+         class="nexus-overlay-backdrop fixed inset-0 z-40 bg-black/60"
+         @touchstart.passive="armBackdrop($event)" @mousedown="armBackdrop($event)" @click="closeFromBackdrop(() => actionMenuConfig.isOpen = false)"></div>
 
     <!-- 块操作菜单：触屏 = 底部面板（bottom sheet，Notion 移动端形态）；
          桌面 = 定点 popover，行为不变。两者共用同一份菜单项，只切容器样式。
@@ -872,9 +894,10 @@
     <div v-if="actionMenuConfig.isOpen"
          class="fixed z-50 bg-void text-sm overflow-y-auto custom-scrollbar"
          :class="isCoarsePointer
-            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-line shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
+            ? 'action-menu-sheet inset-x-0 border-t border-line shadow-2xl rounded-t-lg pb-[env(safe-area-inset-bottom,0px)]'
             : 'action-menu-popup w-52 border border-line shadow-2xl py-1 rounded-sm max-h-[70vh]'"
-         :style="isCoarsePointer ? undefined : { top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }"
+         :style="isCoarsePointer ? sheetOverlayStyle : { top: `${actionMenuConfig.y}px`, left: `${actionMenuConfig.x}px` }"
+         @touchstart.passive="armOverlayTouch()" @click.capture="guardOverlayClick($event)"
          @click.stop @keydown="onMenuKey">
       <!-- 底部面板的抓取条（仅触屏） -->
       <div v-if="isCoarsePointer" class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
@@ -904,16 +927,141 @@
       </button>
     </div>
 
+    <!-- ===== 移动端 Notion 式面板组：+ 插入/转换、自有块菜单、全局搜索、Move to ===== -->
+    <!-- 「+」插入 / 转换合并面板：@提及、/命令、收键盘、常用块类型、块操作集中在一处，
+         避免把 44px 按钮全塞进 412px 宽的键盘工具条导致溢出。 -->
+    <div v-if="insertSheet.isOpen" class="nexus-overlay-backdrop fixed inset-0 z-[65] bg-black/60" @touchstart.passive="armBackdrop($event)" @mousedown="armBackdrop($event)" @click="closeFromBackdrop(() => insertSheet.isOpen = false)"></div>
+    <div v-if="insertSheet.isOpen" class="nexus-sheet fixed z-[70] inset-x-0 bg-void border-t border-line rounded-t-xl shadow-2xl overflow-y-auto custom-scrollbar pb-[env(safe-area-inset-bottom,0px)]" :style="sheetOverlayStyle" @touchstart.passive="armOverlayTouch()" @click.capture="guardOverlayClick($event)" @click.stop>
+      <div class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
+      <div class="nexus-sheet-head">插入 / 转换</div>
+      <div class="grid grid-cols-4 gap-1 px-3 pb-2">
+        <button v-for="q in quickCommands" :key="q.key" @pointerdown.prevent="q.run()"
+                class="flex flex-col items-center justify-center gap-0.5 py-2 rounded-sm bg-panel/40 active:bg-panel text-display">
+          <span class="text-base font-bold">{{ q.icon }}</span><span class="text-[10px] text-dim">{{ q.label }}</span>
+        </button>
+      </div>
+      <div class="border-t border-line/50"></div>
+      <div class="nexus-sheet-head">在下方插入块</div>
+      <div class="grid grid-cols-2 gap-1 px-3 pb-2">
+        <button v-for="it in INSERT_SHEET_TYPES" :key="it.type" @pointerdown.prevent="insertBlockOfType(it.type)"
+                class="flex items-center gap-2 px-3 py-2.5 rounded-sm bg-panel/30 active:bg-panel text-sm text-display text-left">
+          <span class="nx-icon">{{ it.icon }}</span>{{ it.label }}
+        </button>
+      </div>
+      <div class="border-t border-line/50"></div>
+      <div class="nexus-sheet-head">更多格式（作用于选中文字）</div>
+      <div class="grid grid-cols-4 gap-1 px-3 pb-2">
+        <button @pointerdown.prevent="runFormatFromSheet('code')" class="py-2 rounded-sm bg-panel/30 active:bg-panel text-xs text-display">&lt;/&gt;</button>
+        <button @pointerdown.prevent="runFormatFromSheet('link')" class="py-2 rounded-sm bg-panel/30 active:bg-panel text-xs text-display">链接</button>
+        <button @pointerdown.prevent="colorPanel = colorPanel === 'text' ? null : 'text'" class="py-2 rounded-sm bg-panel/30 active:bg-panel text-xs text-display">字色</button>
+        <button @pointerdown.prevent="colorPanel = colorPanel === 'bg' ? null : 'bg'" class="py-2 rounded-sm bg-panel/30 active:bg-panel text-xs text-display">高亮</button>
+      </div>
+      <div v-if="colorPanel" class="flex flex-wrap gap-2 px-4 pb-2">
+        <button v-for="c in colorPalette" :key="'ns-'+c.value" @pointerdown.prevent="applyColor(c.value)"
+                class="w-9 h-9 rounded-sm border border-line" :style="{ background: c.value }" :title="c.label"></button>
+        <button @pointerdown.prevent="applyColor('transparent')" class="w-9 h-9 rounded-sm border border-dim text-xs text-dim">清除</button>
+      </div>
+      <div class="border-t border-line/50"></div>
+      <div class="nexus-sheet-head">当前块</div>
+      <button class="nexus-sheet-row" @pointerdown.prevent="openActionMenuForBlock(insertSheet.blockId)"><span class="nx-icon">T⇄</span>转换区块为…</button>
+      <button class="nexus-sheet-row" @pointerdown.prevent="openBlockMove(insertSheet.blockId)"><span class="nx-icon">↕</span>移动到…</button>
+      <button class="nexus-sheet-row" @pointerdown.prevent="duplicateTask(insertSheet.blockId); insertSheet.isOpen = false"><span class="nx-icon">⧉</span>复制块</button>
+      <button class="nexus-sheet-row text-danger" @pointerdown.prevent="deleteCurrentBlock(insertSheet.blockId)"><span class="nx-icon">✕</span>删除块</button>
+    </div>
+
+    <!-- 长按块 / 工具条「⋯」：自有块菜单（Duplicate / Move to / Turn into / Delete）。
+         系统 ActionMode 只在已有文字选区时保留，避免长按时两套菜单并存。 -->
+    <div v-if="blockMenu.isOpen" class="nexus-overlay-backdrop fixed inset-0 z-[65] bg-black/60" @touchstart.passive="armBackdrop($event)" @mousedown="armBackdrop($event)" @click="closeFromBackdrop(() => blockMenu.isOpen = false)"></div>
+    <div v-if="blockMenu.isOpen" class="nexus-sheet fixed z-[70] inset-x-0 bg-void border-t border-line rounded-t-xl shadow-2xl overflow-y-auto custom-scrollbar pb-[env(safe-area-inset-bottom,0px)]" :style="sheetOverlayStyle" @touchstart.passive="armOverlayTouch()" @click.capture="guardOverlayClick($event)" @click.stop>
+      <div class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
+      <div class="nexus-sheet-head">块操作</div>
+      <div v-if="blockMenuTask" class="px-4 pb-2 text-xs text-dim truncate">{{ plainText(blockMenuTask.content || '').slice(0, 60) || '（空块）' }}</div>
+      <button class="nexus-sheet-row" @pointerdown.prevent="duplicateBlockFromMenu()"><span class="nx-icon">⧉</span>复制块（Duplicate）</button>
+      <button class="nexus-sheet-row" @pointerdown.prevent="openBlockMove(blockMenu.blockId)"><span class="nx-icon">↕</span>移动到…（Move to）</button>
+      <button class="nexus-sheet-row" @pointerdown.prevent="openActionMenuForBlock(blockMenu.blockId)"><span class="nx-icon">T⇄</span>转换为…（Turn into）</button>
+      <button class="nexus-sheet-row" @pointerdown.prevent="copyBlockText()"><span class="nx-icon">⎘</span>复制块文本</button>
+      <div class="border-t border-line/50"></div>
+      <button class="nexus-sheet-row" @pointerdown.prevent="moveBlock(blockMenu.blockId, -1)"><span class="nx-icon">↑</span>上移一格</button>
+      <button class="nexus-sheet-row" @pointerdown.prevent="moveBlock(blockMenu.blockId, 1)"><span class="nx-icon">↓</span>下移一格</button>
+      <button class="nexus-sheet-row text-danger" @pointerdown.prevent="deleteCurrentBlock(blockMenu.blockId)"><span class="nx-icon">✕</span>删除块</button>
+    </div>
+
+    <!-- 块 Move to：一次到位地整理长文档，替代「一次一格」的上下移与手机上缺失的拖拽手柄 -->
+    <div v-if="blockMoveOpen.isOpen" class="nexus-overlay-backdrop fixed inset-0 z-[65] bg-black/60" @touchstart.passive="armBackdrop($event)" @mousedown="armBackdrop($event)" @click="closeFromBackdrop(() => blockMoveOpen.isOpen = false)"></div>
+    <div v-if="blockMoveOpen.isOpen" class="nexus-sheet fixed z-[70] inset-x-0 bg-void border-t border-line rounded-t-xl shadow-2xl overflow-y-auto custom-scrollbar pb-[env(safe-area-inset-bottom,0px)]" :style="sheetOverlayStyle" @touchstart.passive="armOverlayTouch()" @click.capture="guardOverlayClick($event)" @click.stop>
+      <div class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
+      <div class="nexus-sheet-head">把块移动到…</div>
+      <button class="nexus-sheet-row" @click="moveBlockTo('start')"><span class="nx-icon">⇤</span>移到文档最前</button>
+      <button class="nexus-sheet-row" @click="moveBlockTo('end')"><span class="nx-icon">⇥</span>移到文档最后</button>
+      <div class="border-t border-line/50"></div>
+      <div class="nexus-sheet-head">放在某个块之后</div>
+      <div class="overflow-y-auto custom-scrollbar" :style="sheetListStyle">
+        <button v-for="b in blockMoveTargets" :key="'bm-'+b.id" class="nexus-sheet-row" @click="moveBlockTo(b.id)">
+          <span class="nx-icon">·</span><span class="truncate">{{ b.label }}</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 页面 Move to：把页面挂到别的父级 / 顶层，手机上无需展开树拖拽 -->
+    <div v-if="pageMoveOpen" class="nexus-overlay-backdrop fixed inset-0 z-[65] bg-black/60" @touchstart.passive="armBackdrop($event)" @mousedown="armBackdrop($event)" @click="closeFromBackdrop(() => pageMoveOpen = false)"></div>
+    <div v-if="pageMoveOpen" class="nexus-sheet fixed z-[70] inset-x-0 bg-void border-t border-line rounded-t-xl shadow-2xl overflow-y-auto custom-scrollbar pb-[env(safe-area-inset-bottom,0px)]" :style="sheetOverlayStyle" @touchstart.passive="armOverlayTouch()" @click.capture="guardOverlayClick($event)" @click.stop>
+      <div class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
+      <div class="nexus-sheet-head">把「{{ activePage?.title || '无标题' }}」移动到…</div>
+      <button class="nexus-sheet-row" @click="moveActivePageUnder(null)"><span class="nx-icon">⌂</span>顶层（根页面）</button>
+      <div class="border-t border-line/50"></div>
+      <div class="nexus-sheet-head">成为某个页面的子页</div>
+      <div class="overflow-y-auto custom-scrollbar" :style="sheetListStyle">
+        <button v-for="p in pageMoveTargets" :key="'pm-'+p.id" class="nexus-sheet-row" @click="moveActivePageUnder(p.id)">
+          <span class="nx-icon">{{ p.icon || '📄' }}</span><span class="truncate">{{ p.title || '无标题' }}</span>
+        </button>
+        <div v-if="!pageMoveTargets.length" class="text-xs text-dim py-4 text-center">没有可作为父级的其它页面</div>
+      </div>
+    </div>
+
+    <!-- 全局搜索（移动端内容页）：全文搜索 + 最近访问 + 收藏，复用侧栏同一份数据与结果 -->
+    <div v-if="searchSheetOpen" class="nexus-search-sheet fixed inset-0 z-[70] bg-void flex flex-col" :style="fullOverlayStyle" @touchstart.passive="armOverlayTouch()" @click.capture="guardOverlayClick($event)" @click.stop>
+      <div class="pt-safe px-3 pb-2 flex items-center gap-2 border-b border-line shrink-0">
+        <svg class="w-4 h-4 text-dim shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input ref="searchInputRef" v-model="searchQuery" type="text" placeholder="搜索标题或正文…"
+               class="flex-1 bg-transparent outline-none py-2.5 text-sm text-display placeholder:text-dim/70" />
+        <button @click="searchSheetOpen = false" class="shrink-0 px-2 py-2 text-sm text-accent">取消</button>
+      </div>
+      <div class="flex-1 overflow-y-auto custom-scrollbar px-2 py-2">
+        <template v-if="searchQuery.trim()">
+          <div v-if="searchResults.length === 0" class="text-xs text-dim py-6 text-center">无匹配结果</div>
+          <button v-for="r in searchResults" :key="'ss-'+r.page.id" @click="pickSearchHit(r.page.id)" class="w-full text-left px-3 py-3 rounded-sm active:bg-panel/60">
+            <div class="text-sm text-display truncate" v-html="r.isTitleHit ? r.snippet : (r.page.title || '无标题')"></div>
+            <div v-if="!r.isTitleHit && r.snippet" class="text-xs text-dim truncate mt-0.5" v-html="r.snippet"></div>
+          </button>
+        </template>
+        <template v-else>
+          <template v-if="recentPages.length">
+            <div class="nexus-sheet-head">最近访问</div>
+            <button v-for="p in recentPages" :key="'sr-'+p.id" class="nexus-sheet-row" @click="pickSearchHit(p.id)">
+              <span class="nx-icon">{{ p.icon || '🕘' }}</span><span class="truncate">{{ p.title || '无标题' }}</span>
+            </button>
+          </template>
+          <template v-if="favoritePages.length">
+            <div class="nexus-sheet-head">收藏</div>
+            <button v-for="p in favoritePages" :key="'sf-'+p.id" class="nexus-sheet-row" @click="pickSearchHit(p.id)">
+              <span class="nx-icon">★</span><span class="truncate">{{ p.title || '无标题' }}</span>
+            </button>
+          </template>
+          <div v-if="!recentPages.length && !favoritePages.length" class="text-xs text-dim py-6 text-center">输入关键词搜索所有页面标题与正文</div>
+        </template>
+      </div>
+    </div>
+
     <!-- 页面「···」菜单：触屏 bottom sheet / 桌面 popover（复用块菜单双形态范式）。
          收拢页面级操作——导出 / 收藏 / 新建子页 / 重命名 / 删除。 -->
-    <div v-if="pageMenuConfig.isOpen" class="fixed inset-0 z-40" :class="isCoarsePointer ? 'bg-black/60' : 'bg-transparent'" @click="closePageMenu"></div>
+    <div v-if="pageMenuConfig.isOpen" class="nexus-overlay-backdrop fixed inset-0 z-40" :class="isCoarsePointer ? 'bg-black/60' : 'bg-transparent'" @touchstart.passive="armBackdrop($event)" @mousedown="armBackdrop($event)" @click="closeFromBackdrop(closePageMenu)"></div>
     <div v-if="pageMenuConfig.isOpen && activePage"
          class="fixed z-50 bg-void text-sm overflow-y-auto custom-scrollbar"
          :class="isCoarsePointer
-            ? 'action-menu-sheet inset-x-0 bottom-0 border-t border-line shadow-2xl rounded-t-lg max-h-[70vh] pb-[env(safe-area-inset-bottom,0px)]'
+            ? 'action-menu-sheet inset-x-0 border-t border-line shadow-2xl rounded-t-lg pb-[env(safe-area-inset-bottom,0px)]'
             : 'action-menu-popup w-52 border border-line shadow-2xl py-1 rounded-sm max-h-[70vh]'"
-         :style="isCoarsePointer ? undefined : { top: `${pageMenuConfig.y}px`, left: `${pageMenuConfig.x}px` }"
-         @click.stop>
+         :style="isCoarsePointer ? sheetOverlayStyle : { top: `${pageMenuConfig.y}px`, left: `${pageMenuConfig.x}px` }"
+         @touchstart.passive="armOverlayTouch()" @click.capture="guardOverlayClick($event)" @click.stop>
       <div v-if="isCoarsePointer" class="w-10 h-1 bg-dim/60 rounded-full mx-auto my-2"></div>
       <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="exportMarkdown(); closePageMenu()">
         <span class="font-['JetBrains_Mono',monospace] text-dim">↓</span> 导出为 Markdown
@@ -926,6 +1074,10 @@
       </button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="createPage(activePage.id); closePageMenu()">
         <span class="font-['JetBrains_Mono',monospace] text-dim">+</span> 新建子页面
+      </button>
+      <!-- Move to：手机上没有侧栏树拖拽，改层级 / 挪到别的父页面只能靠这里 -->
+      <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="closePageMenu(); markOverlayOpen(); pageMoveOpen = true">
+        <span class="font-['JetBrains_Mono',monospace] text-dim">↕</span> 移动到…
       </button>
       <button class="w-full text-left px-4 py-1.5 hover:bg-panel/50 transition-colors flex items-center gap-2" @click="focusTitle(); closePageMenu()">
         <span class="font-['JetBrains_Mono',monospace] text-dim">✎</span> 重命名
@@ -1281,28 +1433,103 @@ setTimeout(() => { booting.value = false; showOverlay.value = false; }, 8000);
 const isMobile = ref(typeof window !== 'undefined' && window.innerWidth < 768);
 const mobileView = ref<'list' | 'content'>('list');
 
-// 进入文档页后的「静默窗口」：这段时间内拒绝程序化聚焦（focusConfig 的自动落光标），
-// 避免一进页面就唤起软键盘——对齐 Notion：进入页面是「阅读」，不自动落光标。
+// 移动端「阅读模式」：点开文档是阅读，不是编辑。
+// 打开 / 切换文档后一律不落光标、不弹软键盘；只有用户真的点进某个 block 才解锁编辑。
+// 这是状态门禁，不再依赖「进入后 N ms 内别聚焦」这类时序猜测：WebView / 输入法
+// 无论什么时候把焦点塞回 contenteditable，都会被 onBlockFocus 拦下并交出焦点。
+const readingMode = ref(false);
 let suppressAutoFocusUntil = 0;
 
-// 进入内容页（仅移动端）：切到 content 视图（列表/内容分离，像 Notion 页面栈）。
 const enterContent = () => {
   if (!isMobile.value) return;
-  if (mobileView.value === 'content') return;   // 已在内容页则不再重复切换
-  mobileView.value = 'content';
-  // 不自动落光标、不弹键盘：清掉待聚焦目标，并交出可能残留的焦点。
-  suppressAutoFocusUntil = Date.now() + 600;
+  if (mobileView.value !== 'content') mobileView.value = 'content';
+  // 每次打开 / 切换一篇文档都重置阅读模式（含 hashchange、会话接力切页）。
+  readingMode.value = true;
+  suppressAutoFocusUntil = Date.now() + 900;
   setFocusConfig(null, null);
-  nextTick(() => {
+  const releaseFocus = () => {
+    if (!readingMode.value) return;   // 用户已点进 block，绝不抢回焦点
     const ae = document.activeElement as HTMLElement | null;
     if (ae && (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) ae.blur();
-  });
+    window.getSelection()?.removeAllRanges();
+    hideFormatToolbar();
+  };
+  nextTick(releaseFocus);
+  // 内容页刚挂载时 WebView 可能晚一拍把焦点交回可编辑元素，补一次收尾；
+  // 仍受 readingMode 守卫，用户已开始编辑时绝不执行。
+  window.setTimeout(releaseFocus, 260);
 };
 // 关闭当前最上层的浮层（链接弹窗 / 设置 / 页面菜单 / 操作菜单 / 图标 / 封面 / 提及）。
 // 返回是否关闭了某个浮层——用于「返回键先关浮层，再走页面栈/退出」，避免误退 App。
 // 只收「真浮层」（有遮罩或独立弹层的那些）；格式工具栏 / 链接气泡属于随选区出现、
 // 随选区消失的浮动件，状态可能残留，若让它们消费返回键，会导致返回键被永久吞掉。
+/**
+ * 浮层「闪现即关」的结构性防线（讯飞 / 百度输入法真机实测）。
+ * 触屏上工具条按钮用 @pointerdown.prevent 打开浮层，工具条随即被 v-if 移除；
+ * 浏览器在 touchend 之后补发的合成鼠标 / 指针事件会重新 hit-test，落到刚出现的
+ * 遮罩上。部分 WebView / 输入法还会补发一次 pointerdown，于是旧的
+ * 「pointerdown 授权 + click 关闭」也能被同一次短按凑齐，面板闪一下就没了
+ * （长按不派发合成 click 反而正常）——这与具体是哪款输入法无关。
+ *
+ * 现在只认「真实触摸手势」，不猜事件延迟：
+ * ① 遮罩关闭授权只能来自 touchstart —— 浏览器永远不会为合成事件补发 touch 事件；
+ *    桌面形态则只认真实 mousedown（排除 sourceCapabilities.firesTouchEvents）。
+ * ② 全局「点击外部关闭」只监听 pointerdown，且触屏浮层打开期间整体不参与关闭；
+ * ③ 触屏忽略输入法附带派发的 Escape（手机没有物理 Esc 键，见 handleEscape）。
+ */
+let backdropArmedAt = 0;
+// 面板内部动作的授权：合成 click 会重新 hit-test 到刚弹出的底部面板按钮上，
+// 直接执行「转换区块为」等命令并把面板关掉，同样表现为「闪一下就没了」。
+let overlayTouchArmedAt = 0;
+let lastOverlayOpenAt = 0;
+let overlayGestureSeq = 0;
+let overlayGestureConsumedSeq = -1;
+// 兜底上限：某些老 WebView 不派发 pointerdown，避免抑制状态永久不解除
+const OVERLAY_OPEN_MAX_MS = 1500;
+const markOverlayOpen = () => {
+  lastOverlayOpenAt = Date.now();
+  overlayGestureSeq += 1;
+  backdropArmedAt = 0;      // 换浮层时清掉上一个遮罩残留的关闭授权
+  overlayTouchArmedAt = 0;  // 新面板打开时不继承上一块面板的触摸授权
+};
+/** 次要防线：桌面 Esc / 返回键去抖用；主防线不依赖它。 */
+const overlayInOpeningGesture = () =>
+  overlayGestureSeq !== overlayGestureConsumedSeq &&
+  Date.now() - lastOverlayOpenAt < OVERLAY_OPEN_MAX_MS;
+/** 遮罩关闭授权：触屏只认真实 touchstart，桌面只认真实鼠标按下。
+ *  合成 mousedown / pointerdown / click 都拿不到授权，因此同一次短按补发的
+ *  事件序列无论被延迟多久，都关不掉刚打开的面板。 */
+const armBackdrop = (e: Event) => {
+  if (e.type === 'touchstart') {
+    if (!(e as TouchEvent).changedTouches?.[0]) return;
+    backdropArmedAt = Date.now();
+    return;
+  }
+  if (isCoarsePointer.value) return;   // 触屏上的鼠标事件一律是兼容合成事件
+  if ((e as any).sourceCapabilities?.firesTouchEvents) return;
+  backdropArmedAt = Date.now();
+};
+/** 遮罩关闭统一入口：必须有真实按压授权才执行关闭。 */
+const closeFromBackdrop = (close: () => void) => {
+  if (Date.now() - backdropArmedAt > 1200) return;
+  backdropArmedAt = 0;
+  close();
+};
+/** 面板内动作同样只认真实触摸手势：面板自己收到过 touchstart 才放行其中的 click。
+ *  打开浮层那一下的 touchstart 落在工具条按钮上，补发的合成 click 落进面板时
+ *  没有授权，既不会误执行菜单命令，也不会连带把面板关掉。 */
+const armOverlayTouch = () => { overlayTouchArmedAt = Date.now(); };
+const guardOverlayClick = (e: MouseEvent) => {
+  if (!isCoarsePointer.value) return;
+  if (Date.now() - overlayTouchArmedAt > 1200) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+};
+
 const closeTopmostOverlay = (): boolean => {
+  // 新面板（+ / 块菜单 / 搜索 / Move to）是全屏或带遮罩的最上层，优先消费返回键
+  if (anyMobileSheetOpen.value) { closeMobileSheets(); return true; }
   if (linkDialog.value.visible) { closeLinkDialog(); return true; }
   if (settingsOpen.value) { settingsOpen.value = false; return true; }
   if (pageMenuConfig.value.isOpen) { closePageMenu(); return true; }
@@ -1320,6 +1547,7 @@ const closeTopmostOverlay = (): boolean => {
 // 否则某个残留的浮层状态会让箭头整个失效（用户就被困在文档里）。
 const goToList = () => {
   if (!isMobile.value) return;
+  (document.activeElement as HTMLElement | null)?.blur?.();
   mobileView.value = 'list';
 };
 
@@ -1385,6 +1613,10 @@ const startSidebarResize = (e: MouseEvent) => {
 // （尤其避免 content→list 后被第二次触发而误退 App）。
 let lastBackAt = 0;
 const performBack = (allowExit: boolean): void => {
+  // 少数输入法 / WebView 在焦点切换时会经原生层误派发一次返回回调，与浮层打开几乎
+  // 同帧；真实用户按返回键不会这么快。不依赖手势令牌（补发的 pointerdown 会把它追平）。
+  if (isCoarsePointer.value && lastOverlayOpenAt && Date.now() - lastOverlayOpenAt < 300) return;
+  if (overlayInOpeningGesture() && Date.now() - lastOverlayOpenAt < 150) return;
   const now = Date.now();
   if (now - lastBackAt < 400) return;
   lastBackAt = now;
@@ -1443,6 +1675,39 @@ const getActiveEditable = (): HTMLElement | null => {
   if (!ae) return null;
   return (ae.isContentEditable || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') ? ae : null;
 };
+// 长按块 → 自有块菜单（Notion 的 Duplicate / Move to / Turn into / Delete）。
+// Android WebView 长按通常会派发 contextmenu（onEditorContextMenu 处理）；这里再加一条
+// 计时器兜底，覆盖部分 ROM / 输入法不派发 contextmenu 的情况。两道守卫避免抢走系统选词：
+// ① 触摸位移超过 10px 判为滚动；② 若期间系统已建立非空选区或刚派发 selectionchange，让位。
+let lastSelectionChangeAt = 0;
+let blockLongPressTimer = 0;
+let blockLongPressId = '';
+let blockLongPressX = 0;
+let blockLongPressY = 0;
+const cancelBlockLongPress = () => {
+  if (blockLongPressTimer) { window.clearTimeout(blockLongPressTimer); blockLongPressTimer = 0; }
+  blockLongPressId = '';
+};
+const armBlockLongPress = (blockId: string, x: number, y: number) => {
+  cancelBlockLongPress();
+  if (!isCoarsePointer.value || !blockId) return;
+  blockLongPressId = blockId;
+  blockLongPressX = x;
+  blockLongPressY = y;
+  blockLongPressTimer = window.setTimeout(() => {
+    blockLongPressTimer = 0;
+    if (!blockLongPressId) return;
+    const sel = window.getSelection();
+    if ((sel && !sel.isCollapsed) || Date.now() - lastSelectionChangeAt < 400) {
+      cancelBlockLongPress();
+      return;
+    }
+    const id = blockLongPressId;
+    cancelBlockLongPress();
+    openBlockMenu(id);
+  }, 520);
+};
+
 const onEditorTouchStart = (e: TouchEvent) => {
   if (!isMobile.value || mobileView.value !== 'content') return;
   const t = e.touches[0];
@@ -1453,8 +1718,19 @@ const onEditorTouchStart = (e: TouchEvent) => {
   const targetEl = t ? (t.target as HTMLElement) : null;
   const onEditable = !!(targetEl && (targetEl.closest('.ce-block') || targetEl.closest('input, textarea')));
   kbDragTracking = !onEditable;
+  if (onEditable && targetEl) {
+    const row = targetEl.closest('[data-block-id]') as HTMLElement | null;
+    armBlockLongPress(row?.dataset.blockId || '', t?.clientX ?? 0, t?.clientY ?? 0);
+  } else {
+    cancelBlockLongPress();
+  }
 };
 const onEditorTouchMove = (e: TouchEvent) => {
+  const mt = e.touches[0];
+  if (blockLongPressId && blockLongPressTimer && mt &&
+      (Math.abs(mt.clientX - blockLongPressX) > 10 || Math.abs(mt.clientY - blockLongPressY) > 10)) {
+    cancelBlockLongPress();
+  }
   if (!kbDragTracking) return;
   const t = e.touches[0];
   if (!t) return;
@@ -1469,7 +1745,7 @@ const onEditorTouchMove = (e: TouchEvent) => {
   kbDragTracking = false;
   ae.blur();
 };
-const onEditorTouchEnd = () => { kbDragTracking = false; };
+const onEditorTouchEnd = () => { kbDragTracking = false; cancelBlockLongPress(); };
 
 // 受控下拉刷新（仅移动端）：
 // - 列表页才允许下拉刷新；内容编辑页整体禁用（与安卓手势导航不再冲突）。
@@ -1547,6 +1823,8 @@ const searchResults = computed<SearchHit[]>(() => {
 const handleSearchHotkey = (e: KeyboardEvent) => {
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
     e.preventDefault();
+    // 移动端内容页看不到侧栏搜索框，改用全屏搜索面板（含最近访问 / 收藏）
+    if (isMobile.value && mobileView.value === 'content') { openSearchSheet(); return; }
     const input = document.querySelector('input[placeholder*="搜索标题"]') as HTMLInputElement | null;
     input?.focus();
     input?.select();
@@ -2541,10 +2819,18 @@ onMounted(async () => {
   // 全局点击关闭转换区块浮窗
   const handleGlobalClick = (e: MouseEvent) => {
     const target = e.target as HTMLElement;
+    // 这里已经只监听真实 pointerdown：合成鼠标事件进不来，无需再做时序抑制。
+    // 工具条 / 遮罩 / 弹窗内部点击一律不参与「点击外部关闭」：
+    // 工具条按钮在 pointerdown 打开浮层，随后的合成 mousedown 不能再把 isOpen 置回 false；
+    // 遮罩自己的 @click（closeFromBackdrop）负责关闭，且不应顺手隐藏常驻工具条。
+    if (target.closest('.format-toolbar, .nexus-overlay-backdrop, .nexus-link-dialog')) return;
     // 点击菜单自身时不关闭（菜单上有 @click.stop / @mousedown.prevent）
-    if (target.closest('.action-menu-popup, .action-menu-sheet')) return;
+    if (target.closest('.action-menu-popup, .action-menu-sheet, .nexus-sheet, .nexus-search-sheet')) return;
     // 链接弹窗内的点击不触发任何关闭逻辑（否则恢复选区前选区就被清了）
     if (target.closest('.fixed.inset-0.z-\\[60\\]')) return;
+    // 触屏浮层打开期间，补发 / 延迟的 pointerdown 一律不参与「点击外部关闭」：
+    // 浮层只由遮罩的真实 touch 手势、系统返回键或菜单项自己关闭。
+    if (isCoarsePointer.value && overlayOpen.value) return;
     actionMenuConfig.value.isOpen = false;
     // 点击工具栏自身时不关闭，否则按钮的 mousedown 还没执行选区就被清掉了
     if (!target.closest('.format-toolbar')) hideFormatToolbar();
@@ -2557,18 +2843,42 @@ onMounted(async () => {
       coverActionsVisible.value = false;
     }
   };
-  document.addEventListener('mousedown', handleGlobalClick);
+  // 只在真实 pointerdown 上做「点击外部关闭」。触屏补发的合成鼠标事件
+  // （mousedown/mouseup/click）以及输入法附带事件都不派发 pointerdown，
+  // 因此无论被讯飞延迟到 400ms 还是 800ms，都进不了这个入口把刚开的浮层秒关。
+  // 真实点击行为完全一致，只是比 mousedown 早一瞬间。
+  // 阅读模式解锁：只有真实落在内容块上的按压才退出阅读模式，随后浏览器原生
+  // 聚焦、落光标并弹键盘。程序化 / WebView 自动聚焦不经过这条路径。
+  const unlockReadingMode = (e: Event) => {
+    if (!readingMode.value || !isMobile.value) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.('.ce-block')) readingMode.value = false;
+  };
+  document.addEventListener('touchstart', unlockReadingMode, { capture: true, passive: true });
+  document.addEventListener('pointerdown', unlockReadingMode, { capture: true, passive: true });
+  document.addEventListener('pointerdown', handleGlobalClick);
+  // 手势边界：capture 阶段（早于按钮处理器与上面的 bubble 监听）记录新手势起点
+  document.addEventListener('pointerdown', () => { overlayGestureConsumedSeq = overlayGestureSeq; }, { capture: true, passive: true });
 
   // Escape 键关闭浮窗
   const handleEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return;
+    // 触屏设备没有物理 Esc 键：讯飞 / 百度等输入法在焦点切换、收键盘时经常附带
+    // 派发一次 Escape（可能延迟数百毫秒），它不是用户按的取消键。旧逻辑会把它
+    // 当成「关浮层」甚至「返回列表」，表现就是 T⇄ 面板闪一下。触屏一律忽略，
+    // 浮层由系统返回键 / 点遮罩关闭；桌面形态仍保留原有 Esc 行为。
+    if (isCoarsePointer.value) return;
+    if (overlayInOpeningGesture()) return;
+    // 全屏 / 带遮罩的新面板优先关闭，不要直接把用户踢回列表页
+    if (anyMobileSheetOpen.value) { closeMobileSheets(); return; }
+    // 转换区块面板也要优先关闭：它不在 anyMobileSheetOpen 里，旧逻辑会直接 goToList()
+    if (actionMenuConfig.value.isOpen) { actionMenuConfig.value.isOpen = false; return; }
     // 页面「⋯」菜单打开时优先关闭它
     if (sidebarMenu.value) { closeSidebarMenu(); return; }
     // 移动端内容页优先：Esc 走「返回列表」（与系统返回一致）
     if (isMobile.value && mobileView.value === 'content') { goToList(); return; }
     // 链接弹窗优先：它内部输入框已自行处理 Esc，这里兜底非输入焦点触发的情况
     if (linkDialog.value.visible) { closeLinkDialog(); return; }
-    actionMenuConfig.value.isOpen = false;
   };
   document.addEventListener('keydown', handleEscape);
   document.addEventListener('keydown', handleSearchHotkey);
@@ -2654,6 +2964,8 @@ onMounted(async () => {
   // 桌面仍只走 mouseup，保持原有行为一像素不变。
   let selChangeTimer: number | null = null;
   document.addEventListener('selectionchange', () => {
+    // 长按守卫：系统选词会派发 selectionchange，此时不要把「长按块菜单」叠上去
+    lastSelectionChangeAt = Date.now();
     if (!isCoarsePointer.value) return;
     if (selChangeTimer != null) window.clearTimeout(selChangeTimer);
     selChangeTimer = window.setTimeout(() => {
@@ -2661,6 +2973,8 @@ onMounted(async () => {
       const s = window.getSelection();
       const hasRange = !!(s && !s.isCollapsed);
       if (!showFormatToolbarForSelection()) hideFormatToolbar();
+      // 光标 / 选区变了，B I U S 的开关态要跟着变（只写有变化的值）
+      refreshFormatStates();
       // 片选时把选区滚到键盘上沿之上：选中的文字与吸底工具栏都保持可见、可编辑
       if (hasRange) scheduleCaretIntoView();
     }, 120);
@@ -2740,6 +3054,8 @@ onMounted(async () => {
       if (info) {
         lastTouchedBlockId = info.blockId;
         window.setTimeout(() => {
+          // 阅读模式未被真实点击解锁前，绝不补这次 focus（不弹键盘、不落光标）
+          if (readingMode.value) return;
           // 兜底：极少数 ROM 上原生点击未聚焦 contenteditable 时才补一次 focus；
           // 正常路径下浏览器已原生聚焦，这里不执行，不会重建 InputConnection。
           const ae = document.activeElement as HTMLElement | null;
@@ -3161,6 +3477,15 @@ const focusedTaskId = ref<string | null>(null);
 // 把正在输入的块 innerHTML 整段重写 → 字符被吞。这里用显式标志做第二道防线。
 const editingBlockId = ref<string | null>(null);
 const onBlockFocus = (id: string) => {
+  // 阅读模式：任何非用户点击带来的聚焦（WebView 自动聚焦 / 残余焦点 / 程序化 focus）
+  // 都立即交还，不落光标、不弹键盘、不显示编辑工具条。
+  if (readingMode.value) {
+    const ae = document.activeElement as HTMLElement | null;
+    if (ae?.isContentEditable) ae.blur();
+    window.getSelection()?.removeAllRanges();
+    hideFormatToolbar();
+    return;
+  }
   focusedTaskId.value = id;
   editingBlockId.value = id;
   setFocusConfig(id, null);
@@ -3201,6 +3526,7 @@ const hideFormatToolbar = () => { formatToolbar.value.visible = false; colorPane
  * 只接管 .ce-block 内的选区：标题输入框、设置面板、其它输入框仍交给系统处理。
  */
 const showFormatToolbarForSelection = (): boolean => {
+  if (readingMode.value) return false;
   // 触屏（手机）：Notion Android 形态——只要光标落在内容块里，键盘上方就常驻一条
   // 工具栏（加粗/斜体/变类型…），不再要求先长按选中文字。片选与折叠光标共用同一条，
   // 触屏样式吸底，不依赖选区矩形。仅接管 .ce-block：标题、设置面板等仍交给系统。
@@ -3239,7 +3565,77 @@ const showFormatToolbarForSelection = (): boolean => {
 };
 
 // 移动端输入环境（第二期）：软键盘遮挡高度 + 是否触屏
-const { keyboardInset, isCoarsePointer } = useMobileInput();
+const { keyboardInset, keyboardVisible, visualHeight, visualOffsetTop, isCoarsePointer } = useMobileInput();
+/**
+ * 触屏工具条显示闸门：键盘收起后不再常驻（用户反馈的问题），片选时仍保留以便复制。
+ * keyboardVisible 由 visualViewport 高度差驱动 —— 现代 Android WebView 布局视口随
+ * 键盘一起收缩，keyboardInset 恒为 0，无法据此判断键盘是否弹出。
+ * 定位的 bottom 仍用 keyboardInset（收缩时 0 即贴在键盘上沿），配合 CSS 过渡消除弹跳。
+ */
+const toolbarActive = computed(() => {
+  if (readingMode.value) return false;
+  if (!isCoarsePointer.value) return true;
+  return keyboardVisible.value || hasTextSelection();
+});
+
+/**
+ * 触屏浮层的统一几何：所有 bottom sheet / 全屏浮层共用，完全由 visualViewport 驱动。
+ *
+ * 设计前提（用户点了光标 → 键盘弹出 / 没点光标 → 键盘收起，两种状态都要完整显示）：
+ * - 不能用 CSS vh：移动端 100vh 是「最大视口」，键盘弹出时不收缩，底部面板会被键盘裁掉。
+ * - bottom 用 keyboardInset：Android 布局视口随键盘收缩时它恒为 0（贴可视区底部），
+ *   iOS / 旧 WebView 布局视口不收缩时它是键盘真实高度（把面板顶到键盘上沿）。
+ * - maxHeight 用 visualHeight（可视视口真实高度）：键盘弹出时自动变小，面板完整可见且
+ *   内部可滚动；键盘收起后自动变大。visualViewport.resize 持续更新，键盘动画期间跟随。
+ * - 不主动 blur 光标 / 收键盘：面板里的「更多格式」仍要 execCommand 作用于原选区，
+ *   强行收键盘会让这些命令失效，也会造成键盘闪退。
+ */
+const SHEET_GAP_PX = 8;
+const availableHeight = computed(() => visualHeight.value || window.innerHeight);
+/** 底部面板：贴在键盘（或屏幕）上沿之上，高度不超过可视区 */
+const sheetOverlayStyle = computed(() => ({
+  bottom: `calc(${keyboardInset.value}px + env(safe-area-inset-bottom, 0px) + ${SHEET_GAP_PX}px)`,
+  maxHeight: `${Math.max(180, Math.round(availableHeight.value - SHEET_GAP_PX * 2))}px`,
+}));
+/** 全屏浮层（搜索 / 链接弹窗）：上下边界正好夹住可视区，内容居中于可视区而非整屏 */
+const fullOverlayStyle = computed(() => ({
+  top: `${visualOffsetTop.value}px`,
+  bottom: `calc(${keyboardInset.value}px + env(safe-area-inset-bottom, 0px))`,
+}));
+/** 面板内部的长列表同样不能用 vh，按可视区比例给上限 */
+const sheetListStyle = computed(() => ({
+  maxHeight: `${Math.max(120, Math.round(availableHeight.value * 0.4))}px`,
+}));
+
+/**
+ * 格式按钮的真实开关态与瞬时按压反馈。
+ * 触屏 WebView 的 :hover / :active 会粘滞，且 @pointerdown.prevent 抑制了合成
+ * mouseup/click，浏览器没有机会清掉按下态 —— 表现就是「点过之后按钮都显示被按下」。
+ * 因此不再依赖伪类：开关态用 queryCommandState 显式计算，按压态由 JS 定时器 180ms
+ * 后清除，同一时刻只有一个按钮亮起。
+ */
+const FORMAT_CMDS = ['bold', 'italic', 'underline', 'strikeThrough'] as const;
+const activeFormats = ref<Record<string, boolean>>({});
+const pressedFormat = ref<string | null>(null);
+let pressedFormatTimer = 0;
+const refreshFormatStates = () => {
+  if (typeof document.queryCommandState !== 'function') return;
+  const next: Record<string, boolean> = {};
+  for (const cmd of FORMAT_CMDS) {
+    try { next[cmd] = document.queryCommandState(cmd); } catch { next[cmd] = false; }
+  }
+  const cur = activeFormats.value;
+  // 值未变就不写 ref：selectionchange 在输入时高频触发，避免每次击键重渲染工具条
+  if (FORMAT_CMDS.every((c) => !!cur[c] === next[c])) return;
+  activeFormats.value = next;
+};
+const onFormatPress = (cmd: string) => {
+  pressedFormat.value = cmd;
+  window.clearTimeout(pressedFormatTimer);
+  pressedFormatTimer = window.setTimeout(() => { pressedFormat.value = null; }, 180);
+  execFormat(cmd);
+  refreshFormatStates();
+};
 
 // 软键盘遮挡：现代 Android WebView 布局视口随键盘收缩，keyboardInset 恒为 0，
 // 因此不能靠它判定键盘弹出；改由 visualViewport / window 的 resize 事件驱动。
@@ -3376,7 +3772,13 @@ const openEditLinkDialog = (el: HTMLAnchorElement) => {
   linkDialog.value = { visible: true, url: el.getAttribute('href') || '', selectedText: (el.textContent || '').trim(), editEl: el };
   nextTick(() => linkInputRef.value?.focus());
 };
-const closeLinkDialog = () => { linkDialog.value.visible = false; savedLinkRange = null; hideFormatToolbar(); };
+const closeLinkDialog = () => {
+  linkDialog.value.visible = false;
+  savedLinkRange = null;
+  // 触屏：链接弹窗关闭后键盘工具条应自动回来（visible 保留，由 toolbarActive 决定显隐）；
+  // 桌面工具条仍跟随选区，沿用原有收起行为。
+  if (!isCoarsePointer.value) hideFormatToolbar();
+};
 const confirmLink = () => {
   const raw = linkDialog.value.url.trim();
   const editEl = linkDialog.value.editEl;
@@ -3487,18 +3889,250 @@ const onCompositionEnd = (e: CompositionEvent, task: Task) => {
 };
 const actionMenuConfig = ref({ isOpen: false, x: 0, y: 0, taskId: '' });
 
-// 手机端移除行前 6 点手柄后，块操作菜单改由键盘上方格式工具栏的「⋯」承接。
-// 从当前选区 / 焦点块反推 blockId；触屏下菜单位置由底部面板 CSS 决定，x/y 仅桌面占位。
-const openActionMenuForCurrentBlock = () => {
+// ===== 移动端 Notion 式编辑工具条 / 面板 =====
+// 设计取舍：键盘条最左固定「+」；@ 提及、/ 命令、收键盘、常用块类型与块操作都收进
+// 「+」底部面板，避免 44px 触摸目标把 412px 宽的工具条撑出屏幕。所有面板共用一组
+// 状态，保证任意时刻只有一个浮层，且系统返回 / Esc / 点击外部行为一致。
+const insertSheet = ref({ isOpen: false, blockId: '' });
+const blockMenu = ref({ isOpen: false, blockId: '' });
+const blockMoveOpen = ref({ isOpen: false, blockId: '' });
+const pageMoveOpen = ref(false);
+const searchSheetOpen = ref(false);
+const searchInputRef = ref<HTMLInputElement | null>(null);
+const anyMobileSheetOpen = computed(() =>
+  insertSheet.value.isOpen || blockMenu.value.isOpen || blockMoveOpen.value.isOpen ||
+  pageMoveOpen.value || searchSheetOpen.value
+);
+const closeMobileSheets = () => {
+  insertSheet.value.isOpen = false;
+  blockMenu.value.isOpen = false;
+  blockMoveOpen.value.isOpen = false;
+  pageMoveOpen.value = false;
+  searchSheetOpen.value = false;
+};
+
+/** 当前光标 / 焦点所在块：工具条、+ 面板、长按块菜单共用同一套推导。 */
+const resolveToolbarBlockId = (): string => {
   const sel = window.getSelection();
   const node = sel?.focusNode ?? sel?.anchorNode;
   const el = node ? (node.nodeType === 3 ? node.parentElement : node as HTMLElement) : null;
   const row = el?.closest('[data-block-id]') as HTMLElement | null;
-  const id = row?.dataset.blockId || focusedTaskId.value;
+  return row?.dataset.blockId || focusedTaskId.value || editingBlockId.value || lastEditedBlockId || '';
+};
+
+const openInsertSheet = () => {
+  const id = resolveToolbarBlockId();
   if (!id) return;
-  // 不主动隐藏工具条：模板用 !actionMenuConfig.isOpen 让位，面板关闭后常驻工具条自动恢复
   colorPanel.value = null;
+  closeMobileSheets();
+  actionMenuConfig.value.isOpen = false;
+  insertSheet.value = { isOpen: true, blockId: id };
+  markOverlayOpen();
+};
+
+/** 「+」面板的常用块类型：点击直接在当前块下方插入该类型并落光标。 */
+const INSERT_SHEET_TYPES = [
+  { type: 'text', label: '文本', icon: 'T' },
+  { type: 'h1', label: '标题 1', icon: 'H1' },
+  { type: 'h2', label: '标题 2', icon: 'H2' },
+  { type: 'todo', label: '待办', icon: '☐' },
+  { type: 'bullet', label: '无序列表', icon: '•' },
+  { type: 'numbered', label: '编号列表', icon: '1.' },
+  { type: 'quote', label: '引用', icon: '"' },
+  { type: 'divider', label: '分割线', icon: '—' },
+];
+
+const insertBlockOfType = (type: string) => {
+  const id = insertSheet.value.blockId || resolveToolbarBlockId();
+  if (!id || !VALID_TYPES.includes(type)) return;
+  const newId = insertTask(id, 'below');
+  if (!newId) return;
+  updateTask(newId, { type, payload: makePayload(type) });
+  insertSheet.value.isOpen = false;
+  // 分割线不可编辑，光标要送到下一块；其余块直接落在新块行首
+  if (type === 'divider') focusAfterBlock(newId);
+  else setFocusConfig(newId, 'start');
+};
+
+/**
+ * 「@ / / / 收键盘」快捷命令。
+ * 提及与斜杠命令刻意走 document.execCommand('insertText')：它会派发 input，
+ * 由既有 handleInput 识别 [[ / 行首 /，复用同一套菜单与同步链路，不另建状态。
+ * 面板按钮用 @pointerdown.prevent 保住 contenteditable 焦点，命令才能落到光标处。
+ */
+const runToolbarCommand = (kind: 'mention' | 'slash' | 'dismiss') => {
+  const id = insertSheet.value.blockId || resolveToolbarBlockId();
+  insertSheet.value.isOpen = false;
+  if (kind === 'dismiss') {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    hideFormatToolbar();
+    return;
+  }
+  if (!id) return;
+  if (kind === 'slash') {
+    const cur = activePage.value?.tasks.find((t: Task) => t.id === id);
+    // slash 菜单只在行首触发：非空块先开一个空块，再把菜单挂到新块上
+    if (cur && plainText(cur.content || '').trim() !== '') {
+      const newId = insertTask(id, 'below');
+      if (!newId) return;
+      updateTask(newId, { content: '/' });
+      activeSlashTaskId.value = newId;
+      slashQuery.value = '';
+      setFocusConfig(newId, 'end');
+      return;
+    }
+  }
+  const ae = document.activeElement as HTMLElement | null;
+  if (!ae?.isContentEditable) inputRefs.value[id]?.focus();
+  document.execCommand('insertText', false, kind === 'mention' ? '[[' : '/');
+};
+
+/** 面板里的格式命令：先收面板（链接弹窗 z-60 不能被 z-70 的面板盖住），再执行。
+ *  按钮用 @pointerdown.prevent 保住 contenteditable 焦点与选区，execFormat 才能生效。 */
+const runFormatFromSheet = (cmd: string) => {
+  insertSheet.value.isOpen = false;
+  colorPanel.value = null;
+  execFormat(cmd);
+};
+
+const quickCommands = [
+  { key: 'mention', icon: '@', label: '提及', run: () => runToolbarCommand('mention') },
+  { key: 'slash', icon: '/', label: '命令', run: () => runToolbarCommand('slash') },
+  { key: 'dismiss', icon: '⌨', label: '收键盘', run: () => runToolbarCommand('dismiss') },
+  { key: 'convert', icon: 'T⇄', label: '转换', run: () => openActionMenuForBlock(insertSheet.value.blockId) },
+];
+
+const openActionMenuForBlock = (id: string) => {
+  if (!id) return;
+  // 同一块再点一次即关闭：T⇄ 既是入口也是开关，避免「只能开不能关」。
+  // 但同一手势内的重复触发（部分输入法会补发一次 pointerdown）不算「再点一次」，
+  // 否则刚开的面板会被自己的第二下关掉。
+  if (actionMenuConfig.value.isOpen && actionMenuConfig.value.taskId === id) {
+    // 手势令牌在部分输入法下会被额外 pointerdown 提前消费，补一条短时窗兜底
+    if (overlayInOpeningGesture() || Date.now() - lastOverlayOpenAt < 300) return;
+    actionMenuConfig.value.isOpen = false;
+    return;
+  }
+  closeMobileSheets();
+  menuQuery.value = '';
+  menuActiveIndex.value = 0;
+  colorPanel.value = null;
+  // 不主动隐藏工具条：模板用 !actionMenuConfig.isOpen 让位，面板关闭后常驻工具条自动恢复
   actionMenuConfig.value = { isOpen: true, x: 0, y: 0, taskId: id };
+  // 同步打手势时间戳，不依赖 watch 的刷新时序（讯飞下必须保证 Escape 守卫立即生效）
+  markOverlayOpen();
+};
+// 工具条 T⇄：从当前选区 / 焦点块反推 blockId；触屏下菜单位置由底部面板 CSS 决定
+const openActionMenuForCurrentBlock = () => { openActionMenuForBlock(resolveToolbarBlockId()); };
+
+/** 长按块 / 工具条「⋯」：打开自有块菜单，收起格式工具条，避免两套菜单并存。 */
+const openBlockMenu = (id: string) => {
+  if (!id) return;
+  cancelBlockLongPress();
+  closeMobileSheets();
+  colorPanel.value = null;
+  blockMenu.value = { isOpen: true, blockId: id };
+  markOverlayOpen();
+};
+const onEditorContextMenu = (e: MouseEvent) => {
+  if (!isCoarsePointer.value) return;
+  const row = (e.target as HTMLElement).closest('[data-block-id]') as HTMLElement | null;
+  if (!row) return;
+  const sel = window.getSelection();
+  // 已有文字选区时保留系统 ActionMode 的复制 / 全选 / 分享，不抢用户刚选中的文字
+  if (sel && !sel.isCollapsed) return;
+  e.preventDefault();
+  openBlockMenu(row.dataset.blockId || '');
+};
+const blockMenuTask = computed(() =>
+  (activePage.value?.tasks ?? []).find((t: Task) => t.id === blockMenu.value.blockId) ?? null
+);
+const duplicateBlockFromMenu = () => {
+  duplicateTask(blockMenu.value.blockId);
+  blockMenu.value.isOpen = false;
+};
+const copyBlockText = () => {
+  const t = blockMenuTask.value;
+  if (t) {
+    try { void navigator.clipboard?.writeText(plainText(t.content || '')).catch(() => { /* 忽略 */ }); }
+    catch { /* WebView 无剪贴板权限时不影响其它操作 */ }
+  }
+  blockMenu.value.isOpen = false;
+};
+const deleteCurrentBlock = (id: string) => {
+  const t = (activePage.value?.tasks ?? []).find((x: Task) => x.id === id);
+  if (!t) return;
+  closeMobileSheets();
+  deleteBlockAndFocus(t);
+};
+
+/** 块 Move to：一次到位整理长文档，替代「一次一格」与手机上被移除的拖拽手柄。 */
+const openBlockMove = (id: string) => {
+  if (!id) return;
+  closeMobileSheets();
+  blockMoveOpen.value = { isOpen: true, blockId: id };
+  markOverlayOpen();
+};
+const blockMoveTargets = computed(() => {
+  const excluded = blockMoveOpen.value.blockId;
+  return (activePage.value?.tasks ?? [])
+    .filter((t: Task) => !t.deletedAt && t.id !== excluded)
+    .map((t: Task) => ({ id: t.id, label: plainText(t.content || '').slice(0, 56) || `（${t.type}）` }));
+});
+const moveBlockTo = (target: 'start' | 'end' | string) => {
+  const id = blockMoveOpen.value.blockId;
+  const page = activePage.value;
+  if (!id || !page) return;
+  const list = page.tasks;
+  const from = list.findIndex((t: Task) => t.id === id);
+  if (from < 0) return;
+  const [item] = list.splice(from, 1);
+  let at: number;
+  if (target === 'start') at = 0;
+  else if (target === 'end') at = list.length;
+  else {
+    const ti = list.findIndex((t: Task) => t.id === target);
+    at = ti < 0 ? list.length : ti + 1;
+  }
+  list.splice(at, 0, item);
+  list.splice(0, list.length, ...writePrevIds(list));
+  markDirty(page.id);
+  closeMobileSheets();
+};
+
+/** 页面 Move to：手机上改层级 / 换父页面，无需展开侧栏树拖拽。 */
+const pageMoveTargets = computed(() => {
+  const cur = activePage.value;
+  if (!cur) return [];
+  const excluded = new Set(collectSubtree(cur.id));   // 自身 + 所有子孙，防止成环
+  return pages.value.filter((p) => !p.deletedAt && !p.isTemplate && !excluded.has(p.id));
+});
+const moveActivePageUnder = (targetId: string | null) => {
+  const cur = activePage.value;
+  if (!cur) return;
+  if (targetId) movePageTo(cur.id, targetId, 'child');
+  else {
+    cur.parentId = null;
+    pages.value.splice(0, pages.value.length, ...writePagePrevIds(pages.value));
+    markDirty(cur.id);
+  }
+  pageMoveOpen.value = false;
+  closePageMenu();
+};
+
+/** 移动端内容页全局搜索：复用侧栏的 searchQuery / searchResults / Recent / Favorites。 */
+const openSearchSheet = () => {
+  closeMobileSheets();
+  actionMenuConfig.value.isOpen = false;
+  searchQuery.value = '';
+  searchSheetOpen.value = true;
+  markOverlayOpen();
+  nextTick(() => searchInputRef.value?.focus());
+};
+const pickSearchHit = (id: string) => {
+  searchSheetOpen.value = false;
+  searchQuery.value = '';
+  selectPage(id);
 };
 const formatMenuConfig = ref({ isOpen: false, x: 0, y: 0, position: 'top', activeTaskId: '' });
 
@@ -4238,6 +4872,25 @@ const openPageMenu = (e: MouseEvent) => {
 };
 const closePageMenu = () => { pageMenuConfig.value.isOpen = false; };
 
+/**
+ * 任何浮层打开、或从一个浮层直接切到另一个，都刷新抑制窗口时间戳。
+ * 用「当前是哪个浮层」的签名而不是布尔：从 + 面板直接切到转换面板时
+ * 「是否有浮层」始终为 true，布尔监听会漏掉这次切换，合成 click 仍会误关。
+ */
+watch(
+  () => [
+    actionMenuConfig.value.isOpen ? 'action' : '',
+    pageMenuConfig.value.isOpen ? 'pageMenu' : '',
+    linkDialog.value.visible ? 'link' : '',
+    insertSheet.value.isOpen ? 'insert' : '',
+    blockMenu.value.isOpen ? 'blockMenu' : '',
+    blockMoveOpen.value.isOpen ? 'blockMove' : '',
+    pageMoveOpen.value ? 'pageMove' : '',
+    searchSheetOpen.value ? 'search' : '',
+  ].filter(Boolean).join('|'),
+  (sig, prev) => { if (sig && sig !== prev) markOverlayOpen(); }
+);
+
 // 反向链接面板（复用已有 backlinks computed：引用了当前页的其它页面）
 const backlinksOpen = ref(false);
 const openBacklinks = () => { backlinksOpen.value = true; };
@@ -4261,6 +4914,7 @@ const closePageHistory = () => { historyOpen.value = false; };
 // 其 getter 引用了 importWizardOpen，故须在 overlayOpen 之前初始化，否则暂时性死区 → 白屏。
 const importWizardOpen = ref(false);
 const overlayOpen = computed(() =>
+  anyMobileSheetOpen.value ||
   actionMenuConfig.value.isOpen ||
   pageMenuConfig.value.isOpen ||
   settingsOpen.value ||
@@ -5136,7 +5790,8 @@ watch(focusConfig, (newVal) => {
   if (!newVal.id) return;
   const id = newVal.id;
   const attempt = (): boolean => {
-    // 静默窗口内不抢焦点（刚进入文档页）；返回 true 以阻止后续延迟重试再聚焦。
+    // 阅读模式 / 静默窗口内不抢焦点；返回 true 以阻止后续延迟重试再聚焦。
+    if (readingMode.value) return true;
     if (Date.now() < suppressAutoFocusUntil) return true;
     const el = inputRefs.value[id];
     if (el) {
@@ -6024,11 +6679,11 @@ const onInsertMouseDown = (targetId: string, event: MouseEvent) => {
   document.addEventListener('mouseup', handleMouseUp);
 };
 
-// 在当前行的上方或下方插入新行
-const insertTask = (targetId: string, position: 'above' | 'below' = 'below') => {
-  if (!activePage.value) return;
+// 在当前行的上方或下方插入新行；返回新块 id 供「+」面板接着改类型 / 落光标。
+const insertTask = (targetId: string, position: 'above' | 'below' = 'below'): string | null => {
+  if (!activePage.value) return null;
   const idx = activePage.value.tasks.findIndex((t: Task) => t.id === targetId);
-  if (idx === -1) return;
+  if (idx === -1) return null;
   const newId = newBlockId();
   const insertIdx = position === 'above' ? idx : idx + 1;
   const targetTask = activePage.value.tasks[idx];
@@ -6041,6 +6696,7 @@ const insertTask = (targetId: string, position: 'above' | 'below' = 'below') => 
   });
   // 使用 focusConfig 让新行获得焦点
   focusConfig.value = { id: newId, pos: 'start' };
+  return newId;
 };
 
 // 菜单视口自适应：菜单是 fixed 浮层，靠近边缘（尤其底部/右缘）会画出可视区。
@@ -6271,11 +6927,48 @@ defineExpose({ exportMarkdown });
 }
 
 /* 浮动格式工具栏 */
-.ft-btn { display: flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 2px; color: rgb(var(--display)); font-size: 13px; transition: all 0.15s; }
+.ft-btn { display: flex; align-items: center; justify-content: center; min-width: 26px; height: 26px; padding: 0 6px; border-radius: 2px; color: rgb(var(--display)); font-size: 13px; transition: background-color 0.15s, color 0.15s, transform 0.15s; }
 .ft-btn:hover { background: rgb(var(--panel)); color: rgb(var(--accent)); }
-/* 触屏：格式工具条吸底后按钮扩到 44px 触摸目标（Material 48dp / Apple 44pt 量级） */
+/* 格式按钮的开关态与按压态都由 JS 显式控制（见 activeFormats / pressedFormat）：
+   触屏 :hover/:active 会粘滞，且 pointerdown.prevent 抑制合成 mouseup，
+   浏览器没有机会清掉「被按下」的观感。同一时刻只有当前格式键保持高亮。 */
+.ft-btn.ft-btn--on { background: rgb(var(--accent) / 0.18); color: rgb(var(--accent)); }
+.ft-btn.ft-btn--pressed { background: rgb(var(--accent) / 0.34); color: rgb(var(--accent)); transform: scale(0.94); }
+@media (hover: none) {
+  /* 触屏点击后 :hover 会一直粘到下一次点击，多个按钮会同时看起来被按下 */
+  .ft-btn:hover { background: transparent; color: rgb(var(--display)); }
+  .ft-btn.ft-btn--on:hover { background: rgb(var(--accent) / 0.18); color: rgb(var(--accent)); }
+}
+/* 触屏：格式工具条吸底后按钮扩到 44px 触摸目标（Material 48dp / Apple 44pt 量级）。
+   keyboardInset 在布局视口收缩时恒为 0（bottom:8px 已贴键盘上沿），但在 iOS / 旧
+   WebView 上会随键盘高度跳变，加过渡消除弹出动画期间工具条的跳动。 */
+.format-toolbar--touch { max-width: 100vw; transition: bottom 160ms ease-out, opacity 160ms ease-out; }
+/* 所有触屏浮层共用 visualViewport 驱动的 bottom/top/maxHeight；键盘弹出（点了光标）
+   与收起（没点光标 / 主动收键盘）两种状态之间平滑过渡，避免窗口跳一下或被裁切。 */
+.nexus-sheet, .action-menu-sheet, .nexus-search-sheet, .nexus-link-dialog {
+  transition: bottom 160ms ease-out, top 160ms ease-out, max-height 160ms ease-out;
+}
 .format-toolbar--touch .ft-btn { min-width: 44px; height: 44px; font-size: 15px; }
 .format-toolbar--touch .color-swatch { width: 36px; height: 36px; }
+
+/* 移动端底部面板（+ / 块菜单 / Move to / 搜索）：统一触摸目标与排版，
+   与 .action-menu-sheet 保持同一观感但不受其「只匹配直接子 button」的限制。 */
+.nexus-sheet-row {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%;
+  padding: 12px 16px; font-size: 14px; text-align: left;
+  color: rgb(var(--display)); transition: background-color 0.15s;
+  background: transparent; border: 0; cursor: pointer;
+}
+.nexus-sheet-row:active { background: rgb(var(--panel)); }
+.nexus-sheet-row.text-danger { color: rgb(var(--danger)); }
+.nexus-sheet-head {
+  padding: 10px 16px 4px; font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: rgb(var(--dim));
+}
+.nx-icon {
+  width: 24px; flex-shrink: 0; text-align: center;
+  color: rgb(var(--dim)); font-family: 'JetBrains Mono', monospace; font-size: 12px;
+}
 /* 触屏：块操作菜单走底部面板，菜单项同样放大触摸目标 */
 .action-menu-sheet > button { padding-top: 12px; padding-bottom: 12px; font-size: 15px; }
 .ce-block a { color: rgb(var(--accent)); text-decoration: underline; text-underline-offset: 4px; cursor: pointer; transition: all 0.2s; }

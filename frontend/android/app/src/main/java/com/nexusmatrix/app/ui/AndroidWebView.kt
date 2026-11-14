@@ -28,6 +28,7 @@ fun AndroidWebView(
     val enabled by controller.enabled
     val atTop by controller.atTop
     val refreshing by controller.refreshing
+    val dark by controller.themeDark
 
     DisposableEffect(webView) {
         onDispose {
@@ -66,6 +67,10 @@ fun AndroidWebView(
             val srl = view as SwipeRefreshLayout
             srl.isEnabled = enabled
             srl.isRefreshing = refreshing
+            // spinner 托盘随 Web 主题换色，深色主题下不再是一块刺眼的白色圆片
+            srl.setProgressBackgroundColorSchemeColor(
+                if (dark) 0xFF1E2126.toInt() else 0xFFF7F7F5.toInt()
+            )
         },
         modifier = modifier,
     )

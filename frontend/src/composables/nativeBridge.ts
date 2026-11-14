@@ -41,6 +41,8 @@ declare global {
       finishPullRefresh(): void;
       /** 用系统浏览器打开外部 URL（安卓 Google OAuth 必须用外部浏览器，WebView 内会被拒） */
       openExternal(url: string): boolean;
+      /** 主题明暗同步：dark=true 时原生改用浅色状态栏图标 + 深色 WebView 背景 */
+      setThemeMode(isDark: boolean): void;
     };
   }
 }

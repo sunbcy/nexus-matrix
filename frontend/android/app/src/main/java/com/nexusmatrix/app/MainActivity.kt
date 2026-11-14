@@ -10,7 +10,9 @@ import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
+import androidx.core.view.WindowInsetsControllerCompat
 import com.getcapacitor.BridgeActivity
 import com.nexusmatrix.app.ui.NexusApp
 import com.nexusmatrix.app.ui.NexusJsBridge
@@ -62,7 +64,7 @@ class MainActivity : BridgeActivity() {
         // 原生据此只在文档列表页顶部启用 SwipeRefreshLayout，触发时走 Web 侧重新同步。
         val pullRefresh = PullRefreshController()
         try {
-            val bridge = NexusJsBridge(pullRefresh, this::openInBrowser)
+            val bridge = NexusJsBridge(pullRefresh, this::openInBrowser, this::applyNativeTheme)
             webView.addJavascriptInterface(bridge, "NexusNativeBridge")
             jsBridge = bridge
         } catch (e: Throwable) {
@@ -103,7 +105,9 @@ class MainActivity : BridgeActivity() {
             try {
                 setContentView(ComposeView(this).apply {
                     setContent {
-                        NexusTheme { NexusApp(webView = webView, controller = pullRefresh) }
+                        // Web 切主题时 setThemeMode 会写 themeDark，触发重组换 Compose 配色
+                        val dark by pullRefresh.themeDark
+                        NexusTheme(darkTheme = dark) { NexusApp(webView = webView, controller = pullRefresh) }
                     }
                 })
             } catch (e: Throwable) {
@@ -186,6 +190,27 @@ class MainActivity : BridgeActivity() {
             return "${u.scheme}://${u.host}$port"
         }
         return "https://localhost"
+    }
+
+    /**
+     * 主题明暗同步（Web → 原生）。
+     *
+     * onCreate 的 enableEdgeToEdge 用 SystemBarStyle.dark（深色图标）匹配默认纸白；
+     * Web 切到深色主题时必须改成浅色图标，否则深底 + 深图标看不清。用
+     * WindowInsetsControllerCompat 覆盖图标外观，不重复调 enableEdgeToEdge，
+     * 避免重设边到边布局导致 WebView 尺寸抖动。WebView 背景也跟着换，
+     * 防止深色主题下加载 / 过滚动时露出白底。
+     */
+    private fun applyNativeTheme(dark: Boolean) {
+        try {
+            bridge?.webView?.setBackgroundColor(if (dark) 0xFF090A0C.toInt() else 0xFFFFFFFF.toInt())
+            WindowInsetsControllerCompat(window, window.decorView).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "同步原生主题失败", e)
+        }
     }
 
     /** 用系统默认浏览器打开 URL（OAuth 代理：复用其持有的 session cookie）。返回是否成功发起。 */

@@ -1,5 +1,7 @@
 package com.nexusmatrix.app.ui
 
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 
@@ -14,6 +16,8 @@ class PullRefreshController {
     val enabled: MutableState<Boolean> = mutableStateOf(false)
     val atTop: MutableState<Boolean> = mutableStateOf(true)
     val refreshing: MutableState<Boolean> = mutableStateOf(false)
+    /** Web 主题的明暗：驱动 Compose 配色与下拉刷新 spinner；系统栏图标由 Activity 侧同步。 */
+    val themeDark: MutableState<Boolean> = mutableStateOf(false)
 }
 
 /**
@@ -23,6 +27,7 @@ class PullRefreshController {
 class NexusJsBridge(
     private val controller: PullRefreshController,
     private val openExternalHandler: (String) -> Boolean,
+    private val themeChangedHandler: (Boolean) -> Unit,
 ) {
     /**
      * 安卓原生登录 OAuth 时，由 Web 侧（auth.ts）在点击「用 Google 登录」时写入后端
@@ -52,6 +57,18 @@ class NexusJsBridge(
     @android.webkit.JavascriptInterface
     fun finishPullRefresh() {
         controller.refreshing.value = false
+    }
+
+    /**
+     * Web 主题切换（theme.ts:applyTheme / 跟随系统变化）时同步系统栏与外壳配色。
+     * JS bridge 运行在 JavaBridge 线程，Compose state 与 window/decorView 必须回主线程。
+     */
+    @android.webkit.JavascriptInterface
+    fun setThemeMode(isDark: Boolean) {
+        Handler(Looper.getMainLooper()).post {
+            controller.themeDark.value = isDark
+            themeChangedHandler(isDark)
+        }
     }
 
     /**

@@ -14,17 +14,49 @@ import {onMounted, onUnmounted, ref} from 'vue';
  */
 export function useMobileInput() {
   const keyboardInset = ref(0);
+  /**
+   * 键盘是否弹出。不能用 keyboardInset 判断：Android WebView 布局视口随键盘
+   * 一起收缩，innerHeight 与 visualViewport.height 相等 → inset 恒为 0。
+   * 改用「可视视口相对无键盘时的高度差」：记录同宽度下的历史最大高度作为基线，
+   * 收缩超过 120px 即判定键盘可见；宽度变化（旋转 / 分屏）时重置基线。
+   */
+  const keyboardVisible = ref(false);
+  /**
+   * 可视视口的高度与顶部偏移（visualViewport）。浮层的 maxHeight / top / bottom
+   * 一律以它为准，而不是 CSS 的 vh —— 移动端 `100vh` 是「最大视口」，键盘弹出时
+   * 不会收缩，用 vh 做出来的底部面板会被键盘裁掉一截。
+   * 这两个值覆盖用户「点没点光标 → 键盘弹没弹」两种状态，键盘动画期间也会持续更新。
+   */
+  const visualHeight = ref(0);
+  const visualOffsetTop = ref(0);
   // 粗指针 = 触屏（手机/平板）。用于决定浮层形态：底部面板 vs 定点 popover。
   const isCoarsePointer = ref(false);
 
+  let baseVvHeight = 0;
+  let baseWidth = 0;
   const updateKeyboard = () => {
     const vv = window.visualViewport;
     if (!vv) {
       keyboardInset.value = 0;
+      keyboardVisible.value = false;
+      visualHeight.value = window.innerHeight;
+      visualOffsetTop.value = 0;
       return;
+    }
+    visualHeight.value = Math.round(vv.height);
+    visualOffsetTop.value = Math.round(vv.offsetTop);
+    const w = window.innerWidth;
+    if (w !== baseWidth) {
+      baseWidth = w;
+      baseVvHeight = vv.height;
+    } else if (vv.height > baseVvHeight) {
+      baseVvHeight = vv.height;
     }
     const inset = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
     keyboardInset.value = inset;
+    // 布局视口收缩（Android）用基线差；布局视口不收缩（iOS / 旧 WebView）用 inset
+    const occluded = Math.max(inset, baseVvHeight - vv.height);
+    keyboardVisible.value = occluded > 120;
   };
 
   /**
@@ -61,5 +93,5 @@ export function useMobileInput() {
     window.removeEventListener('resize', updateKeyboard);
   });
 
-  return { keyboardInset, isCoarsePointer };
+  return { keyboardInset, keyboardVisible, visualHeight, visualOffsetTop, isCoarsePointer };
 }

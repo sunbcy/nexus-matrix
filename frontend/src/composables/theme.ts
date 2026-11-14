@@ -100,11 +100,41 @@ const mq =
     : null;
 const resolveSystem = (): ThemeId => (mq && mq.matches ? SYSTEM_LIGHT : SYSTEM_DARK);
 
+/** 深色主题（原生状态栏需要浅色图标）；纸白 / 暖阳为浅色，其余为深色。 */
+const DARK_THEME_IDS: ThemeId[] = ['void', 'forest', 'ocean', 'graphite'];
+const isDarkTheme = (id: ThemeId): boolean => DARK_THEME_IDS.includes(id);
+
+/**
+ * Web → 原生：同步系统栏图标明暗。
+ * 原生壳用 SystemBarStyle.dark（深色图标）匹配纸白；用户切到深色主题时不通知，
+ * 状态栏图标仍是深色 → 深底上看不清。桥在桌面浏览器不存在，静默跳过。
+ * 刻意内联调用而不 import nativeBridge：主题在 main.ts 里于 mount 前初始化，
+ * 不应把同步状态 / WS 那条依赖链拖进启动路径。
+ */
+const pushNativeTheme = (effective: ThemeId) => {
+  if (typeof window === 'undefined') return;
+  const dark = isDarkTheme(effective);
+  // 冷启动时序：initTheme() 在 main.ts 里于 mount 前执行，可能早于原生
+  // addJavascriptInterface 注入 window.NexusNativeBridge。若此时静默跳过，
+  // 上次选了深色主题的用户会看到「深色界面 + 深色状态栏图标」。短重试直到桥就绪；
+  // 桌面浏览器始终没有桥，最多 6 次空定时器，无副作用。
+  const send = (attempt: number) => {
+    try {
+      const bridge = (window as any).NexusNativeBridge;
+      if (bridge?.setThemeMode) { bridge.setThemeMode(dark); return; }
+    } catch { /* 桥异常：按未就绪处理 */ }
+    if (attempt < 6) window.setTimeout(() => send(attempt + 1), 100 * (attempt + 1));
+  };
+  send(0);
+};
+
 let mediaAttached = false;
 const onSystemChange = () => {
   // 只在当前确实选了「跟随系统」时才改写；切回固定主题后变更事件被忽略
   if (currentThemeId.value === 'system') {
-    document.documentElement.dataset.theme = resolveSystem();
+    const effective = resolveSystem();
+    document.documentElement.dataset.theme = effective;
+    pushNativeTheme(effective);
   }
 };
 
@@ -114,6 +144,7 @@ export const applyTheme = (id: ThemeId) => {
   // 「跟随系统」要落到一个具体的主题上，由系统深浅决定
   const effective = id === 'system' ? resolveSystem() : id;
   document.documentElement.dataset.theme = effective;
+  pushNativeTheme(effective);
   try {
     localStorage.setItem(STORAGE_KEY, id);
   } catch {
