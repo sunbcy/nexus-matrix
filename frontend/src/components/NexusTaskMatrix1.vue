@@ -75,7 +75,7 @@
         </div>
       </div>
 
-      <div ref="listScrollRef" @scroll.passive="onListScroll" class="flex-1 py-4 space-y-6 custom-scrollbar" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'">
+      <div ref="listScrollRef" @scroll.passive="onListScroll" class="flex-1 py-4 space-y-6 sidebar-scroll" :class="overlayOpen ? 'overflow-hidden' : 'overflow-y-auto'">
         <!-- 最近访问（Notion 的 Recent）：本地记录、按访问倒序 -->
         <div v-if="recentPages.length > 0">
           <div class="text-[11px] font-['JetBrains_Mono',monospace] text-dim mb-1 px-4 uppercase tracking-wider font-bold">最近</div>
@@ -163,7 +163,7 @@
                  @dragend="resetPageDrag"
                  @touchstart.stop="onPageHandleTouchStart(page, $event)">
               
-              <div class="flex items-center gap-1.5 truncate">
+              <div class="flex items-center gap-1.5 flex-1 min-w-0 truncate">
                 <button @click.stop="toggleExpand(page.id)" class="w-8 h-8 md:w-5 md:h-5 flex items-center justify-center shrink-0 active:bg-panel rounded text-dim transition-colors" aria-label="展开或折叠子页面">
                   <svg v-if="page.hasChildren" class="w-3 h-3 transition-transform duration-200" :class="{'rotate-90': page.isExpanded}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="9 18 15 12 9 6"></polyline></svg>
                   <div v-else class="w-3 h-3"></div> 
@@ -177,20 +177,28 @@
                   <template v-if="page.icon">{{ page.icon }}</template>
                   <svg v-else class="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                 </span>
-                <span class="text-sm truncate font-medium">{{ page.title || '无标题' }}</span>
+                <input v-if="renamingPageId === page.id"
+                       class="page-rename-input flex-1 min-w-0 bg-void border border-accent outline-none px-1 py-0.5 text-sm text-display rounded-sm"
+                       v-model="renameDraft"
+                       @click.stop
+                       @keydown.enter.prevent="commitRename"
+                       @keydown.esc.prevent="cancelRename"
+                       @blur="commitRename" />
+                <span v-else class="text-sm truncate font-medium">{{ page.title || '无标题' }}</span>
               </div>
               
-              <!-- 行内操作组：桌面端 hover 浮出；触屏无 hover，常驻可见（Notion 移动端同理：
-                   hover 收纳的控件在触屏一律常驻）。桌面端仅激活页常驻的行为不变 -->
-              <div class="flex items-center opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity gap-0.5 shrink-0 bg-panel rounded px-1 shadow-sm" :class="activePageId === page.id ? 'md:opacity-100' : ''">
-                <button @click.stop="toggleFavorite(page.id)" class="p-2.5 md:p-1 text-dim active:text-warn transition-colors" title="收藏" aria-label="收藏">
-                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" :fill="page.isFavorite ? 'currentColor' : 'none'" :class="page.isFavorite ? 'text-warn' : ''" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
-                </button>
-                <button @click.stop="createPage(page.id)" class="p-2.5 md:p-1 text-dim active:text-accent transition-colors" title="新建子页面" aria-label="新建子页面">
+              <!-- 行内操作：对齐 Notion——桌面端默认 **不占位**（标题吃满整行宽度），
+                   仅当鼠标 hover 到该行时才浮出「＋ 新建子页面」「⋯ 页面选项」，
+                   这样光标在右侧正文时侧栏没有悬空按钮与空白带，观感更聚焦内容、
+                   中间分界线也更贴合文本。收藏 / 重命名 / 复制 / 删除等收进 ⋯ 菜单。
+                   触屏无 hover，仍常驻可见以保证可达。 -->
+              <div class="flex items-center gap-0.5 shrink-0"
+                   :class="isCoarsePointer ? '' : 'md:hidden md:group-hover:flex'">
+                <button @click.stop="createPage(page.id)" class="p-2.5 md:p-1 text-dim hover:text-accent active:text-accent transition-colors" title="新建子页面" aria-label="新建子页面">
                   <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                 </button>
-                <button @click.stop="deletePage(page.id)" class="p-2.5 md:p-1 text-dim active:text-danger transition-colors" v-if="pages.length > 1" title="删除" aria-label="删除页面">
-                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                <button @click.stop="openSidebarMenu(page.id, $event)" class="p-2.5 md:p-1 text-dim hover:text-display active:text-display transition-colors" title="页面选项" aria-label="页面选项">
+                  <svg class="w-4 h-4 md:w-3.5 md:h-3.5" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7"></circle><circle cx="12" cy="12" r="1.7"></circle><circle cx="19" cy="12" r="1.7"></circle></svg>
                 </button>
               </div>
             </div>
@@ -214,6 +222,43 @@
            :class="resizingSidebar ? 'bg-accent/70' : ''"
            @mousedown="startSidebarResize"
            title="拖拽调整侧边栏宽度"></div>
+
+      <!-- 页面选项菜单（对齐 Notion 的「⋯」）：点行内 ⋯ 弹出；点遮罩或 Esc 关闭 -->
+      <template v-if="sidebarMenu">
+        <div class="fixed inset-0 z-[120]" @click="closeSidebarMenu"></div>
+        <div class="fixed z-[121] w-[236px] bg-void border border-line rounded-md shadow-2xl py-1 text-sm"
+             :style="sidebarMenuStyle">
+          <div class="px-3 py-1 text-[11px] font-['JetBrains_Mono',monospace] uppercase tracking-wider text-dim font-bold">页面</div>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-display hover:bg-panel transition-colors" @click="menuToggleFavorite">
+            <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" :fill="sidebarMenuPage?.isFavorite ? 'currentColor' : 'none'" :class="sidebarMenuPage?.isFavorite ? 'text-warn' : 'text-dim'" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+            {{ sidebarMenuPage?.isFavorite ? '从最爱中移除' : '添加为最爱' }}
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-display hover:bg-panel transition-colors" @click="menuCopyLink">
+            <svg class="w-4 h-4 shrink-0 text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"></path><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"></path></svg>
+            拷贝链接
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-display hover:bg-panel transition-colors" @click="menuDuplicate">
+            <svg class="w-4 h-4 shrink-0 text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"></rect><path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>
+            创建副本
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-display hover:bg-panel transition-colors" @click="menuRename">
+            <svg class="w-4 h-4 shrink-0 text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"></path></svg>
+            重命名
+          </button>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-display hover:bg-panel transition-colors" @click="menuOpenNewTab">
+            <svg class="w-4 h-4 shrink-0 text-dim" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+            在新标签页打开
+          </button>
+          <div class="my-1 border-t border-line"></div>
+          <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-danger hover:bg-danger/10 transition-colors" @click="menuTrash">
+            <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            移至垃圾箱
+          </button>
+          <div v-if="sidebarMenuPage?.updatedAt" class="px-3 pt-2 pb-1 mt-1 text-[10px] text-dim border-t border-line">
+            上次编辑：{{ new Date(sidebarMenuPage.updatedAt).toLocaleString() }}
+          </div>
+        </div>
+      </template>
     </aside>
 
     <!-- 右侧主编辑区：页面切换微动画（与原生 Tab 节奏一致的淡入+轻微上移，150ms） -->
@@ -335,14 +380,14 @@
 
         <!-- 标题刻意不用 v-model：见下方 onTitleInput 注释（Android IME 组词期间
              受控 value 回写会打断 composing span，把输入的字挤到最末尾）。 -->
-        <input ref="titleInputRef" type="text"
+        <textarea ref="titleInputRef" rows="1"
                placeholder="无标题"
                @input="onTitleInput"
                @compositionstart="onTitleCompositionStart"
                @compositionend="onTitleCompositionEnd"
                @blur="onTitleBlur"
                @keydown="handleTitleKeyDown"
-               class="w-full bg-transparent border-none outline-none font-['Rajdhani',sans-serif] text-3xl md:text-5xl font-bold leading-tight tracking-tight text-display placeholder-dim/30 mb-6 md:mb-10 pb-4 border-b border-line" />
+               class="block w-full bg-transparent border-none outline-none resize-none overflow-hidden whitespace-pre-wrap break-words font-['Rajdhani',sans-serif] text-3xl md:text-5xl font-bold leading-tight tracking-tight text-display placeholder-dim/30 mb-6 md:mb-10 pb-4 border-b border-line"></textarea>
 
         <div class="flex-1 relative pb-32" @click="onContentClick" @mouseover="onLinkHover" @mouseleave="hideLinkChip"
              @touchstart.passive="onLinkTouchStart" @touchmove.passive="onLinkTouchMove" @touchend="onLinkTouchEnd" @touchcancel="onLinkTouchEnd" @contextmenu="onLinkContextMenu">
@@ -2508,6 +2553,8 @@ onMounted(async () => {
   // Escape 键关闭浮窗
   const handleEscape = (e: KeyboardEvent) => {
     if (e.key !== 'Escape') return;
+    // 页面「⋯」菜单打开时优先关闭它
+    if (sidebarMenu.value) { closeSidebarMenu(); return; }
     // 移动端内容页优先：Esc 走「返回列表」（与系统返回一致）
     if (isMobile.value && mobileView.value === 'content') { goToList(); return; }
     // 链接弹窗优先：它内部输入框已自行处理 Esc，这里兜底非输入焦点触发的情况
@@ -2871,6 +2918,120 @@ const deletePage = (id: string) => {
    const alive = pages.value.filter((p) => !p.deletedAt);
    if (!alive.find(p => p.id === activePageId.value)) activePageId.value = alive[0]?.id || '';
    // 变更经 watch -> stampUpdated + persistPages 上推（携带 deletedAt），无需单独调 REST DELETE
+};
+
+// === 页面「⋯」选项菜单（对齐 Notion：收藏 / 拷贝链接 / 创建副本 / 重命名 / 新标签页打开 / 删除） ===
+const sidebarMenu = ref<{ id: string; x: number; y: number; flipUp: boolean } | null>(null);
+const sidebarMenuPage = computed(() => (sidebarMenu.value ? pages.value.find((p) => p.id === sidebarMenu.value!.id) ?? null : null));
+const sidebarMenuStyle = computed(() => {
+  const m = sidebarMenu.value;
+  if (!m) return {};
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
+  const left = Math.max(8, Math.min(m.x, vw - 244));
+  return { left: left + 'px', top: m.y + 'px', transform: m.flipUp ? 'translateY(-100%)' : 'none' };
+});
+const openSidebarMenu = (id: string, e: MouseEvent) => {
+  e.stopPropagation();
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const flipUp = r.bottom + 320 > window.innerHeight;
+  sidebarMenu.value = { id, x: r.right - 236, y: flipUp ? r.top - 6 : r.bottom + 4, flipUp };
+};
+const closeSidebarMenu = () => { sidebarMenu.value = null; };
+// 页面深链：与全局 hash 路由一致（刷新即可直达该页）
+const pageShareLink = (id: string) => `${window.location.origin}${window.location.pathname}#${id}`;
+
+// 行内重命名（Notion：直接在侧栏改名，Enter 提交 / Esc 取消 / 失焦提交）
+const renamingPageId = ref<string | null>(null);
+const renameDraft = ref('');
+const startPageRename = (id: string) => {
+  const p = pages.value.find((x) => x.id === id);
+  if (!p) return;
+  renamingPageId.value = id;
+  renameDraft.value = p.title || '';
+  nextTick(() => {
+    const el = document.querySelector<HTMLInputElement>('.page-rename-input');
+    if (el) { el.focus(); el.select(); }
+  });
+};
+const commitRename = () => {
+  const id = renamingPageId.value;
+  if (!id) return;
+  const p = pages.value.find((x) => x.id === id);
+  if (p) {
+    const v = renameDraft.value.trim();
+    if (p.title !== v) { p.title = v; p.updatedAt = Date.now(); markDirty(id); }
+  }
+  renamingPageId.value = null;
+};
+const cancelRename = () => { renamingPageId.value = null; };
+
+// 创建副本：整页深拷贝（新块 id、剔除墓碑），挂到同一父级下并跳转
+const duplicatePage = (id: string) => {
+  const src = pages.value.find((p) => p.id === id && !p.deletedAt);
+  if (!src) return;
+  const nid = newPageId();
+  const now = Date.now();
+  const cloneTasks = (src.tasks || [])
+    .filter((t) => !t.deletedAt)
+    .map((t) => {
+      const c = JSON.parse(JSON.stringify(t)) as Task;
+      c.id = newBlockId();
+      c.updatedAt = now;
+      c.deletedAt = undefined;
+      c.prevId = null;
+      return c;
+    });
+  pages.value.push({
+    id: nid,
+    title: `${src.title || '无标题'} 副本`,
+    icon: src.icon,
+    cover: src.cover,
+    coverPos: src.coverPos,
+    coverMeta: src.coverMeta,
+    tasks: cloneTasks.length ? cloneTasks : [{ id: newBlockId(), type: 'text', content: '', completed: false, indentLevel: 0 }],
+    parentId: src.parentId,
+    isFavorite: false,
+    isExpanded: true,
+    updatedAt: now,
+  });
+  pages.value.splice(0, pages.value.length, ...writePagePrevIds(pages.value));
+  markDirty(nid);
+  selectPage(nid);
+  flashDataMsg('已创建副本');
+};
+
+const menuToggleFavorite = () => {
+  if (!sidebarMenu.value) return;
+  toggleFavorite(sidebarMenu.value.id);
+  closeSidebarMenu();
+};
+const menuCopyLink = async () => {
+  if (!sidebarMenu.value) return;
+  const link = pageShareLink(sidebarMenu.value.id);
+  try {
+    await navigator.clipboard.writeText(link);
+    flashDataMsg('已复制页面链接');
+  } catch {
+    flashDataMsg('复制失败：' + link);
+  }
+  closeSidebarMenu();
+};
+const menuOpenNewTab = () => {
+  if (!sidebarMenu.value) return;
+  window.open(pageShareLink(sidebarMenu.value.id), '_blank', 'noopener');
+  closeSidebarMenu();
+};
+const menuDuplicate = () => {
+  if (sidebarMenu.value) duplicatePage(sidebarMenu.value.id);
+  closeSidebarMenu();
+};
+const menuRename = () => {
+  if (sidebarMenu.value) startPageRename(sidebarMenu.value.id);
+  closeSidebarMenu();
+};
+const menuTrash = () => {
+  if (sidebarMenu.value) deletePage(sidebarMenu.value.id);
+  closeSidebarMenu();
 };
 
 // === 回收站（配合墓碑删除：可恢复 / 彻底删除） ===
@@ -3644,7 +3805,14 @@ const redo = () => {
 };
 
 // === 标题区 ⇄ 正文区 的光标流转（对齐 Notion） ===
-const titleInputRef = ref<HTMLInputElement | null>(null);
+const titleInputRef = ref<HTMLTextAreaElement | null>(null);
+
+// 标题随内容自动增高（Notion 标题多行时整块撑高，不出现横向滚动/溢出）
+const autoGrowTitle = (el: HTMLTextAreaElement | null) => {
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+};
 
 // 标题采用「非受控 DOM + 手动同步」而非 v-model。
 // Android WebView 的 IME 在组词（composition）期间会维护自己的 composing span；
@@ -3674,6 +3842,7 @@ const onTitleInput = (e: Event) => {
   if (composingActive() && v === '' && p.title) return;
   p.title = v;
   markDirty(p.id);
+  autoGrowTitle(e.currentTarget as HTMLTextAreaElement);
 };
 const onTitleCompositionStart = () => {
   titleComposing.value = true;
@@ -3691,7 +3860,7 @@ const syncTitleDom = () => {
   const p = activePage.value;
   if (!el || !p) return;
   const v = p.title ?? '';
-  if (el.value === v) return;
+  if (el.value === v) { autoGrowTitle(el); return; }
   // 组词中绝不回写：重写 input.value 会打断 composing span（Android IME）。
   if (composingActive()) return;
   const focused = document.activeElement === el;
@@ -3704,6 +3873,7 @@ const syncTitleDom = () => {
     const pos = Math.min(caret, v.length);
     try { el.setSelectionRange(pos, pos); } catch { /* 不支持选区时忽略 */ }
   }
+  autoGrowTitle(el);
 };
 
 // 触发源必须包含「页面对象引用」和「input DOM 引用」：
@@ -4588,7 +4758,7 @@ const handleTitleKeyDown = (e: KeyboardEvent) => {
   // Notion：标题处 Enter / ↓ / Tab 都会把光标送进正文
   if (e.key !== 'Enter' && e.key !== 'ArrowDown' && e.key !== 'Tab') return;
   e.preventDefault();
-  (e.currentTarget as HTMLInputElement).blur();
+  (e.currentTarget as HTMLTextAreaElement).blur();
   focusFirstEditableBlock('start');
 };
 
@@ -6062,6 +6232,20 @@ defineExpose({ exportMarkdown });
 /* Notion 行为：占位提示只在「当前编辑的空块」或「鼠标悬停的空块」上出现，避免整页刷屏 */
 .ce-block:focus:empty::before,
 .task-item-container:hover .ce-block:empty::before { content: attr(data-placeholder); color: rgb(var(--dim) / 0.45); pointer-events: none; display: block; }
+/* 侧栏滚动条：Notion 风格「几乎不可见」——透明轨道 + 细灰滑块，仅 hover 略加深。
+   避免彩色滚动条在侧栏里像一条竖分割线（用户反馈的「割裂感」）。 */
+.sidebar-scroll { scrollbar-width: thin; scrollbar-color: rgb(var(--line)) transparent; }
+.sidebar-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgb(var(--line));
+  border-radius: 5px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+.sidebar-scroll:hover::-webkit-scrollbar-thumb { background: rgb(var(--muted) / 0.45); background-clip: padding-box; }
+.sidebar-scroll::-webkit-scrollbar-thumb:hover { background: rgb(var(--muted) / 0.65); background-clip: padding-box; }
+
 .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: rgb(var(--panel) / 0.3); }
 .custom-scrollbar::-webkit-scrollbar-thumb { background: rgb(var(--accent) / 0.3); border-radius: 2px; }

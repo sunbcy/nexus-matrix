@@ -287,7 +287,7 @@ onBeforeUnmount(() => document.removeEventListener('click', onDocClick));
   border-right: 1px solid rgb(var(--line));
   display: flex;
   flex-direction: column;
-  background: rgb(var(--void));
+  background: rgb(var(--surface));
 }
 .ws-sidebar-head {
   display: flex;

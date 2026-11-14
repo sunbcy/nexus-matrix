@@ -34,7 +34,7 @@ export const THEMES: ThemeMeta[] = [
   {
     id: 'void',
     name: '酷黑',
-    desc: '默认。界面完全退到背景里，只剩内容与光标，适合夜间长时间写作。',
+    desc: '界面完全退到背景里，只剩内容与光标，适合夜间长时间写作。',
     swatch: ['#090a0c', '#14161a', '#1e2126', '#e5e7eb', '#00f0ff'],
     mode: 'dark',
   },
@@ -42,7 +42,7 @@ export const THEMES: ThemeMeta[] = [
     id: 'paper',
     name: '纸白',
     desc: 'Notion 浅色。白底暖灰层级，白天/明亮环境下细节辨认成本最低。',
-    swatch: ['#ffffff', '#fbfbfa', '#efefed', '#37352f', '#2b6feb'],
+    swatch: ['#ffffff', '#f7f7f5', '#efefed', '#37352f', '#2383e2'],
     mode: 'light',
   },
   {
@@ -84,7 +84,7 @@ export const THEMES: ThemeMeta[] = [
 
 const STORAGE_KEY = 'nexus_theme';
 
-const DEFAULT_THEME: ThemeId = 'void';
+const DEFAULT_THEME: ThemeId = 'paper';
 
 export const currentThemeId = ref<ThemeId>(DEFAULT_THEME);
 
@@ -130,9 +130,8 @@ export const applyTheme = (id: ThemeId) => {
 /**
  * 启动时调用（在 mount 之前），避免首屏先闪一下默认主题。
  *
- * 默认固定为「酷黑」而不是跟随系统：这个产品的既有观感就是酷黑，
- * 首次打开就因为系统浅色而换脸属于意外改动。用户只要在设置里选过一次
- * （含「跟随系统」），之后就以其选择为准（存 localStorage）。
+ * 默认固定为「纸白」（Notion 浅色）：首次打开即呈现白底 + 暖灰层级的浅色界面；
+ * 若曾手动选过主题（含「跟随系统」），则以 localStorage 中的选择为准。
  */
 export const initTheme = () => {
   let stored: string | null = null;
