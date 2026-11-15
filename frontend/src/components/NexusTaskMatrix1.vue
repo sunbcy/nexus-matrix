@@ -313,13 +313,6 @@
         <div v-if="coverRepositioning" class="absolute bottom-2 left-4 text-[10px] text-display/50 pointer-events-none">
           拖动图片可重新取景
         </div>
-        <!-- 摄影师署名（Unsplash 等图库的硬性合规要求） -->
-        <div v-if="coverCredit" class="absolute bottom-2 right-4 text-[10px] text-display/70 backdrop-blur-sm bg-void/60 px-2 py-0.5 rounded-sm">
-          Photo by
-          <a :href="coverCredit.authorUrl" target="_blank" rel="noopener" class="text-accent hover:underline">{{ coverCredit.author }}</a>
-          on
-          <a :href="coverCredit.sourceUrl" target="_blank" rel="noopener" class="text-accent hover:underline">{{ coverCredit.source }}</a>
-        </div>
       </div>
 
       <!-- 顶部 padding：有封面时封面已全出血占据状态栏区域，内容按常规 pt-6/md:pt-12；
@@ -5429,8 +5422,6 @@ const setCover = (cover: string, meta?: CoverMeta) => {
   coverRepositioning.value = false;
   closeCoverPicker();
 };
-// 署名由页面字段派生：刷新、切页、换设备后都不会丢（Unsplash 的硬性合规要求）。
-const coverCredit = computed(() => activePage.value?.coverMeta ?? null);
 const removeCover = () => {
   if (activePage.value) {
     activePage.value.cover = undefined;
