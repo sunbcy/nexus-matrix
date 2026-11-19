@@ -1356,7 +1356,7 @@
 <script setup lang="ts">
 import {computed, nextTick, onMounted, onUnmounted, reactive, ref, watch} from 'vue';
 import {
-  dataVersion, markDirty, onlineDevices, syncStatus,
+  dataVersion, markDirty, onlineDevices, syncStatus, lastAuthError,
   retrySync, setStorageWarning, initSync, flushPendingSave, setReconcilePage,
   closeSync, writePrevIds, writePagePrevIds, previewNotionZip, commitImportPages,
   type PageVersion, getPageHistory, deletePageVersion, clearPageHistory,
@@ -2804,7 +2804,9 @@ onMounted(async () => {
     // WebView 切后台 WebSocket 即被系统回收，且重连达上限后会转入「纯本地模式」
     // 等用户手动点——但移动端用户很难发现状态按钮。这里回到前台且处于离线时
     // 自动触发 retrySync()，无需手动干预，保证多端数据联动及时恢复。
-    if (syncStatus.value === 'offline') {
+    // 密钥已被服务端明确拒绝时不再自动重试（每次回前台都会被 403 拒一遍，
+    // 状态在 LOCAL/LINK 之间反复横跳）；改密钥走设置页保存重载全新 initSync。
+    if (syncStatus.value === 'offline' && !lastAuthError.value) {
       retrySync();
     }
   });

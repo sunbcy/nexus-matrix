@@ -1156,6 +1156,7 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     socket = null;
   }
   let mySocket: WebSocket;
+  let opened = false;   // 是否成功 open 过：区分「握手失败」与「建连后掉线」
   try {
     mySocket = new WebSocket(wsUrl);
   } catch (e) {
@@ -1169,6 +1170,7 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
   mySocket.onopen = () => {
     // 代际守护：若已被更新的连接取代（HMR / 重连竞态），自关以防后端连接数虚高
     if (socket !== mySocket) { try { mySocket.close(); } catch { /* 忽略 */ } return; }
+    opened = true;
     syncStatus.value = 'online';
     backendReachable = true;   // WS 连上即证明后端可达（后续 pushAll 的 REST 兜底因此放行）
     lastSyncError.value = '';
@@ -1291,12 +1293,44 @@ const connectWS = (pagesRef: Ref<Page[]>) => {
     syncStatus.value = 'offline';
     socket = null;
     accountInfo.value = null;
+    // 握手层失败在浏览器里只会表现为 1006/1005 等异常关闭码：服务端对无效密钥的
+    // close(1008) 发生在 WS accept 之前，uvicorn 会直接以 HTTP 403 拒绝升级请求，
+    // 浏览器拿不到 WS close code。若不区分，「密钥被拒」会被当成普通断线无限重连，
+    // 状态在 LOCAL / LINK 之间反复横跳。仅在「从未 open 过」的失败后用 REST
+    // /api/me（同一密钥）诊断一次：401/403 → 稳定离线并给出明确提示；
+    // 2xx → 密钥与网络都正常，是 WS 通道被拦（隧道/反代），继续有限重试。
+    if (!opened && (ev == null || [1002, 1003, 1005, 1006].includes(ev.code))) {
+      void diagnoseAuthThenReconnect(pagesRef);
+      return;
+    }
     scheduleReconnect(pagesRef);
   };
 
   socket.onerror = () => {
     // onclose 会紧随其后触发，统一在 onclose 处理重连
   };
+};
+
+/** WS 握手失败诊断：用 REST /api/me（同一密钥）区分「密钥被拒」与「网络/通道不通」。
+ *  背景：uvicorn 对未 accept 的 close(1008) 会以 HTTP 403 拒绝握手，浏览器端永远
+ *  拿不到 WS 1008 —— 这条诊断是把「密钥问题」从「网络问题」里拆出来的唯一手段。 */
+const diagnoseAuthThenReconnect = async (pagesRef: Ref<Page[]>) => {
+  try {
+    const headers: Record<string, string> = {};
+    if (SYNC_API_KEY) headers['Authorization'] = `Bearer ${SYNC_API_KEY}`;
+    const res = await apiFetch(`${API_BASE}/me`, { headers });
+    if (res.status === 401 || res.status === 403) {
+      // 密钥被服务端明确拒绝：与 1008 分支同等处理 —— 稳定离线，不自动重连。
+      lastAuthError.value = '密钥被拒绝（HTTP 401/403）：访问密钥不正确，或后端未启用该密钥';
+      reconnectAttempts = 0;
+      return;
+    }
+    // REST 可达而 WS 握手失败：通道被拦（隧道 / 反代 / 防火墙），提示后继续退避重试。
+    lastSyncError.value = '网络可达后端，但 WebSocket 通道握手失败（可能被隧道/反代拦截），将持续重试';
+  } catch {
+    lastSyncError.value = '无法连接后端（网络不可达），将持续重试';
+  }
+  scheduleReconnect(pagesRef);
 };
 
 // 拉取当前房间信息（房间标识 / 数据量 / 在线设备），连接成功后调用。
